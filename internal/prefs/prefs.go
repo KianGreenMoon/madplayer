@@ -34,11 +34,82 @@ type Config struct {
 	// Volume is 0..1.
 	Volume float64 `json:"volume"`
 
+	// Servers are the remote madshares this device is signed in to. Each carries
+	// an API token, which is why this file is written 0600 (see Save).
+	Servers []Server `json:"servers,omitempty"`
+
+	// CacheMB caps the remote-audio cache, in MiB. 0 means the default; a
+	// negative value means no ceiling at all, which is a thing somebody with a
+	// big disk may legitimately want and should have to ask for.
+	CacheMB int `json:"cache_mb,omitempty"`
+
 	// Roots is no longer used: music folders are data sources in the backend now.
 	// It is still read so an install that predates the embedded backend can hand
 	// its folders over once (see TakeLegacyRoots) instead of appearing to have
 	// lost them.
 	Roots []string `json:"roots,omitempty"`
+}
+
+// DefaultCacheMB is the remote-audio cache ceiling when nothing has been chosen.
+//
+// A number had to be picked, and this one is picked from the shape of the
+// content rather than from a round figure: a FLAC album is roughly 300 MB, so
+// 2 GiB holds a handful of them and a great many more MP3s — enough that
+// re-listening to what you played yesterday is usually a cache hit, small
+// enough that a phone does not notice it. It is editable, which is the part that
+// matters, because this guess has never met a real library.
+const DefaultCacheMB = 2048
+
+// Server is one remote madshare this device is signed in to.
+//
+// The base URL is the IDENTITY: adding the same address twice updates the entry
+// rather than making a second one, because two rows for one server would sign in
+// twice and merge that server's library with itself.
+type Server struct {
+	Base  string `json:"base"`
+	Label string `json:"label"`
+	// Username is display only — who this device is signed in as. The token is
+	// what actually authenticates.
+	Username string `json:"username"`
+	// Token is an API token minted by that server (madshare.SignIn). It is stored
+	// in plain text: there is no keyring here, and the file is 0600. Revoking it
+	// is done on the server, where it is listed by name.
+	Token string `json:"token"`
+}
+
+// CacheLimit resolves the configured cache ceiling into bytes. A negative
+// setting means unlimited, reported as 0 the way the cache reads it.
+func (c Config) CacheLimit() int64 {
+	switch {
+	case c.CacheMB < 0:
+		return 0
+	case c.CacheMB == 0:
+		return int64(DefaultCacheMB) << 20
+	}
+	return int64(c.CacheMB) << 20
+}
+
+// SetServer adds a server or updates the one already at that address.
+func (c *Config) SetServer(s Server) {
+	for i := range c.Servers {
+		if c.Servers[i].Base == s.Base {
+			c.Servers[i] = s
+			return
+		}
+	}
+	c.Servers = append(c.Servers, s)
+}
+
+// RemoveServer forgets a server. The token stays valid on the server until it is
+// revoked there — forgetting it here is what signing out of THIS device means.
+func (c *Config) RemoveServer(base string) {
+	out := c.Servers[:0]
+	for _, s := range c.Servers {
+		if s.Base != base {
+			out = append(out, s)
+		}
+	}
+	c.Servers = out
 }
 
 func (s *Store) path() string        { return filepath.Join(s.Dir, "config.json") }
@@ -65,6 +136,11 @@ func (s *Store) Load() (Config, error) {
 
 // Save writes the settings, replacing the file atomically so an interrupted write
 // cannot leave half a config behind.
+//
+// The mode is 0600, not 0644: this file holds API tokens for the servers this
+// device is signed in to, and each one is that account's full access to its
+// server. The temporary file is written with the same mode, so the credential is
+// never briefly world-readable in the gap before the rename.
 func (s *Store) Save(cfg Config) error {
 	b, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
@@ -74,7 +150,12 @@ func (s *Store) Save(cfg Config) error {
 		return err
 	}
 	tmp := s.path() + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+		return err
+	}
+	// WriteFile leaves an existing file's mode alone, so an install that saved a
+	// 0644 config before tokens existed keeps it. Say it outright.
+	if err := os.Chmod(tmp, 0o600); err != nil {
 		return err
 	}
 	return os.Rename(tmp, s.path())

@@ -14,8 +14,10 @@
 package madshare
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -109,6 +111,13 @@ type Error struct {
 	Method string
 	Path   string
 	Body   string
+
+	// PasswordChange reports the X-Password-Change-Required header, which the
+	// server sets on the 403 it gives an account that must change its password
+	// before it may act. It is a different problem from a missing permission and
+	// has a different answer — change it on that server's own web UI — so it is
+	// carried rather than flattened into the status.
+	PasswordChange bool
 }
 
 func (e *Error) Error() string {
@@ -144,6 +153,36 @@ func New(base, token string) *Client {
 	}
 }
 
+// NormalizeBase turns what a person types into a base URL.
+//
+// A bare host is assumed to be plain HTTP, which is the shape a madshare is
+// actually reached at: a yggdrasil address or a LAN box, neither of which has a
+// certificate (docs/ui/clipboard.md records the same fact from the other side —
+// those origins are not secure contexts). Guessing https would fail on the
+// common case and leave the person to work out why.
+func NormalizeBase(raw string) (string, error) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return "", errors.New("type a server address")
+	}
+	if !strings.Contains(s, "://") {
+		s = "http://" + s
+	}
+	u, err := url.Parse(s)
+	if err != nil {
+		return "", fmt.Errorf("%s is not an address: %w", raw, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", fmt.Errorf("%s: only http and https are supported", u.Scheme)
+	}
+	if u.Host == "" {
+		return "", fmt.Errorf("%s has no host in it", raw)
+	}
+	u.Path = strings.TrimRight(u.Path, "/")
+	u.RawQuery, u.Fragment = "", ""
+	return u.String(), nil
+}
+
 // Resolve turns a server-relative URL (every row's play URL is one) into an
 // absolute one. Relative URLs are what the server returns because its own web UI
 // is same-origin; a native client has no origin, so it must join them itself.
@@ -155,12 +194,29 @@ func (c *Client) Resolve(rel string) string {
 }
 
 func (c *Client) get(ctx context.Context, path string, out any) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.Base+path, nil)
+	return c.do(ctx, http.MethodGet, path, nil, out)
+}
+
+// do runs one request. A nil body sends none; anything else is marshalled as
+// JSON. A nil out discards the reply.
+func (c *Client) do(ctx context.Context, method, path string, body, out any) error {
+	var rdr io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
+		rdr = bytes.NewReader(b)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.Base+path, rdr)
 	if err != nil {
 		return err
 	}
 	if c.Token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.Token)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set("Accept", "application/json")
 
@@ -171,8 +227,14 @@ func (c *Client) get(ctx context.Context, path string, out any) error {
 	defer res.Body.Close()
 
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(res.Body, 4<<10))
-		return &Error{Status: res.StatusCode, Method: http.MethodGet, Path: path, Body: string(body)}
+		raw, _ := io.ReadAll(io.LimitReader(res.Body, 4<<10))
+		return &Error{
+			Status:         res.StatusCode,
+			Method:         method,
+			Path:           path,
+			Body:           string(raw),
+			PasswordChange: res.Header.Get("X-Password-Change-Required") != "",
+		}
 	}
 	if out == nil {
 		_, _ = io.Copy(io.Discard, res.Body)
@@ -227,4 +289,37 @@ func (c *Client) Search(ctx context.Context, q string) (SearchResults, error) {
 	var out SearchResults
 	err := c.get(ctx, "/api/search?q="+url.QueryEscape(q), &out)
 	return out, err
+}
+
+// Open streams a track's audio. rel is the URL from a track row, which is
+// server-relative because the server's own web UI is same-origin.
+//
+// The body is the caller's to close. Playback is NOT where this is used
+// directly: the decoders need a whole local file (go-mp3 walks every frame
+// header before it will report a length), so the bytes go to the cache first
+// and the decoder opens that — see internal/blobcache.
+func (c *Client) Open(ctx context.Context, rel string) (io.ReadCloser, int64, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.Resolve(rel), nil)
+	if err != nil {
+		return nil, 0, err
+	}
+	if c.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.Token)
+	}
+	res, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, 0, err
+	}
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		raw, _ := io.ReadAll(io.LimitReader(res.Body, 4<<10))
+		res.Body.Close()
+		return nil, 0, &Error{
+			Status:         res.StatusCode,
+			Method:         http.MethodGet,
+			Path:           rel,
+			Body:           string(raw),
+			PasswordChange: res.Header.Get("X-Password-Change-Required") != "",
+		}
+	}
+	return res.Body, res.ContentLength, nil
 }

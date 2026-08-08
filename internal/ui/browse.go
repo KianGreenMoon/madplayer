@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"strings"
 
 	"gioui.org/layout"
 	"gioui.org/op/clip"
@@ -112,8 +113,15 @@ func (a *App) artistList(gtx C) D {
 			return a.emptyState(gtx, "Scanning…")
 		case loading:
 			return a.emptyState(gtx, "Reading your library…")
-		case folders == 0:
-			return a.emptyState(gtx, "No music folders yet. Open Folders to add one.")
+		case folders == 0 && !a.lib.Remote():
+			return a.emptyState(gtx, "No music folders yet. Open Folders to add one, or Servers to sign in to one.")
+		case a.lib.Remote():
+			// A server answering with nothing is not the same as having nothing:
+			// an account without content.access gets the guest listing, same
+			// shape, no error (docs/ui/madplayer.md §"The browse endpoints
+			// narrow, they do not refuse").
+			return a.emptyState(gtx, "Nothing to show. Your folders are empty, and the servers you are "+
+				"signed in to returned nothing your account may see.")
 		default:
 			return a.emptyState(gtx, "No music found in your folders.")
 		}
@@ -130,8 +138,9 @@ func (a *App) artistList(gtx C) D {
 		return a.row(gtx, &a.rows[i], false, func(gtx C) D {
 			return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
 				layout.Flexed(1, func(gtx C) D { return a.rowTitle(gtx, ar.Name, false) }),
+				layout.Rigid(func(gtx C) D { return a.originBadge(gtx, ar.Origins) }),
 				layout.Rigid(func(gtx C) D {
-					return a.rowMeta(gtx, fmt.Sprintf("%d tracks", ar.TrackCount))
+					return a.rowMeta(gtx, countText(ar.TrackCount, ar.Approx))
 				}),
 				layout.Rigid(func(gtx C) D { return a.chevron(gtx) }),
 			)
@@ -164,13 +173,14 @@ func (a *App) albumList(gtx C) D {
 		if a.rows[i].Clicked(gtx) {
 			a.drillAlbum(al)
 		}
-		meta := fmt.Sprintf("%d tracks", al.TrackCount)
+		meta := countText(al.TrackCount, al.Approx)
 		if al.Year > 0 {
 			meta = fmt.Sprintf("%d · %s", al.Year, meta)
 		}
 		return a.row(gtx, &a.rows[i], false, func(gtx C) D {
 			return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
 				layout.Flexed(1, func(gtx C) D { return a.rowTitle(gtx, al.Title, false) }),
+				layout.Rigid(func(gtx C) D { return a.originBadge(gtx, al.Origins) }),
 				layout.Rigid(func(gtx C) D { return a.rowMeta(gtx, meta) }),
 				layout.Rigid(func(gtx C) D { return a.chevron(gtx) }),
 			)
@@ -242,7 +252,7 @@ func (a *App) playFrom(tracks []*library.Track, index int) {
 		return
 	}
 	cur := a.pl.Current()
-	if cur != nil && cur.Path == want.Path && a.pl.Playing() {
+	if cur != nil && cur.RowKey() == rowKey(want) && a.pl.Playing() {
 		a.pl.Toggle() // clicking the playing row toggles pause
 		return
 	}
@@ -251,19 +261,87 @@ func (a *App) playFrom(tracks []*library.Track, index int) {
 	}
 }
 
-// trackProblem is why a row cannot be played, in the user's terms — and the two
-// reasons are deliberately different sentences. Bytes this machine cannot reach
-// are somebody's unplugged drive; a container Go has no decoder for is this
+// trackProblem is why a row cannot be played, in the user's terms — and the
+// reasons are deliberately different sentences. Bytes nothing can reach are
+// somebody's unplugged drive; a container Go has no decoder for is this
 // program's own limit. Reporting either as "missing" would be a lie about a file
 // that is perfectly fine.
 func trackProblem(pl *player.Player, t *library.Track) string {
+	best, ok := t.Best()
 	switch {
-	case !t.Available():
+	case !ok:
 		return "not on this device right now"
-	case pl.Unplayable(t.Path) != nil, !player.Decodable(t.Path):
+	case pl.Unplayable(rowKey(t)) != nil:
+		return "cannot be played"
+	case !decodableCopy(best):
 		return "cannot be played"
 	}
 	return ""
+}
+
+// decodableCopy reports whether this build has a decoder for a copy's container.
+//
+// A remote copy is judged by its file name, which is all there is to go on
+// before downloading it — and downloading a track to discover there is no
+// decoder for it is exactly the waste worth avoiding.
+func decodableCopy(c library.Copy) bool {
+	if c.Path != "" {
+		return player.Decodable(c.Path)
+	}
+	name := library.FileName(c.URL)
+	if name == "" || !strings.Contains(name, ".") {
+		return true // nothing to judge by; let playing it be the answer
+	}
+	return player.Decodable(name)
+}
+
+// originBadge says which library a row came from.
+//
+// It renders NOTHING when this device is the only library there is, which is the
+// normal case and the offline player's whole posture: a badge on every row
+// saying "this device" would be noise about a distinction that does not yet
+// exist for that person.
+func (a *App) originBadge(gtx C, origins []library.Origin) D {
+	if !a.lib.Remote() || len(origins) == 0 {
+		return D{}
+	}
+	return layout.Inset{Left: 10}.Layout(gtx, func(gtx C) D {
+		l := material.Caption(a.th, originText(origins))
+		l.Color = colDim
+		l.MaxLines = 1
+		return l.Layout(gtx)
+	})
+}
+
+// originText names the libraries a row is in. Two are named; more are counted,
+// because a row is not a place to list six servers.
+func originText(origins []library.Origin) string {
+	labels := make([]string, 0, len(origins))
+	seen := map[string]bool{}
+	for _, o := range origins {
+		if seen[o.Source] {
+			continue
+		}
+		seen[o.Source] = true
+		labels = append(labels, o.Label)
+	}
+	switch len(labels) {
+	case 0:
+		return ""
+	case 1, 2:
+		return strings.Join(labels, " + ")
+	}
+	return fmt.Sprintf("%d libraries", len(labels))
+}
+
+// countText renders a merged count. The "+" is not decoration: a count merged
+// from two libraries is a LOWER BOUND, because the same track held in both is
+// one row here and two rows there (see library/merge.go countFrom).
+func countText(n int, approx bool) string {
+	if approx {
+		return fmt.Sprintf("%d+ tracks", n)
+	}
+	return fmt.Sprintf("%d tracks", n)
 }
 
 func (a *App) discHeader(gtx C, txt string) D {
@@ -280,7 +358,8 @@ func (a *App) discHeader(gtx C, txt string) D {
 // artist — which is what makes a compilation readable.
 func (a *App) trackRow(gtx C, click *widget.Clickable, t *library.Track, fallbackNum int) D {
 	cur := a.pl.Current()
-	playing := t.Available() && cur != nil && cur.Path == t.Path
+	key := rowKey(t)
+	playing := key != "" && cur != nil && cur.RowKey() == key
 	problem := trackProblem(a.pl, t)
 
 	// The number is the tag when present, else the row's position, so a column
@@ -315,6 +394,12 @@ func (a *App) trackRow(gtx C, click *widget.Clickable, t *library.Track, fallbac
 						return l.Layout(gtx)
 					}),
 				)
+			}),
+			layout.Rigid(func(gtx C) D {
+				if best, ok := t.Best(); ok {
+					return a.originBadge(gtx, []library.Origin{best.Origin})
+				}
+				return D{}
 			}),
 			layout.Rigid(func(gtx C) D { return a.rowMeta(gtx, t.DurationString()) }),
 		)
@@ -386,7 +471,7 @@ func (a *App) searchResults(gtx C) D {
 				// The breadcrumb needs an artist to name, and the row carries the
 				// album's own — which IS the album artist, so the crumb is right
 				// without a query for it.
-				a.artist = &library.Artist{ID: it.album.ArtistID, Name: it.album.ArtistName}
+				a.artist = it.album.Artist()
 				a.view = viewBrowse
 				a.search.SetText("")
 				a.drillAlbum(it.album)

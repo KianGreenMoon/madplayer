@@ -13,6 +13,14 @@ import (
 	"daemonlord.ygg/madplayer/internal/queue"
 )
 
+// originOr names a library, or says something rather than nothing.
+func originOr(label, fallback string) string {
+	if label == "" {
+		return fallback
+	}
+	return label
+}
+
 func clock(sec float64) string {
 	if sec <= 0 {
 		return "0:00"
@@ -83,6 +91,14 @@ func (a *App) nowPlaying(gtx C) D {
 		if cur.Album != "" {
 			sub += "  ·  " + cur.Album
 		}
+		if cur.Origin != "" {
+			sub += "  ·  " + cur.Origin
+		}
+		// A download takes as long as it takes, and silence with no explanation
+		// is indistinguishable from a hang.
+		if a.pl.Loading() {
+			sub = "Downloading from " + originOr(cur.Origin, "the server") + "…"
+		}
 	}
 
 	return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
@@ -115,7 +131,10 @@ func (a *App) nowPlaying(gtx C) D {
 		layout.Rigid(layout.Spacer{Width: 6}.Layout),
 		layout.Rigid(func(gtx C) D {
 			label := "Play"
-			if a.pl.Playing() {
+			switch {
+			case a.pl.Loading():
+				label = "…"
+			case a.pl.Playing():
 				label = "Pause"
 			}
 			return a.smallButton(gtx, &a.btnPlay, label, false)

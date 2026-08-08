@@ -59,7 +59,14 @@ func (a *App) queuePanel(gtx C) D {
 							return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 								layout.Rigid(func(gtx C) D { return a.rowTitle(gtx, it.Title, i == cur) }),
 								layout.Rigid(func(gtx C) D {
-									l := material.Caption(a.th, it.Artist)
+									sub := it.Artist
+									// Which library a queued track plays from was
+									// decided when it was queued, so the queue is
+									// where it is worth saying.
+									if it.Origin != "" {
+										sub += "  ·  " + it.Origin
+									}
+									l := material.Caption(a.th, sub)
 									l.Color = colDim
 									l.MaxLines = 1
 									return l.Layout(gtx)

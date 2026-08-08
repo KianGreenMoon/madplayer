@@ -3,6 +3,8 @@ package ui
 import (
 	"context"
 	"fmt"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,10 +22,13 @@ import (
 	"gioui.org/widget/material"
 
 	"daemonlord.ygg/madplayer/internal/backend"
+	"daemonlord.ygg/madplayer/internal/blobcache"
 	"daemonlord.ygg/madplayer/internal/library"
+	"daemonlord.ygg/madplayer/internal/madshare"
 	"daemonlord.ygg/madplayer/internal/player"
 	"daemonlord.ygg/madplayer/internal/prefs"
 	"daemonlord.ygg/madplayer/internal/queue"
+	"daemonlord.ygg/madplayer/internal/remote"
 )
 
 type (
@@ -38,6 +43,7 @@ const (
 	viewBrowse view = iota
 	viewSearch
 	viewSettings
+	viewServers
 	viewQueue
 )
 
@@ -63,6 +69,8 @@ type App struct {
 	pl    *player.Player
 	be    *backend.Backend
 	lib   *library.Library
+	cache *blobcache.Cache
+	fetch *remote.Fetcher
 
 	// mu guards everything a background load, scan or probe pass writes.
 	mu      sync.Mutex
@@ -75,10 +83,18 @@ type App struct {
 	tracks  []*library.Track
 	found   library.SearchResults
 
-	scanning bool
-	loading  bool
-	status   string
-	notice   string
+	// probs is the libraries that did not answer the last fetch. It is shown
+	// beside the rows, never instead of them: a server being down must not blank
+	// the music on this device.
+	probs []library.Problem
+
+	scanning  bool
+	loading   bool
+	status    string
+	notice    string
+	srvBusy   bool
+	srvMsg    string
+	cacheUsed int64
 
 	view  view
 	level level
@@ -87,22 +103,27 @@ type App struct {
 	album  *library.Album
 
 	// widgets
-	list                                 widget.List
-	queueList                            widget.List
-	search                               widget.Editor
-	folderEd                             widget.Editor
-	seek                                 widget.Float
-	vol                                  widget.Float
-	seeking                              bool
-	rows                                 []widget.Clickable
-	crumbHome                            widget.Clickable
-	crumbArt                             widget.Clickable
-	btnSettings, btnQueue                widget.Clickable
-	btnPrev, btnPlay, btnNext            widget.Clickable
-	btnShuffle, btnRepeat, btnClearQueue widget.Clickable
-	btnAddFolder, btnRescan, btnUndo     widget.Clickable
-	rmFolder                             []widget.Clickable
-	rmQueue                              []widget.Clickable
+	list                                  widget.List
+	queueList                             widget.List
+	serverList                            widget.List
+	search                                widget.Editor
+	folderEd                              widget.Editor
+	srvAddr, srvUser, srvPass             widget.Editor
+	cacheEd                               widget.Editor
+	seek                                  widget.Float
+	vol                                   widget.Float
+	seeking                               bool
+	rows                                  []widget.Clickable
+	crumbHome                             widget.Clickable
+	crumbArt                              widget.Clickable
+	btnSettings, btnServers, btnQueue     widget.Clickable
+	btnPrev, btnPlay, btnNext             widget.Clickable
+	btnShuffle, btnRepeat, btnClearQueue  widget.Clickable
+	btnAddFolder, btnRescan, btnUndo      widget.Clickable
+	btnSignIn, btnCacheSave, btnCacheDrop widget.Clickable
+	rmFolder                              []widget.Clickable
+	rmServer                              []widget.Clickable
+	rmQueue                               []widget.Clickable
 }
 
 // New wires the UI to a player and the embedded backend.
@@ -110,8 +131,14 @@ func New(win *app.Window, pl *player.Player, be *backend.Backend) *App {
 	a := &App{win: win, th: newTheme(), store: prefs.Default(), pl: pl, be: be, lib: library.New(be.Library())}
 	a.list.Axis = layout.Vertical
 	a.queueList.Axis = layout.Vertical
+	a.serverList.Axis = layout.Vertical
 	a.search.SingleLine = true
 	a.folderEd.SingleLine = true
+	a.srvAddr.SingleLine = true
+	a.srvUser.SingleLine = true
+	a.srvPass.SingleLine = true
+	a.srvPass.Mask = '•'
+	a.cacheEd.SingleLine = true
 
 	cfg, err := a.store.Load()
 	if err != nil {
@@ -119,17 +146,78 @@ func New(win *app.Window, pl *player.Player, be *backend.Backend) *App {
 	}
 	a.cfg = cfg
 	a.vol.Value = float32(cfg.Volume)
+	a.cacheEd.SetText(fmt.Sprintf("%d", cfg.CacheLimit()>>20))
 	pl.SetVolume(cfg.Volume)
 
+	// Remote audio lands beside the rest of what this install owns. A cache that
+	// cannot be opened is not fatal: the device's own music plays regardless, and
+	// only remote tracks are lost — so it is reported and the program carries on.
+	a.cache, err = blobcache.Open(filepath.Join(be.DataDir(), "remote"), cfg.CacheLimit())
+	if err != nil {
+		a.status = "downloads are unavailable: " + err.Error()
+	} else {
+		a.fetch = remote.New(a.cache)
+		pl.SetFetcher(a.fetch)
+	}
+	a.applyServers()
+
 	// The player advances the queue from its own goroutine, so a repaint has to
-	// be asked for rather than assumed.
-	pl.OnChange = func() { win.Invalidate() }
+	// be asked for rather than assumed. The same signal is what warms the next
+	// track: it fires exactly when the queue moves.
+	pl.OnChange = func() {
+		a.prefetchNext()
+		win.Invalidate()
+	}
 
 	// Hand over the folders an older, self-scanning madplayer kept in its config,
 	// so an upgrade re-imports the same music instead of looking like it lost it.
 	legacy := a.store.TakeLegacyRoots(&a.cfg)
 	go a.start(legacy)
 	return a
+}
+
+// applyServers rebuilds the browse sources and the downloader from the saved
+// server list. One place does it, so the two can never disagree about which
+// servers exist.
+func (a *App) applyServers() {
+	a.mu.Lock()
+	saved := append([]prefs.Server(nil), a.cfg.Servers...)
+	a.mu.Unlock()
+
+	servers := make([]library.Server, 0, len(saved))
+	for _, s := range saved {
+		servers = append(servers, library.Server{
+			Base:   s.Base,
+			Label:  serverLabel(s),
+			Client: madshare.New(s.Base, s.Token),
+		})
+	}
+	a.lib.SetServers(servers)
+	if a.fetch != nil {
+		a.fetch.SetServers(servers)
+	}
+}
+
+// serverLabel is what a server is called on screen: the name the person gave it,
+// or its host, which is at least something they typed.
+func serverLabel(s prefs.Server) string {
+	if s.Label != "" {
+		return s.Label
+	}
+	return strings.TrimPrefix(strings.TrimPrefix(s.Base, "https://"), "http://")
+}
+
+// prefetchNext warms the track after the current one, so the gap between two
+// remote tracks is not a download.
+func (a *App) prefetchNext() {
+	if a.fetch == nil {
+		return
+	}
+	items := a.pl.QueueItems()
+	next := a.pl.QueueIndex() + 1
+	if next >= 0 && next < len(items) {
+		a.fetch.Prefetch(items[next])
+	}
 }
 
 // start loads the library, importing any handed-over folders first.
@@ -146,13 +234,16 @@ func (a *App) start(adopt []string) {
 	a.loadFolders()
 	a.reload()
 
+	// Nothing to play from at all — no folders and no server — opens the panel
+	// that fixes it. A person who plays only from a server has no folders on
+	// purpose, and must not be sent to add one every launch.
 	a.mu.Lock()
-	none := len(a.folders) == 0
+	none := len(a.folders) == 0 && len(a.cfg.Servers) == 0
 	a.mu.Unlock()
 	if none {
 		a.mu.Lock()
 		a.view = viewSettings
-		a.status = "Add a music folder to get started."
+		a.status = "Add a music folder to get started, or sign in to a server."
 		a.mu.Unlock()
 		a.win.Invalidate()
 	}
@@ -170,34 +261,55 @@ func (a *App) reload() {
 	switch lvl {
 	case levelAlbums:
 		if artist != nil {
-			albums, err := a.lib.Albums(ctx, artist.ID)
-			a.finishLoad(func() { a.albums, a.loading = albums, false }, err)
+			albums, probs, err := a.lib.Albums(ctx, artist)
+			a.finishLoad(func() { a.albums, a.loading = albums, false }, probs, err)
 			return
 		}
 	case levelTracks:
 		if album != nil {
-			tracks, err := a.lib.AlbumTracks(ctx, album)
-			a.finishLoad(func() { a.tracks, a.loading = tracks, false }, err)
+			tracks, probs, err := a.lib.AlbumTracks(ctx, album)
+			a.finishLoad(func() { a.tracks, a.loading = tracks, false }, probs, err)
 			a.probeDurations()
 			return
 		}
 	}
-	artists, err := a.lib.Artists(ctx)
-	a.finishLoad(func() { a.artists, a.loading = artists, false }, err)
+	artists, probs, err := a.lib.Artists(ctx)
+	a.finishLoad(func() { a.artists, a.loading = artists, false }, probs, err)
 }
 
-// finishLoad applies a loaded result under the lock and reports a failure in the
-// status line. A load that fails must not look like an empty library.
-func (a *App) finishLoad(apply func(), err error) {
+// finishLoad applies a loaded result under the lock and reports what went wrong.
+//
+// Three outcomes, three different things said: a load that fails entirely must
+// not look like an empty library, and a library that answered while another did
+// not must show what it has with a note about the one that did not — never an
+// error instead of the music.
+func (a *App) finishLoad(apply func(), probs []library.Problem, err error) {
 	a.mu.Lock()
 	a.loading = false
+	a.probs = probs
 	if err != nil {
 		a.status = "could not read the library: " + err.Error()
 	} else {
 		apply()
+		a.status = ""
 	}
 	a.mu.Unlock()
 	a.win.Invalidate()
+}
+
+// problemLine is the one-line summary of libraries that did not answer.
+func problemLine(probs []library.Problem) string {
+	switch len(probs) {
+	case 0:
+		return ""
+	case 1:
+		return probs[0].Label + " did not answer — showing everything else"
+	}
+	labels := make([]string, 0, len(probs))
+	for _, p := range probs {
+		labels = append(labels, p.Label)
+	}
+	return strings.Join(labels, ", ") + " did not answer — showing everything else"
 }
 
 // drill opens an artist, loading their albums in the background.
@@ -323,14 +435,17 @@ func (a *App) probeDurations() {
 		a.mu.Lock()
 		todo := make([]*library.Track, 0, 32)
 		for _, t := range a.tracks {
-			if t.Duration == 0 && t.Available() && player.Decodable(t.Path) {
+			// Only files this machine already holds: probing means decoding, and
+			// decoding a remote track would download an album to fill in a
+			// column of durations nobody asked for.
+			if p := t.LocalPath(); t.Duration == 0 && p != "" && player.Decodable(p) {
 				todo = append(todo, t)
 			}
 		}
 		a.mu.Unlock()
 
 		for i, t := range todo {
-			d, err := player.Probe(t.Path)
+			d, err := player.Probe(t.LocalPath())
 			if err != nil {
 				continue
 			}
@@ -387,9 +502,28 @@ func (a *App) layout(gtx C) D {
 
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		layout.Rigid(a.header),
+		layout.Rigid(a.problemBanner),
 		layout.Flexed(1, a.body),
 		layout.Rigid(a.playerBar),
 	)
+}
+
+// problemBanner names the libraries that did not answer, ABOVE the rows rather
+// than instead of them. A server being unreachable is a footnote on a music
+// collection, not a replacement for it.
+func (a *App) problemBanner(gtx C) D {
+	a.mu.Lock()
+	line := problemLine(a.probs)
+	a.mu.Unlock()
+	if line == "" {
+		return D{}
+	}
+	return layout.Inset{Top: 8, Bottom: 2, Left: 20, Right: 20}.Layout(gtx, func(gtx C) D {
+		l := material.Caption(a.th, line)
+		l.Color = colWarn
+		l.MaxLines = 1
+		return l.Layout(gtx)
+	})
 }
 
 // update handles every control before anything is laid out, so a click and the
@@ -397,6 +531,14 @@ func (a *App) layout(gtx C) D {
 func (a *App) update(gtx C) {
 	if a.btnSettings.Clicked(gtx) {
 		a.view = toggleView(a.view, viewSettings)
+	}
+	if a.btnServers.Clicked(gtx) {
+		a.view = toggleView(a.view, viewServers)
+		if a.view == viewServers {
+			// Measuring the cache walks the disk, so it happens when the panel
+			// that shows the number is opened, not every frame.
+			go a.refreshCacheSize()
+		}
 	}
 	if a.btnQueue.Clicked(gtx) {
 		a.view = toggleView(a.view, viewQueue)
@@ -494,15 +636,30 @@ func (a *App) update(gtx C) {
 // a slower answer for text the user has already replaced is dropped rather than
 // painted over the newer one.
 func (a *App) doSearch(q string) {
-	res, err := a.lib.Search(context.Background(), q)
+	res, probs, err := a.lib.Search(context.Background(), q)
 	a.mu.Lock()
+	a.probs = probs
 	if err != nil {
 		a.status = "search failed: " + err.Error()
 	} else if a.search.Text() == q {
 		a.found = res
+		a.status = ""
 	}
 	a.mu.Unlock()
 	a.win.Invalidate()
+}
+
+// serversLabel is the header button: how many libraries are being browsed at
+// once, which is the one thing a person needs to know before wondering where a
+// row came from.
+func (a *App) serversLabel() string {
+	a.mu.Lock()
+	n := len(a.cfg.Servers)
+	a.mu.Unlock()
+	if n == 0 {
+		return "Servers"
+	}
+	return fmt.Sprintf("Servers (%d)", n)
 }
 
 func toggleView(cur, want view) view {
@@ -549,6 +706,10 @@ func (a *App) header(gtx C) D {
 				layout.Rigid(func(gtx C) D {
 					return a.smallButton(gtx, &a.btnSettings, "Folders", a.view == viewSettings)
 				}),
+				layout.Rigid(layout.Spacer{Width: 8}.Layout),
+				layout.Rigid(func(gtx C) D {
+					return a.smallButton(gtx, &a.btnServers, a.serversLabel(), a.view == viewServers)
+				}),
 			)
 		})
 	})
@@ -558,6 +719,8 @@ func (a *App) body(gtx C) D {
 	switch a.view {
 	case viewSettings:
 		return a.settings(gtx)
+	case viewServers:
+		return a.serversPanel(gtx)
 	case viewQueue:
 		return a.queuePanel(gtx)
 	case viewSearch:
@@ -624,18 +787,35 @@ func (a *App) emptyState(gtx C, msg string) D {
 
 // itemsFromTracks converts library rows into queue items, capturing the display
 // text so the queue survives the rows being refetched under it.
+//
+// It captures the CHOSEN copy, not the row: which library a queued track plays
+// from is decided when it is queued, so re-browsing cannot silently move a
+// queued track onto a different machine.
 func (a *App) itemsFromTracks(tracks []*library.Track) []*queue.Item {
 	out := make([]*queue.Item, len(tracks))
 	for i, t := range tracks {
-		out[i] = &queue.Item{
-			Path:     t.Path,
+		it := &queue.Item{
 			Title:    t.Title,
 			Artist:   t.Artist,
 			Album:    t.Album,
 			Duration: t.Duration,
 		}
+		if c, ok := t.Best(); ok {
+			it.Path, it.URL, it.Hash, it.Origin = c.Path, c.URL, c.Hash, c.Origin.Label
+		}
+		out[i] = it
 	}
 	return out
+}
+
+// rowKey is how a browse row is matched against what is playing. It reads the
+// copy that WOULD play, which is the same one itemsFromTracks captured.
+func rowKey(t *library.Track) string {
+	c, ok := t.Best()
+	if !ok {
+		return ""
+	}
+	return queue.Key(c.Path, c.URL)
 }
 
 func (a *App) setStatus(msg string) {

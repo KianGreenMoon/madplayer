@@ -1,0 +1,356 @@
+package ui
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strconv"
+	"strings"
+
+	"gioui.org/layout"
+	"gioui.org/widget"
+	"gioui.org/widget/material"
+
+	"daemonlord.ygg/madplayer/internal/madshare"
+	"daemonlord.ygg/madplayer/internal/prefs"
+)
+
+// The servers panel: sign in to somebody else's madshare, and say how much of
+// their music this device is willing to keep on disk.
+//
+// There is no "your account" section here and there will not be one for the
+// LOCAL library, because there is no local account (docs/ui/madplayer.md §"There
+// is no local account"). What appears once signed in belongs to the REMOTE
+// server: a username this device authenticates as, and a token that server can
+// revoke. Shipping the web UI's settings page wholesale would ask a person to
+// manage credentials for a database on their own phone that nothing else can
+// reach.
+
+func (a *App) serversPanel(gtx C) D {
+	a.mu.Lock()
+	servers := append([]prefs.Server(nil), a.cfg.Servers...)
+	msg, busy := a.srvMsg, a.srvBusy
+	a.mu.Unlock()
+
+	if len(a.rmServer) < len(servers) {
+		a.rmServer = append(a.rmServer, make([]widget.Clickable, len(servers)-len(a.rmServer))...)
+	}
+	for i := range servers {
+		if i < len(a.rmServer) && a.rmServer[i].Clicked(gtx) {
+			a.signOut(servers[i])
+		}
+	}
+	if a.btnSignIn.Clicked(gtx) && !busy {
+		a.signIn(a.srvAddr.Text(), a.srvUser.Text(), a.srvPass.Text())
+	}
+	if a.btnCacheSave.Clicked(gtx) {
+		a.saveCacheLimit(a.cacheEd.Text())
+	}
+	if a.btnCacheDrop.Clicked(gtx) {
+		a.clearCache()
+	}
+
+	return layout.Inset{Top: 16, Bottom: 16, Left: 20, Right: 20}.Layout(gtx, func(gtx C) D {
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+			layout.Rigid(func(gtx C) D { return a.sectionTitle(gtx, "Servers") }),
+			layout.Rigid(func(gtx C) D {
+				return a.sectionHint(gtx, "Sign in to a madshare to browse its library alongside your own. "+
+					"Its tracks are downloaded as they play, and kept in the cache below.")
+			}),
+
+			layout.Rigid(func(gtx C) D { return a.signInForm(gtx, busy) }),
+			layout.Rigid(func(gtx C) D {
+				if msg == "" {
+					return D{}
+				}
+				return layout.Inset{Top: 10}.Layout(gtx, func(gtx C) D {
+					l := material.Caption(a.th, msg)
+					l.Color = colDim
+					return l.Layout(gtx)
+				})
+			}),
+
+			layout.Rigid(layout.Spacer{Height: 16}.Layout),
+			layout.Flexed(1, func(gtx C) D {
+				if len(servers) == 0 {
+					return a.emptyState(gtx, "Not signed in to any server. Your own music plays without one.")
+				}
+				return material.List(a.th, &a.serverList).Layout(gtx, len(servers), func(gtx C, i int) D {
+					return a.serverRow(gtx, servers[i], &a.rmServer[i])
+				})
+			}),
+			layout.Rigid(func(gtx C) D { return a.cacheControls(gtx) }),
+		)
+	})
+}
+
+func (a *App) signInForm(gtx C, busy bool) D {
+	field := func(ed *widget.Editor, hint string, weight float32) layout.FlexChild {
+		return layout.Flexed(weight, func(gtx C) D {
+			e := material.Editor(a.th, ed, hint)
+			e.Color, e.HintColor = colFg, colDim
+			return filled(gtx, colSel, e.Layout)
+		})
+	}
+	return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+		field(&a.srvAddr, "music.example or 192.168.1.5:3000", 2),
+		layout.Rigid(layout.Spacer{Width: 8}.Layout),
+		field(&a.srvUser, "username", 1),
+		layout.Rigid(layout.Spacer{Width: 8}.Layout),
+		field(&a.srvPass, "password", 1),
+		layout.Rigid(layout.Spacer{Width: 8}.Layout),
+		layout.Rigid(func(gtx C) D {
+			label := "Sign in"
+			if busy {
+				label = "Signing in…"
+			}
+			return a.smallButton(gtx, &a.btnSignIn, label, busy)
+		}),
+	)
+}
+
+func (a *App) serverRow(gtx C, s prefs.Server, rm *widget.Clickable) D {
+	return layout.Inset{Top: 6, Bottom: 6}.Layout(gtx, func(gtx C) D {
+		return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+			layout.Flexed(1, func(gtx C) D {
+				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+					layout.Rigid(func(gtx C) D {
+						l := material.Body2(a.th, serverLabel(s))
+						l.Color = colFg
+						l.MaxLines = 1
+						return l.Layout(gtx)
+					}),
+					layout.Rigid(func(gtx C) D {
+						l := material.Caption(a.th, fmt.Sprintf("signed in as %s · %s", s.Username, s.Base))
+						l.Color = colDim
+						l.MaxLines = 1
+						return l.Layout(gtx)
+					}),
+				)
+			}),
+			layout.Rigid(func(gtx C) D { return a.smallButton(gtx, rm, "Sign out", false) }),
+		)
+	})
+}
+
+// cacheControls is the one resource decision this client asks a person to make.
+func (a *App) cacheControls(gtx C) D {
+	a.mu.Lock()
+	used := a.cacheUsed
+	a.mu.Unlock()
+
+	return layout.Inset{Top: 16}.Layout(gtx, func(gtx C) D {
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+			layout.Rigid(func(gtx C) D { return a.sectionTitle(gtx, "Downloaded music") }),
+			layout.Rigid(func(gtx C) D {
+				return a.sectionHint(gtx, fmt.Sprintf(
+					"Tracks played from a server are kept here so playing them again needs no network. "+
+						"Using %s. The oldest go first when the limit is reached.", human(used)))
+			}),
+			layout.Rigid(func(gtx C) D {
+				return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+					layout.Rigid(func(gtx C) D {
+						gtx.Constraints.Max.X = gtx.Dp(120)
+						e := material.Editor(a.th, &a.cacheEd, "2048")
+						e.Color, e.HintColor = colFg, colDim
+						return filled(gtx, colSel, e.Layout)
+					}),
+					layout.Rigid(layout.Spacer{Width: 8}.Layout),
+					layout.Rigid(func(gtx C) D {
+						l := material.Caption(a.th, "MiB  (0 = no limit)")
+						l.Color = colDim
+						return l.Layout(gtx)
+					}),
+					layout.Rigid(layout.Spacer{Width: 12}.Layout),
+					layout.Rigid(func(gtx C) D { return a.smallButton(gtx, &a.btnCacheSave, "Save", false) }),
+					layout.Rigid(layout.Spacer{Width: 8}.Layout),
+					layout.Rigid(func(gtx C) D { return a.smallButton(gtx, &a.btnCacheDrop, "Empty now", false) }),
+				)
+			}),
+		)
+	})
+}
+
+func (a *App) sectionTitle(gtx C, txt string) D {
+	l := material.Body1(a.th, txt)
+	l.Color = colFg
+	return l.Layout(gtx)
+}
+
+func (a *App) sectionHint(gtx C, txt string) D {
+	return layout.Inset{Top: 4, Bottom: 12}.Layout(gtx, func(gtx C) D {
+		l := material.Caption(a.th, txt)
+		l.Color = colDim
+		return l.Layout(gtx)
+	})
+}
+
+// --- actions ----------------------------------------------------------------
+
+// signIn exchanges a password for a token and saves the server.
+//
+// The password is never stored and is cleared from the field the moment it has
+// been spent — what survives is a token that server lists by name and can
+// revoke (internal/madshare.SignIn).
+func (a *App) signIn(addr, user, pass string) {
+	base, err := madshare.NormalizeBase(addr)
+	if err != nil {
+		a.setServerMsg(err.Error())
+		return
+	}
+	if strings.TrimSpace(user) == "" || pass == "" {
+		a.setServerMsg("type the username and password for that server")
+		return
+	}
+
+	a.mu.Lock()
+	a.srvBusy = true
+	a.srvMsg = "Signing in to " + base + "…"
+	a.mu.Unlock()
+	a.win.Invalidate()
+
+	go func() {
+		token, id, err := madshare.New(base, "").SignIn(context.Background(), user, pass)
+
+		a.mu.Lock()
+		a.srvBusy = false
+		if err != nil {
+			a.srvMsg = signInMessage(base, err)
+			a.mu.Unlock()
+			a.win.Invalidate()
+			return
+		}
+		a.cfg.SetServer(prefs.Server{Base: base, Username: id.Username, Token: token})
+		cfg := a.cfg
+		// An account without content.access still browses — the server narrows
+		// the listing rather than refusing — so an empty library is never
+		// evidence that signing in failed. Say which happened.
+		a.srvMsg = fmt.Sprintf("Signed in to %s as %s", base, id.Username)
+		if !id.Has("content.access") {
+			a.srvMsg += " — this account may only play what that server marks guest-playable"
+		}
+		a.mu.Unlock()
+
+		if err := a.store.Save(cfg); err != nil {
+			a.setServerMsg("signed in, but the credential could not be saved: " + err.Error())
+		}
+		a.srvPass.SetText("")
+		a.srvAddr.SetText("")
+		a.srvUser.SetText("")
+		a.applyServers()
+		a.reload()
+	}()
+}
+
+// signInMessage turns a refusal into the sentence that says what to do next.
+func signInMessage(base string, err error) string {
+	switch {
+	case errors.Is(err, madshare.ErrBadCredentials):
+		return "That username and password were not accepted by " + base
+	case errors.Is(err, madshare.ErrPasswordChangeRequired):
+		return "This account must change its password on " + base + " before it can be used here"
+	}
+	return "Could not sign in to " + base + ": " + err.Error()
+}
+
+// signOut forgets a server on THIS device. The token stays valid until it is
+// revoked on the server, where it is listed by name — said out loud, because a
+// person signing out reasonably assumes otherwise.
+func (a *App) signOut(s prefs.Server) {
+	a.mu.Lock()
+	a.cfg.RemoveServer(s.Base)
+	cfg := a.cfg
+	a.srvMsg = "Signed out of " + serverLabel(s) +
+		" — the token is still listed on that server until you revoke it there"
+	a.mu.Unlock()
+
+	go func() {
+		if err := a.store.Save(cfg); err != nil {
+			a.setServerMsg("could not save: " + err.Error())
+		}
+		a.applyServers()
+		a.reload()
+	}()
+}
+
+func (a *App) saveCacheLimit(text string) {
+	mb, err := strconv.Atoi(strings.TrimSpace(text))
+	if err != nil || mb < 0 {
+		a.setServerMsg("type a whole number of MiB, or 0 for no limit")
+		return
+	}
+	a.mu.Lock()
+	// 0 in the box means "no limit"; the config spells that -1, because 0 there
+	// is "nothing chosen" and resolves to the default.
+	if mb == 0 {
+		a.cfg.CacheMB = -1
+	} else {
+		a.cfg.CacheMB = mb
+	}
+	cfg := a.cfg
+	a.srvMsg = "Download limit saved"
+	a.mu.Unlock()
+
+	go func() {
+		if err := a.store.Save(cfg); err != nil {
+			a.setServerMsg("could not save: " + err.Error())
+			return
+		}
+		if a.cache != nil {
+			// Applied now, not at the next download: a person who has just
+			// lowered the limit expects the disk back.
+			a.cache.SetLimit(cfg.CacheLimit())
+		}
+		a.refreshCacheSize()
+	}()
+}
+
+func (a *App) clearCache() {
+	go func() {
+		if a.cache == nil {
+			return
+		}
+		if err := a.cache.Clear(); err != nil {
+			a.setServerMsg("could not empty the cache: " + err.Error())
+			return
+		}
+		a.setServerMsg("Downloaded music removed — it will be fetched again when played")
+		a.refreshCacheSize()
+	}()
+}
+
+// refreshCacheSize re-measures the cache directory. It walks the disk, so it is
+// done on demand rather than per frame.
+func (a *App) refreshCacheSize() {
+	if a.cache == nil {
+		return
+	}
+	n, err := a.cache.Size()
+	if err != nil {
+		return
+	}
+	a.mu.Lock()
+	a.cacheUsed = n
+	a.mu.Unlock()
+	a.win.Invalidate()
+}
+
+func (a *App) setServerMsg(msg string) {
+	a.mu.Lock()
+	a.srvMsg = msg
+	a.mu.Unlock()
+	a.win.Invalidate()
+}
+
+// human renders a byte count the way a person reads a disk.
+func human(n int64) string {
+	switch {
+	case n <= 0:
+		return "nothing"
+	case n < 1<<20:
+		return fmt.Sprintf("%d KiB", n>>10)
+	case n < 1<<30:
+		return fmt.Sprintf("%d MiB", n>>20)
+	}
+	return fmt.Sprintf("%.1f GiB", float64(n)/float64(1<<30))
+}

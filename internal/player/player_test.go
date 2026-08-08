@@ -89,6 +89,17 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Fatalf("timed out waiting for %s", what)
 }
 
+// waitPlaying waits for a track to be open and running.
+//
+// Starting a track is asynchronous — a remote one has to be downloaded first,
+// and resolving inline would freeze the window for the length of that download
+// — so a test that acts the instant SetQueue returns is acting before there is
+// anything to act on.
+func waitPlaying(t *testing.T, p *Player) {
+	t.Helper()
+	waitFor(t, "the track to start", p.Playing)
+}
+
 func TestProbeReportsDuration(t *testing.T) {
 	dir := t.TempDir()
 	path := writeWAV(t, dir, "a.wav", 2.5)
@@ -133,6 +144,7 @@ func TestTrackEndAdvancesTheQueue(t *testing.T) {
 	defer p.Close()
 
 	p.SetQueue([]*queue.Item{{Path: a}, {Path: b}}, 0)
+	waitPlaying(t, p)
 	sink.pump(1000)
 
 	waitFor(t, "the queue to advance to the second track", func() bool {
@@ -152,6 +164,7 @@ func TestRepeatOffStopsAtTheEnd(t *testing.T) {
 	defer p.Close()
 
 	p.SetQueue([]*queue.Item{{Path: a}}, 0)
+	waitPlaying(t, p)
 	sink.pump(1000)
 
 	waitFor(t, "playback to stop at the end of the queue", func() bool {
@@ -180,10 +193,10 @@ func TestAnUnplayableTrackAdvancesRatherThanStalling(t *testing.T) {
 
 	// The record must survive the NEXT track playing fine — otherwise the very
 	// skip the failure caused is what erases the evidence of it.
-	if p.Unplayable(bad) == nil {
+	if p.Unplayable(queue.Key(bad, "")) == nil {
 		t.Error("the broken track is not marked unplayable; its row cannot be flagged")
 	}
-	if p.Unplayable(good) != nil {
+	if p.Unplayable(queue.Key(good, "")) != nil {
 		t.Error("the good track was marked unplayable")
 	}
 	if p.TakeError() == nil {
@@ -203,6 +216,7 @@ func TestSeekStaysInsideTheTrack(t *testing.T) {
 	defer p.Close()
 
 	p.SetQueue([]*queue.Item{{Path: a}}, 0)
+	waitPlaying(t, p)
 
 	// Scrubbing to the very end must not read as "the track ended" and skip on.
 	p.Seek(99)

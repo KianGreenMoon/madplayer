@@ -2,20 +2,55 @@ package queue
 
 // Item is one entry in the queue.
 //
-// Path is the identity — the local analogue of the web UI's rowKey, which is
-// `ts:<tagset_id>` for a library appearance and falls back to `url:<url>`. A
-// local file has neither, and the path is what the decoder opens anyway.
+// A queue mixes libraries on purpose: a track on this device and a track on a
+// server can sit next to each other, because a play queue is about listening
+// order and not about where bytes live. Which is why an item carries BOTH ways
+// of reaching its audio — Path when this machine holds it, URL when only a
+// server does — and the player decides which to use.
 type Item struct {
-	Path     string  `json:"path"`
+	Path string `json:"path"`
+	URL  string `json:"url,omitempty"`
+	// Hash is the content hash, when the source knew one. It is the cache key,
+	// which is what makes the same audio fetched from two servers one file.
+	Hash string `json:"hash,omitempty"`
+	// Origin is the library this came from, for the badge on the row. Display
+	// only — nothing is addressed by it.
+	Origin string `json:"origin,omitempty"`
+
 	Title    string  `json:"title"`
 	Artist   string  `json:"artist"`
 	Album    string  `json:"album"`
 	Duration float64 `json:"duration,omitempty"`
 }
 
+// Key is the row identity, and the ONE place the rule lives: the local analogue
+// of the web UI's rowKey, which is `ts:<tagset_id>` for a library appearance and
+// falls back to `url:<url>`. A file on this device has neither, and its path is
+// what the decoder opens anyway.
+//
+// Exported because the browse list computes it for a row it has not yet turned
+// into an Item, and two spellings of "is this the row that is playing?" would
+// drift.
+func Key(path, url string) string {
+	if path != "" {
+		return "path:" + path
+	}
+	if url != "" {
+		return "url:" + url
+	}
+	return ""
+}
+
 // RowKey answers "is this the row I am looking at?" — it decides which row is
 // highlighted and whether clicking it toggles pause or restarts.
-func (i *Item) RowKey() string { return "path:" + i.Path }
+func (i *Item) RowKey() string { return Key(i.Path, i.URL) }
+
+// Remote reports that playing this costs a download: nothing on this machine
+// holds the bytes.
+func (i *Item) Remote() bool { return i.Path == "" && i.URL != "" }
+
+// Playable reports whether the item names audio at all.
+func (i *Item) Playable() bool { return i.Path != "" || i.URL != "" }
 
 // Repeat is the three-state repeat mode. It affects only what happens when a
 // track ENDS; manual Next/Prev always wrap regardless.

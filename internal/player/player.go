@@ -1,6 +1,8 @@
 package player
 
 import (
+	"context"
+	"errors"
 	"math"
 	"sync"
 	"time"
@@ -10,6 +12,16 @@ import (
 
 	"daemonlord.ygg/madplayer/internal/queue"
 )
+
+// Fetcher turns a remote queue item into a file on this machine.
+//
+// It exists because the decoders leave no choice: go-mp3 walks every frame
+// header before it will report a length, so "stream it" is not on the table and
+// a remote track is a download that finishes before it plays. The player does
+// not care where the file came from — only that it can be opened.
+type Fetcher interface {
+	Local(ctx context.Context, item *queue.Item) (string, error)
+}
 
 // Sink is the audio output.
 //
@@ -62,13 +74,26 @@ type Player struct {
 	src    *source
 	ctrl   *beep.Ctrl
 	vol    *effects.Volume
-	gen    uint64 // guards against a stale end-of-track callback
+	gen    uint64 // guards against a stale end-of-track callback, and a stale load
 	volume float64
 
-	// failed records why a track would not play, keyed by path. The contract is
-	// that a media error "marks its rows unavailable and advances", so this has
-	// to survive the next track succeeding — a single last-error field would be
-	// wiped by the very skip it caused.
+	// fetch makes a remote item's bytes local. It is nil in an offline build of
+	// the program's wiring, and a remote item then simply fails to play — which
+	// is the truth.
+	fetch Fetcher
+	// loading is a fetch in flight, which the UI says out loud: a remote track
+	// takes as long as its download, and silence with no explanation looks like
+	// a hang.
+	loading bool
+	// cancel stops the load in flight. Starting a track must abandon the
+	// previous one's download, or skipping through a queue would fetch every
+	// track it passed.
+	cancel context.CancelFunc
+
+	// failed records why a track would not play, keyed by queue.Key. The contract
+	// is that a media error "marks its rows unavailable and advances", so this
+	// has to survive the next track succeeding — a single last-error field would
+	// be wiped by the very skip it caused.
 	failed  map[string]error
 	lastErr error
 
@@ -262,12 +287,12 @@ func (p *Player) Restore(items, original []*queue.Item, index int, shuffled bool
 // --- playback ---------------------------------------------------------------
 
 // Unplayable reports why a track would not play, or nil if it has never failed.
-// The UI marks those rows rather than leaving the user to wonder why the queue
-// keeps skipping.
-func (p *Player) Unplayable(path string) error {
+// The key is queue.Key of the row. The UI marks those rows rather than leaving
+// the user to wonder why the queue keeps skipping.
+func (p *Player) Unplayable(key string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.failed[path]
+	return p.failed[key]
 }
 
 // TakeError pops the most recent failure so the UI can report it once. It is
@@ -286,8 +311,11 @@ func (p *Player) TakeError() error {
 func (p *Player) Toggle() {
 	p.mu.Lock()
 	if p.ctrl == nil {
+		loading := p.loading
 		p.mu.Unlock()
-		if p.Current() != nil {
+		// A track already downloading has been started; pressing play again
+		// must not start a second load of it.
+		if !loading && p.Current() != nil {
 			p.playCurrent()
 		}
 		return
@@ -421,6 +449,12 @@ func volumeToDB(v float64) float64 {
 }
 
 // playCurrent starts whatever the queue currently points at.
+//
+// Opening is done on a goroutine, not here, because a remote track has to be
+// downloaded first and this is called straight from a click handler — resolving
+// inline would freeze the window for the length of a download. The generation
+// counter that already guarded stale end-of-track callbacks does the same job
+// for a load that finishes after the user moved on.
 func (p *Player) playCurrent() {
 	item := p.Current()
 	if item == nil {
@@ -428,20 +462,57 @@ func (p *Player) playCurrent() {
 		return
 	}
 
-	src, err := open(item.Path)
-
 	p.mu.Lock()
 	p.sink.Clear()
 	p.src.Close()
 	p.src, p.ctrl, p.vol = nil, nil, nil
 	p.gen++
 	gen := p.gen
+	if p.cancel != nil {
+		p.cancel() // abandon the previous track's download
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	p.cancel = cancel
+	// Only a download is worth announcing. Opening a local file is fast enough
+	// that a "loading" flash would be noise.
+	p.loading = item.Remote()
+	p.mu.Unlock()
+	p.changed()
+
+	go p.load(ctx, gen, item)
+}
+
+// load resolves an item to a file, decodes it and installs it as the playing
+// source — unless the queue moved on while it was working.
+func (p *Player) load(ctx context.Context, gen uint64, item *queue.Item) {
+	path, err := p.resolve(ctx, item)
+	var src *source
+	if err == nil {
+		src, err = open(path)
+	}
+
+	p.mu.Lock()
+	if gen != p.gen {
+		// Superseded: something else is playing now. Drop what was opened rather
+		// than letting two tracks reach the sink.
+		p.mu.Unlock()
+		src.Close()
+		return
+	}
+	p.loading = false
 
 	if err != nil {
+		// A cancelled load is not a broken track — it is the user skipping past
+		// it — so it neither marks the row nor advances the queue.
+		if errors.Is(err, context.Canceled) {
+			p.mu.Unlock()
+			p.changed()
+			return
+		}
 		if p.failed == nil {
 			p.failed = make(map[string]error)
 		}
-		p.failed[item.Path] = err
+		p.failed[item.RowKey()] = err
 		p.lastErr = err
 		p.mu.Unlock()
 		p.changed()
@@ -453,17 +524,19 @@ func (p *Player) playCurrent() {
 	}
 
 	p.src = src
-	delete(p.failed, item.Path) // it played this time
+	delete(p.failed, item.RowKey()) // it played this time
 	streamer := beep.Streamer(src.streamer)
 	if src.format.SampleRate != SampleRate {
 		streamer = beep.Resample(resampleQuality, src.format.SampleRate, SampleRate, streamer)
 	}
 	p.ctrl = &beep.Ctrl{Streamer: streamer}
 	p.vol = &effects.Volume{Streamer: p.ctrl, Base: 2, Volume: volumeToDB(p.volume), Silent: p.volume == 0}
-	vol := p.vol
-	p.mu.Unlock()
 
-	p.sink.Play(beep.Seq(vol, beep.Callback(func() {
+	// Handing to the sink while still holding mu is deliberate: two loads can
+	// now finish at once, and releasing first would let a superseded one start
+	// playing after the winner already had. The lock order is always mu → sink,
+	// here as everywhere else in this file, so it cannot deadlock.
+	p.sink.Play(beep.Seq(p.vol, beep.Callback(func() {
 		// Runs on the sink's goroutine: hand off rather than doing work here,
 		// where taking the sink lock would deadlock.
 		select {
@@ -471,7 +544,42 @@ func (p *Player) playCurrent() {
 		default:
 		}
 	})))
+	p.mu.Unlock()
 	p.changed()
+}
+
+// resolve finds the file to decode. A local path is used as it is; anything else
+// is a download.
+func (p *Player) resolve(ctx context.Context, item *queue.Item) (string, error) {
+	if item.Path != "" {
+		return item.Path, nil
+	}
+	if item.URL == "" {
+		return "", errors.New("this track has no audio to play")
+	}
+	p.mu.Lock()
+	fetch := p.fetch
+	p.mu.Unlock()
+	if fetch == nil {
+		return "", errors.New("this track is on a server, and no connection is configured")
+	}
+	return fetch.Local(ctx, item)
+}
+
+// SetFetcher installs what downloads remote tracks. Without one, a remote item
+// says so rather than failing obscurely.
+func (p *Player) SetFetcher(f Fetcher) {
+	p.mu.Lock()
+	p.fetch = f
+	p.mu.Unlock()
+}
+
+// Loading reports a download in flight for the current track. The UI says so:
+// waiting with no explanation is indistinguishable from a hang.
+func (p *Player) Loading() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.loading
 }
 
 // watchEnds turns end-of-track callbacks into queue advances.
@@ -510,6 +618,11 @@ func (p *Player) stop() {
 	p.src.Close()
 	p.src, p.ctrl, p.vol = nil, nil, nil
 	p.gen++
+	p.loading = false
+	if p.cancel != nil {
+		p.cancel() // whatever was downloading, nobody is waiting for it now
+		p.cancel = nil
+	}
 	p.mu.Unlock()
 	p.changed()
 }

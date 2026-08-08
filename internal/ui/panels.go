@@ -1,14 +1,15 @@
 package ui
 
 import (
+	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 
 	"gioui.org/layout"
 	"gioui.org/widget"
 	"gioui.org/widget/material"
+
+	"daemonlord.ygg/madplayer/internal/backend"
 )
 
 // --- queue panel ------------------------------------------------------------
@@ -82,20 +83,20 @@ func (a *App) queuePanel(gtx C) D {
 // accepted, because a silently-ignored typo looks exactly like an empty library.
 func (a *App) settings(gtx C) D {
 	a.mu.Lock()
-	roots := append([]string(nil), a.cfg.Roots...)
+	folders := append([]backend.Folder(nil), a.folders...)
 	status, scanning := a.status, a.scanning
 	a.mu.Unlock()
 
-	if len(a.rmFolder) < len(roots) {
-		a.rmFolder = append(a.rmFolder, make([]widget.Clickable, len(roots)-len(a.rmFolder))...)
+	if len(a.rmFolder) < len(folders) {
+		a.rmFolder = append(a.rmFolder, make([]widget.Clickable, len(folders)-len(a.rmFolder))...)
 	}
-	for i := range roots {
+	for i := range folders {
 		if i < len(a.rmFolder) && a.rmFolder[i].Clicked(gtx) {
-			a.removeRoot(roots[i])
+			a.removeFolder(folders[i])
 		}
 	}
 	if a.btnAddFolder.Clicked(gtx) {
-		a.addRoot(a.folderEd.Text())
+		a.addFolder(a.folderEd.Text())
 	}
 	if a.btnRescan.Clicked(gtx) && !scanning {
 		a.Rescan()
@@ -151,17 +152,31 @@ func (a *App) settings(gtx C) D {
 
 			layout.Rigid(layout.Spacer{Height: 16}.Layout),
 			layout.Flexed(1, func(gtx C) D {
-				if len(roots) == 0 {
+				if len(folders) == 0 {
 					return a.emptyState(gtx, "No folders yet.")
 				}
-				return material.List(a.th, &a.queueList).Layout(gtx, len(roots), func(gtx C, i int) D {
+				return material.List(a.th, &a.queueList).Layout(gtx, len(folders), func(gtx C, i int) D {
 					return layout.Inset{Top: 6, Bottom: 6}.Layout(gtx, func(gtx C) D {
+						f := folders[i]
 						return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
 							layout.Flexed(1, func(gtx C) D {
-								l := material.Body2(a.th, roots[i])
-								l.Color = colFg
-								l.MaxLines = 1
-								return l.Layout(gtx)
+								return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+									layout.Rigid(func(gtx C) D {
+										l := material.Body2(a.th, f.Path)
+										l.Color = colFg
+										l.MaxLines = 1
+										return l.Layout(gtx)
+									}),
+									layout.Rigid(func(gtx C) D {
+										l := material.Caption(a.th, describeFolder(f))
+										l.Color = colDim
+										if f.Missing || f.Status == "error" {
+											l.Color = colWarn
+										}
+										l.MaxLines = 1
+										return l.Layout(gtx)
+									}),
+								)
 							}),
 							layout.Rigid(func(gtx C) D {
 								return a.smallButton(gtx, &a.rmFolder[i], "Remove", false)
@@ -174,70 +189,62 @@ func (a *App) settings(gtx C) D {
 	})
 }
 
-// addRoot validates before accepting. A path that does not exist, or is a file
-// rather than a directory, is refused with a reason — the alternative is a
-// scan that finds nothing and a user with no idea why.
-func (a *App) addRoot(raw string) {
-	path := strings.TrimSpace(raw)
-	if path == "" {
-		return
+// describeFolder is a folder's second line: how it went, or why it cannot be
+// read right now.
+//
+// A folder that is not currently mounted says so in those words. On a server a
+// vanished import is an incident; on a player it is an unplugged drive, and
+// calling that "0 tracks" or "error" would blame the user for ejecting a card.
+func describeFolder(f backend.Folder) string {
+	switch {
+	case f.Scanning():
+		return "Scanning…"
+	case f.Missing:
+		return "Not connected right now — nothing was removed from your library"
+	case f.Status == "error":
+		return "Could not be read"
 	}
-	if strings.HasPrefix(path, "~/") {
-		if home, err := os.UserHomeDir(); err == nil {
-			path = filepath.Join(home, path[2:])
-		}
+	s := fmt.Sprintf("%d tracks", f.Tracks)
+	if f.Failed > 0 {
+		s += fmt.Sprintf(" · %d unreadable", f.Failed)
 	}
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		a.setStatus("Not a usable path: " + err.Error())
-		return
+	if f.ScannedAt == 0 {
+		s += " · not scanned yet"
 	}
-	info, err := os.Stat(abs)
-	if err != nil {
-		a.setStatus("Cannot open " + abs + ": " + err.Error())
-		return
-	}
-	if !info.IsDir() {
-		a.setStatus(abs + " is a file, not a folder.")
-		return
-	}
+	return s
+}
 
-	a.mu.Lock()
-	for _, r := range a.cfg.Roots {
-		if r == abs {
-			a.mu.Unlock()
-			a.setStatus("Already watching " + abs)
+// addFolder imports a typed path in place. The backend validates it (and says
+// why when it refuses), so the only thing done here is clearing the box on
+// success — a path that vanishes from the field looks accepted, and one that
+// stays with a message next to it looks refused, which is exactly the truth in
+// each case.
+func (a *App) addFolder(raw string) {
+	if strings.TrimSpace(raw) == "" {
+		return
+	}
+	go func() {
+		f, err := a.be.AddFolder(context.Background(), raw)
+		if err != nil {
+			a.setStatus(err.Error())
 			return
 		}
-	}
-	a.cfg.Roots = append(a.cfg.Roots, abs)
-	cfg := a.cfg
-	a.mu.Unlock()
-
-	a.folderEd.SetText("")
-	_ = a.store.SaveConfig(cfg)
-	a.Rescan()
+		a.folderEd.SetText("")
+		a.setStatus("Importing " + f.Path + "…")
+		a.watchScan()
+	}()
 }
 
-func (a *App) removeRoot(path string) {
-	a.mu.Lock()
-	kept := a.cfg.Roots[:0]
-	for _, r := range a.cfg.Roots {
-		if r != path {
-			kept = append(kept, r)
+// removeFolder forgets a folder. The originals are untouched: this removes
+// library entries, never music.
+func (a *App) removeFolder(f backend.Folder) {
+	go func() {
+		if err := a.be.RemoveFolder(context.Background(), f.ID); err != nil {
+			a.setStatus(err.Error())
+			return
 		}
-	}
-	a.cfg.Roots = kept
-	cfg := a.cfg
-	a.mu.Unlock()
-
-	_ = a.store.SaveConfig(cfg)
-	a.Rescan()
-}
-
-func (a *App) setStatus(msg string) {
-	a.mu.Lock()
-	a.status = msg
-	a.mu.Unlock()
-	a.win.Invalidate()
+		a.setStatus("Removed " + f.Path + " — the files themselves are untouched")
+		a.loadFolders()
+		a.reload()
+	}()
 }

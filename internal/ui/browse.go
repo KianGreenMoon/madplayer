@@ -102,16 +102,17 @@ func (a *App) crumbSep(gtx C) D {
 // --- artists ----------------------------------------------------------------
 
 func (a *App) artistList(gtx C) D {
-	ix := a.index()
-	artists := ix.Artists()
+	a.mu.Lock()
+	artists := a.artists
+	scanning, loading, folders := a.scanning, a.loading, len(a.folders)
+	a.mu.Unlock()
 	if len(artists) == 0 {
-		a.mu.Lock()
-		scanning, roots := a.scanning, len(a.cfg.Roots)
-		a.mu.Unlock()
 		switch {
 		case scanning:
 			return a.emptyState(gtx, "Scanning…")
-		case roots == 0:
+		case loading:
+			return a.emptyState(gtx, "Reading your library…")
+		case folders == 0:
 			return a.emptyState(gtx, "No music folders yet. Open Folders to add one.")
 		default:
 			return a.emptyState(gtx, "No music found in your folders.")
@@ -124,8 +125,7 @@ func (a *App) artistList(gtx C) D {
 	return lst.Layout(gtx, len(artists), func(gtx C, i int) D {
 		ar := artists[i]
 		if a.rows[i].Clicked(gtx) {
-			a.artist, a.level = ar, levelAlbums
-			a.list.Position = layout.Position{}
+			a.drillArtist(ar)
 		}
 		return a.row(gtx, &a.rows[i], false, func(gtx C) D {
 			return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
@@ -146,8 +146,13 @@ func (a *App) albumList(gtx C) D {
 		a.level = levelArtists
 		return D{}
 	}
-	albums := a.index().Albums(a.artist.ID)
+	a.mu.Lock()
+	albums, loading := a.albums, a.loading
+	a.mu.Unlock()
 	if len(albums) == 0 {
+		if loading {
+			return a.emptyState(gtx, "Reading…")
+		}
 		return a.emptyState(gtx, "No albums found.")
 	}
 
@@ -157,8 +162,7 @@ func (a *App) albumList(gtx C) D {
 	return lst.Layout(gtx, len(albums), func(gtx C, i int) D {
 		al := albums[i]
 		if a.rows[i].Clicked(gtx) {
-			a.album, a.level = al, levelTracks
-			a.list.Position = layout.Position{}
+			a.drillAlbum(al)
 		}
 		meta := fmt.Sprintf("%d tracks", al.TrackCount)
 		if al.Year > 0 {
@@ -203,8 +207,13 @@ func (a *App) trackList(gtx C) D {
 	// release, not a slice of it — so a compilation reached from a performer's
 	// album list shows every track even though the row that led here counted
 	// only theirs. The breadcrumb naming the album artist is the explanation.
-	tracks := a.index().AlbumTracks(a.album.ID)
+	a.mu.Lock()
+	tracks, loading := a.tracks, a.loading
+	a.mu.Unlock()
 	if len(tracks) == 0 {
+		if loading {
+			return a.emptyState(gtx, "Reading…")
+		}
 		return a.emptyState(gtx, "No tracks found.")
 	}
 
@@ -227,14 +236,34 @@ func (a *App) trackList(gtx C) D {
 // playFrom makes the clicked view the queue, in the order shown — browsing
 // never changes the queue, only a click or an explicit edit does.
 func (a *App) playFrom(tracks []*library.Track, index int) {
+	want := tracks[index]
+	if !want.Available() {
+		a.notice = want.Title + " is not on this device right now"
+		return
+	}
 	cur := a.pl.Current()
-	if cur != nil && cur.Path == tracks[index].Path && a.pl.Playing() {
+	if cur != nil && cur.Path == want.Path && a.pl.Playing() {
 		a.pl.Toggle() // clicking the playing row toggles pause
 		return
 	}
 	if a.pl.SetQueue(a.itemsFromTracks(tracks), index) {
 		a.notice = "Queue replaced — Undo to restore it"
 	}
+}
+
+// trackProblem is why a row cannot be played, in the user's terms — and the two
+// reasons are deliberately different sentences. Bytes this machine cannot reach
+// are somebody's unplugged drive; a container Go has no decoder for is this
+// program's own limit. Reporting either as "missing" would be a lie about a file
+// that is perfectly fine.
+func trackProblem(pl *player.Player, t *library.Track) string {
+	switch {
+	case !t.Available():
+		return "not on this device right now"
+	case pl.Unplayable(t.Path) != nil, !player.Decodable(t.Path):
+		return "cannot be played"
+	}
+	return ""
 }
 
 func (a *App) discHeader(gtx C, txt string) D {
@@ -250,10 +279,9 @@ func (a *App) discHeader(gtx C, txt string) D {
 // The per-row artist is the PERFORMER — the track's own credit, not the album
 // artist — which is what makes a compilation readable.
 func (a *App) trackRow(gtx C, click *widget.Clickable, t *library.Track, fallbackNum int) D {
-	ix := a.index()
 	cur := a.pl.Current()
-	playing := cur != nil && cur.Path == t.Path
-	broken := a.pl.Unplayable(t.Path) != nil || !player.Decodable(t.Path)
+	playing := t.Available() && cur != nil && cur.Path == t.Path
+	problem := trackProblem(a.pl, t)
 
 	// The number is the tag when present, else the row's position, so a column
 	// of numbers never has holes in it.
@@ -272,15 +300,15 @@ func (a *App) trackRow(gtx C, click *widget.Clickable, t *library.Track, fallbac
 			}),
 			layout.Flexed(1, func(gtx C) D {
 				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-					layout.Rigid(func(gtx C) D { return a.rowTitle(gtx, t.DisplayTitle(), playing) }),
+					layout.Rigid(func(gtx C) D { return a.rowTitle(gtx, t.Title, playing) }),
 					layout.Rigid(func(gtx C) D {
-						sub := ix.ArtistName(t)
-						if broken {
-							sub += "  ·  cannot be played"
+						sub := t.Artist
+						if problem != "" {
+							sub += "  ·  " + problem
 						}
 						l := material.Caption(a.th, sub)
 						l.Color = colDim
-						if broken {
+						if problem != "" {
 							l.Color = colWarn
 						}
 						l.MaxLines = 1
@@ -328,7 +356,6 @@ func (a *App) searchResults(gtx C) D {
 		return a.emptyState(gtx, "Nothing found.")
 	}
 
-	ix := a.index()
 	a.ensureRows(len(items))
 	lst := material.List(a.th, &a.list)
 	lst.Indicator.Color = colLine
@@ -341,8 +368,9 @@ func (a *App) searchResults(gtx C) D {
 		switch {
 		case it.artist != nil:
 			if clicked {
-				a.artist, a.level, a.view = it.artist, levelAlbums, viewBrowse
+				a.view = viewBrowse
 				a.search.SetText("")
+				a.drillArtist(it.artist)
 			}
 			return a.row(gtx, &a.rows[i], false, func(gtx C) D {
 				return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
@@ -355,9 +383,13 @@ func (a *App) searchResults(gtx C) D {
 			})
 		case it.album != nil:
 			if clicked {
-				a.album, a.artist = it.album, ix.Artist(it.album.ArtistID)
-				a.level, a.view = levelTracks, viewBrowse
+				// The breadcrumb needs an artist to name, and the row carries the
+				// album's own — which IS the album artist, so the crumb is right
+				// without a query for it.
+				a.artist = &library.Artist{ID: it.album.ArtistID, Name: it.album.ArtistName}
+				a.view = viewBrowse
 				a.search.SetText("")
+				a.drillAlbum(it.album)
 			}
 			return a.row(gtx, &a.rows[i], false, func(gtx C) D {
 				return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,

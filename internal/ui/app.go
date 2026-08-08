@@ -19,8 +19,10 @@ import (
 	"gioui.org/widget"
 	"gioui.org/widget/material"
 
+	"daemonlord.ygg/madplayer/internal/backend"
 	"daemonlord.ygg/madplayer/internal/library"
 	"daemonlord.ygg/madplayer/internal/player"
+	"daemonlord.ygg/madplayer/internal/prefs"
 	"daemonlord.ygg/madplayer/internal/queue"
 )
 
@@ -50,18 +52,31 @@ const (
 )
 
 // App is the whole program's UI state.
+//
+// Browse rows are FETCHED ON NAVIGATION and held, never queried per frame: every
+// list here is a database call into the embedded backend, and a layout function
+// runs sixty times a second.
 type App struct {
 	win   *app.Window
 	th    *material.Theme
-	store *library.Store
+	store *prefs.Store
 	pl    *player.Player
+	be    *backend.Backend
+	lib   *library.Library
 
-	// mu guards everything a background scan or probe pass writes.
-	mu       sync.Mutex
-	cfg      library.Config
-	tracks   []*library.Track
-	idx      *library.Index
+	// mu guards everything a background load, scan or probe pass writes.
+	mu      sync.Mutex
+	cfg     prefs.Config
+	folders []backend.Folder
+
+	// the rows currently on screen, one slice per drill level
+	artists []*library.Artist
+	albums  []*library.Album
+	tracks  []*library.Track
+	found   library.SearchResults
+
 	scanning bool
+	loading  bool
 	status   string
 	notice   string
 
@@ -70,7 +85,6 @@ type App struct {
 
 	artist *library.Artist
 	album  *library.Album
-	found  library.SearchResults
 
 	// widgets
 	list                                 widget.List
@@ -89,19 +103,17 @@ type App struct {
 	btnAddFolder, btnRescan, btnUndo     widget.Clickable
 	rmFolder                             []widget.Clickable
 	rmQueue                              []widget.Clickable
-
-	scanCancel context.CancelFunc
 }
 
-// New wires the UI to a player and loads whatever the last run indexed.
-func New(win *app.Window, pl *player.Player) *App {
-	a := &App{win: win, th: newTheme(), store: library.DefaultStore(), pl: pl}
+// New wires the UI to a player and the embedded backend.
+func New(win *app.Window, pl *player.Player, be *backend.Backend) *App {
+	a := &App{win: win, th: newTheme(), store: prefs.Default(), pl: pl, be: be, lib: library.New(be.Library())}
 	a.list.Axis = layout.Vertical
 	a.queueList.Axis = layout.Vertical
 	a.search.SingleLine = true
 	a.folderEd.SingleLine = true
 
-	cfg, err := a.store.LoadConfig()
+	cfg, err := a.store.Load()
 	if err != nil {
 		a.status = "settings could not be read: " + err.Error()
 	}
@@ -109,117 +121,213 @@ func New(win *app.Window, pl *player.Player) *App {
 	a.vol.Value = float32(cfg.Volume)
 	pl.SetVolume(cfg.Volume)
 
-	// Start from the cached index so the library is browsable immediately; a
-	// rescan then reconciles it with the disk in the background.
-	a.setTracks(a.store.LoadTracks())
-	if len(a.cfg.Roots) == 0 {
-		a.view = viewSettings
-		a.status = "Add a music folder to get started."
-	} else {
-		a.Rescan()
-	}
-
 	// The player advances the queue from its own goroutine, so a repaint has to
 	// be asked for rather than assumed.
 	pl.OnChange = func() { win.Invalidate() }
+
+	// Hand over the folders an older, self-scanning madplayer kept in its config,
+	// so an upgrade re-imports the same music instead of looking like it lost it.
+	legacy := a.store.TakeLegacyRoots(&a.cfg)
+	go a.start(legacy)
 	return a
 }
 
-func (a *App) setTracks(tracks []*library.Track) {
-	a.mu.Lock()
-	a.tracks = tracks
-	a.idx = library.Build(tracks)
-	a.mu.Unlock()
-}
-
-// index returns the current index; never nil.
-func (a *App) index() *library.Index {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.idx == nil {
-		a.idx = library.Build(nil)
+// start loads the library, importing any handed-over folders first.
+func (a *App) start(adopt []string) {
+	ctx := context.Background()
+	for _, root := range adopt {
+		if _, err := a.be.AddFolder(ctx, root); err != nil {
+			a.setStatus("could not re-import " + root + ": " + err.Error())
+			continue
+		}
+		a.setStatus("Importing " + root + "…")
+		a.be.WaitScan()
 	}
-	return a.idx
+	a.loadFolders()
+	a.reload()
+
+	a.mu.Lock()
+	none := len(a.folders) == 0
+	a.mu.Unlock()
+	if none {
+		a.mu.Lock()
+		a.view = viewSettings
+		a.status = "Add a music folder to get started."
+		a.mu.Unlock()
+		a.win.Invalidate()
+	}
 }
 
-// Rescan walks the configured folders in the background.
+// reload fetches the rows for whatever level is showing. Called after a scan, a
+// folder change, or a drill.
+func (a *App) reload() {
+	a.mu.Lock()
+	lvl, artist, album := a.level, a.artist, a.album
+	a.loading = true
+	a.mu.Unlock()
+
+	ctx := context.Background()
+	switch lvl {
+	case levelAlbums:
+		if artist != nil {
+			albums, err := a.lib.Albums(ctx, artist.ID)
+			a.finishLoad(func() { a.albums, a.loading = albums, false }, err)
+			return
+		}
+	case levelTracks:
+		if album != nil {
+			tracks, err := a.lib.AlbumTracks(ctx, album)
+			a.finishLoad(func() { a.tracks, a.loading = tracks, false }, err)
+			a.probeDurations()
+			return
+		}
+	}
+	artists, err := a.lib.Artists(ctx)
+	a.finishLoad(func() { a.artists, a.loading = artists, false }, err)
+}
+
+// finishLoad applies a loaded result under the lock and reports a failure in the
+// status line. A load that fails must not look like an empty library.
+func (a *App) finishLoad(apply func(), err error) {
+	a.mu.Lock()
+	a.loading = false
+	if err != nil {
+		a.status = "could not read the library: " + err.Error()
+	} else {
+		apply()
+	}
+	a.mu.Unlock()
+	a.win.Invalidate()
+}
+
+// drill opens an artist, loading their albums in the background.
+func (a *App) drillArtist(ar *library.Artist) {
+	a.mu.Lock()
+	a.artist, a.album, a.level, a.albums = ar, nil, levelAlbums, nil
+	a.mu.Unlock()
+	a.list.Position = layout.Position{}
+	go a.reload()
+}
+
+// drillAlbum opens an album, loading its tracks in the background.
+func (a *App) drillAlbum(al *library.Album) {
+	a.mu.Lock()
+	a.album, a.level, a.tracks = al, levelTracks, nil
+	a.mu.Unlock()
+	a.list.Position = layout.Position{}
+	go a.reload()
+}
+
+// loadFolders refreshes the folder list.
+func (a *App) loadFolders() {
+	folders, err := a.be.Folders(context.Background())
+	a.mu.Lock()
+	if err != nil {
+		a.status = "could not read the folder list: " + err.Error()
+	} else {
+		a.folders = folders
+		a.scanning = false
+		for _, f := range folders {
+			if f.Scanning() {
+				a.scanning = true
+			}
+		}
+	}
+	a.mu.Unlock()
+	a.win.Invalidate()
+}
+
+// watchScan follows a running scan to its end, refreshing the folder list as it
+// goes and the library once when it finishes.
+//
+// It polls, deliberately: the scan runs inside the backend and reports through
+// the data-source row rather than through a channel this process owns. One second
+// is slow enough to cost nothing and fast enough that a small folder does not
+// look stuck.
+func (a *App) watchScan() {
+	go func() {
+		for {
+			a.loadFolders()
+			if !a.be.ScanRunning() {
+				break
+			}
+			time.Sleep(time.Second)
+		}
+		a.loadFolders()
+		a.reload()
+	}()
+}
+
+// Rescan re-reads every folder, one at a time (the backend scans one folder at a
+// time, and asking for two is an error rather than a queue).
 func (a *App) Rescan() {
 	a.mu.Lock()
 	if a.scanning {
 		a.mu.Unlock()
 		return
 	}
-	roots := append([]string(nil), a.cfg.Roots...)
-	prev := library.TrackMap(a.tracks)
 	a.scanning = true
 	a.status = "Scanning…"
-	ctx, cancel := context.WithCancel(context.Background())
-	a.scanCancel = cancel
+	folders := append([]backend.Folder(nil), a.folders...)
 	a.mu.Unlock()
 	a.win.Invalidate()
 
 	go func() {
-		defer cancel()
-		tracks, sum := library.Scan(ctx, roots, prev, func(s library.ScanSummary) {
-			a.mu.Lock()
-			a.status = fmt.Sprintf("Scanning… %d files", s.Scanned)
-			a.mu.Unlock()
-			a.win.Invalidate()
-		})
-
-		a.setTracks(tracks)
+		ctx := context.Background()
+		for _, f := range folders {
+			if err := a.be.RescanFolder(ctx, f.ID); err != nil {
+				a.setStatus(f.Path + ": " + err.Error())
+				continue
+			}
+			a.be.WaitScan()
+			a.loadFolders()
+		}
 		a.mu.Lock()
 		a.scanning = false
-		a.status = describeScan(sum, len(tracks))
+		a.status = describeFolders(a.folders)
 		a.mu.Unlock()
-
-		if err := a.store.SaveTracks(tracks); err != nil {
-			a.mu.Lock()
-			a.status += " (index not saved: " + err.Error() + ")"
-			a.mu.Unlock()
-		}
-		a.win.Invalidate()
-		a.probeDurations()
+		a.reload()
 	}()
 }
 
-func describeScan(sum library.ScanSummary, total int) string {
-	s := fmt.Sprintf("%d tracks", total)
-	if sum.Added > 0 {
-		s += fmt.Sprintf(" · %d new", sum.Added)
-	}
-	if sum.Updated > 0 {
-		s += fmt.Sprintf(" · %d changed", sum.Updated)
-	}
-	// Failures are named, not just counted: a scan that quietly indexed 9 of 10
-	// files is a scan that lost one.
-	if sum.Failed > 0 {
-		s += fmt.Sprintf(" · %d unreadable", sum.Failed)
-		if len(sum.Errors) > 0 {
-			s += " (" + sum.Errors[0] + ")"
+// describeFolders is the status line: what was found, and what could not be read.
+// Failures are named rather than only counted — a scan that indexed 9 of 10 files
+// is a scan that lost one.
+func describeFolders(folders []backend.Folder) string {
+	tracks, failed, missing := 0, 0, 0
+	for _, f := range folders {
+		tracks += f.Tracks
+		failed += f.Failed
+		if f.Missing {
+			missing++
 		}
+	}
+	s := fmt.Sprintf("%d tracks in %d folder(s)", tracks, len(folders))
+	if failed > 0 {
+		s += fmt.Sprintf(" · %d unreadable", failed)
+	}
+	if missing > 0 {
+		s += fmt.Sprintf(" · %d folder(s) not connected", missing)
 	}
 	return s
 }
 
-// probeDurations fills in lengths the tags did not carry.
+// probeDurations fills in lengths the backend has none for.
 //
-// It runs AFTER the list is already on screen, which is the rule
-// docs/ui/library-page.md sets: the row renders immediately with "—" rather than
-// the library waiting on a walk over every file.
+// The backend measures duration with ffprobe; on a host without it every row
+// would read "—" forever, and this client can decode the file itself. It is
+// DISPLAY ONLY — nothing is written back — and it runs after the list is already
+// on screen, which is the rule docs/ui/library-page.md sets.
 func (a *App) probeDurations() {
 	go func() {
 		a.mu.Lock()
-		todo := make([]*library.Track, 0, 64)
+		todo := make([]*library.Track, 0, 32)
 		for _, t := range a.tracks {
-			if t.Duration == 0 && player.Decodable(t.Path) {
+			if t.Duration == 0 && t.Available() && player.Decodable(t.Path) {
 				todo = append(todo, t)
 			}
 		}
 		a.mu.Unlock()
-		if len(todo) == 0 {
-			return
-		}
 
 		for i, t := range todo {
 			d, err := player.Probe(t.Path)
@@ -233,11 +341,9 @@ func (a *App) probeDurations() {
 				a.win.Invalidate()
 			}
 		}
-		a.mu.Lock()
-		tracks := a.tracks
-		a.mu.Unlock()
-		_ = a.store.SaveTracks(tracks)
-		a.win.Invalidate()
+		if len(todo) > 0 {
+			a.win.Invalidate()
+		}
 	}()
 }
 
@@ -272,7 +378,7 @@ func (a *App) save() {
 	cfg := a.cfg
 	a.mu.Unlock()
 	cfg.Volume = a.pl.Volume()
-	_ = a.store.SaveConfig(cfg)
+	_ = a.store.Save(cfg)
 }
 
 func (a *App) layout(gtx C) D {
@@ -320,9 +426,11 @@ func (a *App) update(gtx C) {
 	}
 	if a.crumbHome.Clicked(gtx) {
 		a.level, a.artist, a.album = levelArtists, nil, nil
+		go a.reload()
 	}
 	if a.crumbArt.Clicked(gtx) {
 		a.level, a.album = levelAlbums, nil
+		go a.reload()
 	}
 
 	// Search switches views without moving the control that did it, and
@@ -335,8 +443,8 @@ func (a *App) update(gtx C) {
 		if _, isChange := ev.(widget.ChangeEvent); isChange {
 			q := a.search.Text()
 			if len([]rune(q)) >= 2 {
-				a.found = a.index().Search(q)
 				a.view = viewSearch
+				go a.doSearch(q)
 			} else if a.view == viewSearch {
 				a.view = viewBrowse
 			}
@@ -382,6 +490,21 @@ func (a *App) update(gtx C) {
 	}
 }
 
+// doSearch runs a search in the background. The query is re-checked on arrival:
+// a slower answer for text the user has already replaced is dropped rather than
+// painted over the newer one.
+func (a *App) doSearch(q string) {
+	res, err := a.lib.Search(context.Background(), q)
+	a.mu.Lock()
+	if err != nil {
+		a.status = "search failed: " + err.Error()
+	} else if a.search.Text() == q {
+		a.found = res
+	}
+	a.mu.Unlock()
+	a.win.Invalidate()
+}
+
 func toggleView(cur, want view) view {
 	if cur == want {
 		return viewBrowse
@@ -393,9 +516,11 @@ func (a *App) drillUp() bool {
 	switch a.level {
 	case levelTracks:
 		a.level, a.album = levelAlbums, nil
+		go a.reload()
 		return true
 	case levelAlbums:
 		a.level, a.artist = levelArtists, nil
+		go a.reload()
 		return true
 	}
 	return false
@@ -498,22 +623,24 @@ func (a *App) emptyState(gtx C, msg string) D {
 }
 
 // itemsFromTracks converts library rows into queue items, capturing the display
-// text so the queue survives the index being rebuilt under it.
+// text so the queue survives the rows being refetched under it.
 func (a *App) itemsFromTracks(tracks []*library.Track) []*queue.Item {
-	ix := a.index()
 	out := make([]*queue.Item, len(tracks))
 	for i, t := range tracks {
-		album := ""
-		if al := ix.Album(t.AlbumID); al != nil {
-			album = al.Title
-		}
 		out[i] = &queue.Item{
 			Path:     t.Path,
-			Title:    t.DisplayTitle(),
-			Artist:   ix.ArtistName(t),
-			Album:    album,
+			Title:    t.Title,
+			Artist:   t.Artist,
+			Album:    t.Album,
 			Duration: t.Duration,
 		}
 	}
 	return out
+}
+
+func (a *App) setStatus(msg string) {
+	a.mu.Lock()
+	a.status = msg
+	a.mu.Unlock()
+	a.win.Invalidate()
 }

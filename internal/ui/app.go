@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"fmt"
+	"log"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -25,6 +26,7 @@ import (
 	"daemonlord.ygg/madplayer/internal/blobcache"
 	"daemonlord.ygg/madplayer/internal/library"
 	"daemonlord.ygg/madplayer/internal/madshare"
+	"daemonlord.ygg/madplayer/internal/mesh"
 	"daemonlord.ygg/madplayer/internal/player"
 	"daemonlord.ygg/madplayer/internal/prefs"
 	"daemonlord.ygg/madplayer/internal/queue"
@@ -71,6 +73,10 @@ type App struct {
 	lib   *library.Library
 	cache *blobcache.Cache
 	fetch *remote.Fetcher
+	// enrol keeps this device's standing with each home server when the mesh is
+	// running: a vouch, a way onto the underlay, and an advertisement of what it
+	// holds. Nil when the mesh is off, which is the default.
+	enrol *mesh.Enrolment
 
 	// mu guards everything a background load, scan or probe pass writes.
 	mu      sync.Mutex
@@ -181,6 +187,14 @@ func New(win *app.Window, pl *player.Player, be *backend.Backend) *App {
 		win.Invalidate()
 	}
 
+	// The mesh, when this device is a node. Started before the servers are
+	// applied, so the first enrolment round happens on the same pass that first
+	// learns which servers there are.
+	if node, up := be.Mesh(); up {
+		a.enrol = mesh.New(node, log.Default())
+		go a.enrol.Run(context.Background())
+	}
+
 	// Hand over the folders an older, self-scanning madplayer kept in its config,
 	// so an upgrade re-imports the same music instead of looking like it lost it.
 	legacy := a.store.TakeLegacyRoots(&a.cfg)
@@ -207,6 +221,21 @@ func (a *App) applyServers() {
 	a.lib.SetServers(servers)
 	if a.fetch != nil {
 		a.fetch.SetServers(servers)
+	}
+	if a.enrol != nil {
+		// The same list, in the mesh's own vocabulary. Signing out of a server
+		// has to reach here too: it stops this device taking that server's word
+		// about strangers, which is a fact about the mesh and not only about the
+		// screen.
+		homes := make([]mesh.Server, 0, len(saved))
+		for _, s := range saved {
+			homes = append(homes, mesh.Server{
+				Base:   s.Base,
+				Label:  serverLabel(s),
+				Client: madshare.New(s.Base, s.Token),
+			})
+		}
+		go a.enrol.SetServers(context.Background(), homes)
 	}
 }
 

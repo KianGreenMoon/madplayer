@@ -18,6 +18,7 @@ import (
 	"daemonlord.ygg/madplayer/internal/audio"
 	"daemonlord.ygg/madplayer/internal/backend"
 	"daemonlord.ygg/madplayer/internal/player"
+	"daemonlord.ygg/madplayer/internal/prefs"
 	"daemonlord.ygg/madplayer/internal/ui"
 )
 
@@ -44,10 +45,23 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	// The mesh switch has to be read before the backend starts, because whether
+	// this device is a node is decided in the config the backend is built from.
+	// There is no turning it on later without a restart, and pretending otherwise
+	// would mean two ways to be a node that could disagree.
+	settings, err := prefs.Default().Load()
+	if err != nil {
+		// Not fatal: a settings file that cannot be read costs the volume and the
+		// server list, not the music. The UI reloads it and says so.
+		log.Printf("madplayer: settings: %v", err)
+	}
 	// The backend is started before the window: a library that cannot be opened
 	// is not something to discover after painting a frame, and the startup passes
 	// take long enough on a large library to be worth doing once, up front.
-	be, err := backend.Open(context.Background(), dir, log.Default())
+	be, err := backend.Open(context.Background(), dir, log.Default(), backend.Options{
+		Mesh:  settings.Mesh,
+		Peers: settings.MeshPeers,
+	})
 	if err != nil {
 		return err
 	}

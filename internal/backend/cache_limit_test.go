@@ -14,7 +14,7 @@ import (
 
 func openBackend(t *testing.T) *Backend {
 	t.Helper()
-	be, err := Open(context.Background(), t.TempDir(), log.New(io.Discard, "", 0))
+	be, err := Open(context.Background(), t.TempDir(), log.New(io.Discard, "", 0), Options{})
 	if err != nil {
 		t.Fatalf("open backend: %v", err)
 	}
@@ -45,7 +45,7 @@ func TestTheChosenCeilingSurvivesAndClearingRestoresTheDefault(t *testing.T) {
 	dir := t.TempDir()
 	pin := func(n int64) *int64 { return &n }
 
-	be, err := Open(ctx, dir, log.New(io.Discard, "", 0))
+	be, err := Open(ctx, dir, log.New(io.Discard, "", 0), Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +56,7 @@ func TestTheChosenCeilingSurvivesAndClearingRestoresTheDefault(t *testing.T) {
 	}
 	be.Close()
 
-	again, err := Open(ctx, dir, log.New(io.Discard, "", 0))
+	again, err := Open(ctx, dir, log.New(io.Discard, "", 0), Options{})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -24,6 +24,7 @@ import (
 	"daemonlord.ygg/madshare/app"
 	"daemonlord.ygg/madshare/auth"
 	"daemonlord.ygg/madshare/config"
+	"daemonlord.ygg/madshare/media"
 	"daemonlord.ygg/madshare/sources"
 )
 
@@ -39,6 +40,29 @@ type Backend struct {
 	owner sql.NullInt64
 	dir   string
 	log   *log.Logger
+
+	net     app.Network
+	meshWhy string
+}
+
+// Options are the choices a person made that the backend cannot infer.
+//
+// Only the mesh is here, because only the mesh is optional. Everything else this
+// package does — the library, the folders, the identity nobody types — is what
+// madplayer IS, and a player with no library is not a configuration anybody
+// wants.
+type Options struct {
+	// Mesh joins the madnetwork: this device becomes a node with its own key,
+	// fetches from the swarm and seeds back what it fetched
+	// (docs/ui/madplayer.md §"Level 2b"). Off by default — it costs bandwidth
+	// and disk, and a player that only plays your own music should not quietly
+	// start talking to strangers.
+	Mesh bool
+	// Peers are underlay peering URIs typed by hand. Usually empty: a device
+	// normally reaches the mesh through what its home server publishes, or over
+	// the local network. This is the fallback for somebody who has a peer and
+	// neither of the other two.
+	Peers []string
 }
 
 // Open starts madshare against dataDir, provisioning the owner on first run.
@@ -51,14 +75,15 @@ type Backend struct {
 // variable this program never sets. The interrupted-first-run case (a database
 // with no users) is covered by retrying with a fresh secret rather than by
 // guessing up front.
-func Open(ctx context.Context, dataDir string, lg *log.Logger) (*Backend, error) {
+func Open(ctx context.Context, dataDir string, lg *log.Logger, opts Options) (*Backend, error) {
 	if lg == nil {
 		lg = log.Default()
 	}
 	if dataDir == "" {
 		return nil, errors.New("backend: no data directory")
 	}
-	cfg, err := playerConfig(dataDir)
+	cfg, why := playerConfig(dataDir, opts)
+	cfg, err := cfg.Prepare()
 	if err != nil {
 		return nil, err
 	}
@@ -87,18 +112,47 @@ func Open(ctx context.Context, dataDir string, lg *log.Logger) (*Backend, error)
 		inst.Stop(context.Background())
 		return nil, fmt.Errorf("backend: resolve owner: %w", err)
 	}
-	b := &Backend{inst: inst, dir: dataDir, log: lg}
+	b := &Backend{inst: inst, dir: dataDir, log: lg, meshWhy: why}
 	if ok {
 		// Not fatal when absent: an install provisioned under a different name
 		// still browses and plays, it just cannot attribute what it imports.
 		b.owner = sql.NullInt64{Int64: id, Valid: true}
 	}
+	if net, up := inst.Network(); up {
+		// The listener node's standing rule, applied before anything can ask:
+		// this device's own library is never advertised or served, whatever it
+		// ends up able to place (docs/architecture/federation.md §"The
+		// household"). Not fatal, but the mesh does not run without it — a device
+		// that cannot be pinned must not run unpinned.
+		if err := net.PublishNothing(ctx); err != nil {
+			lg.Printf("madplayer: could not pin this device to publishing nothing: %v", err)
+			b.meshWhy = "this device could not be pinned to publishing nothing, so the madnetwork is off"
+		} else {
+			b.net = net
+		}
+	}
 	return b, nil
 }
 
+// Mesh is this device's madnetwork surface, and whether it is running.
+func (b *Backend) Mesh() (app.Network, bool) { return b.net, b.net != nil }
+
+// MeshProblem says why the madnetwork is not running, or "" when it is (or was
+// never asked for).
+//
+// It exists because the answer is usually not "you turned it off": the mesh
+// needs fpcalc, which is a thing a person installs rather than a thing a player
+// ships, and a switch that silently does nothing is the worst possible way to
+// tell them that.
+func (b *Backend) MeshProblem() string { return b.meshWhy }
+
 // playerConfig is the config a player runs on: one directory, no listener, and no
 // allow-list on the folders its owner may add.
-func playerConfig(dataDir string) (config.Config, error) {
+//
+// The second return is why the mesh is off, empty when it is on or was not asked
+// for. Returned rather than logged because it is a sentence for the person who
+// flipped the switch, not for a log nobody opens.
+func playerConfig(dataDir string, opts Options) (config.Config, string) {
 	cfg := config.Default()
 	cfg.DataDir = dataDir
 	// No [[listen]]: nothing is served, ever (docs/ui/madplayer.md).
@@ -113,7 +167,33 @@ func playerConfig(dataDir string) (config.Config, error) {
 	// would fill from its TOML file — so the settings panel's "Default" is a real
 	// number here rather than "no limit".
 	cfg.Federation.CacheMaxMB = DefaultCacheMB
-	return cfg.Prepare()
+	if !opts.Mesh {
+		return cfg, ""
+	}
+	// fpcalc is required of a federated node, on a player exactly as on a server
+	// (decided 2026-08-09): a device that seeds is redistributing audio, and
+	// without fpcalc it cannot check what it fetched against what it claims to
+	// be. madshare enforces that as a STARTUP gate, which is the right shape for
+	// a server and the wrong one here — a music player must not refuse to open
+	// because a tool for a feature is missing. So the switch is honoured only
+	// when it can be, and the reason is handed back to be shown.
+	if _, fpcalc := media.ToolStatus(); !fpcalc {
+		return cfg, "the madnetwork needs fpcalc (Chromaprint) installed, so this device can " +
+			"check what it downloads against what it claims to be. Install it and restart."
+	}
+	cfg.Federation.Enabled = true
+	cfg.Yggdrasil.Peers = opts.Peers
+	// Local peer discovery, the opposite of a server's default. A phone finding
+	// its home server over the wifi with no configuration at all is the case this
+	// client exists in (docs/architecture/federation.md §"The household").
+	cfg.Yggdrasil.Multicast = true
+	// And nothing is shared back out: share_peers serves an HTTP endpoint, and
+	// this program has no listener for one. Said explicitly rather than left to
+	// the default, because the default is true and the reason it is harmless here
+	// is a fact about this program rather than about the setting.
+	no := false
+	cfg.Yggdrasil.SharePeers = &no
+	return cfg, ""
 }
 
 // Close shuts the node down. Safe to call more than once.

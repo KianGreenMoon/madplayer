@@ -14,7 +14,7 @@ import (
 // open starts a backend on a fresh data dir, quietly.
 func open(t *testing.T, dataDir string) *backend.Backend {
 	t.Helper()
-	be, err := backend.Open(context.Background(), dataDir, log.New(io.Discard, "", 0))
+	be, err := backend.Open(context.Background(), dataDir, log.New(io.Discard, "", 0), backend.Options{})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}

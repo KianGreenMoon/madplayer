@@ -43,6 +43,18 @@ type Config struct {
 	// (backend.CacheLimit), so the number is the same one a server's settings card
 	// writes rather than a second copy that can disagree with it.
 
+	// Mesh joins the madnetwork: this device becomes a node of its own rather
+	// than a client of somebody else's (docs/ui/madplayer.md §"Level 2b").
+	//
+	// Off by default. It costs bandwidth and disk, it needs fpcalc installed,
+	// and the baseline product is a player for music you already have — which
+	// should not start talking to strangers because it was installed.
+	Mesh bool `json:"mesh,omitempty"`
+	// MeshPeers are underlay peering URIs typed by hand: the fallback for
+	// somebody whose home server publishes none and whose network has none to
+	// discover. Usually empty, and that is the intended state.
+	MeshPeers []string `json:"mesh_peers,omitempty"`
+
 	// Roots is no longer used: music folders are data sources in the backend now.
 	// It is still read so an install that predates the embedded backend can hand
 	// its folders over once (see TakeLegacyRoots) instead of appearing to have

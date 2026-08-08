@@ -85,17 +85,17 @@ There is no useful sense in which this client streams.
   server's madnetwork cache settled on. Last use is the file's mtime, touched on
   every hit (atime is unreliable on a relatime mount, which is nearly all of
   them).
-- **The ceiling is madshare's setting, not this client's.** It is the runtime
-  setting `madnetwork.cache_max_bytes`, read and written through the embedded
-  backend (`backend.CacheLimit`) and edited on the **Settings** panel — the same
-  number a server's settings card writes. A second copy in `config.json` would
+- **The ceiling is madshare's setting, not this client's**, and it has the same
+  three layers here as on a server: a default, an override, and an empty box
+  meaning "use the default". `backend.CacheCeiling` reports all three;
+  the **Settings** panel edits the override. A second copy in `config.json` would
   be a number that can disagree with itself.
-- A server ships that ceiling **off**, because a guessed one would start deleting
-  content on a node that already has some. A player has no such history, so a
-  first run **writes** 2 GiB into the setting once — written rather than assumed,
-  so the field shows a real value the person can see and change instead of a
-  hidden fallback. After that the number is theirs, including a deliberate 0
-  meaning no limit.
+- **This client's default is 2 GiB, supplied as config** —
+  `playerConfig` sets `Federation.CacheMaxMB`, the layer a server fills from its
+  TOML file. That is what makes clearing an override land back on 2 GiB rather
+  than on "no limit". A server ships 0 instead, because a guessed ceiling would
+  start deleting content on a node that already has some; a player's cache starts
+  empty, so it has no such history to protect.
 - One policy number, one enforcer per cache: madshare sweeps the swarm's cache,
   this sweeps `remote/`.
 - **Playback is asynchronous** because of this: a download cannot happen on the

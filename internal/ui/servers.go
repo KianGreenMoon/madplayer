@@ -131,7 +131,7 @@ func (a *App) serverRow(gtx C, s prefs.Server, rm *widget.Clickable) D {
 // one place so a panel that is not showing cannot act on a click.
 func (a *App) cacheControls(gtx C) D {
 	a.mu.Lock()
-	used, limit := a.cacheUsed, a.cacheLimit
+	used, ceiling := a.cacheUsed, a.ceiling
 	a.mu.Unlock()
 
 	if a.btnCacheSave.Clicked(gtx) {
@@ -147,20 +147,24 @@ func (a *App) cacheControls(gtx C) D {
 			layout.Rigid(func(gtx C) D {
 				return a.sectionHint(gtx, fmt.Sprintf(
 					"Tracks played from a server are kept here so playing them again needs no network. "+
-						"Using %s of %s. The oldest go first when the limit is reached.",
-					human(used), ceilingText(limit)))
+						"Using %s of %s; the oldest go first when the limit is reached. "+
+						"Leave the box empty for the default (%s), or type 0 for no limit.",
+					human(used), ceilingText(ceiling.Effective), ceilingText(ceiling.Default)))
 			}),
 			layout.Rigid(func(gtx C) D {
 				return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
 					layout.Rigid(func(gtx C) D {
 						gtx.Constraints.Max.X = gtx.Dp(120)
-						e := material.Editor(a.th, &a.cacheEd, "2048")
+						// The hint text names the state an empty box means, since
+						// an empty box otherwise reads as "unset and therefore
+						// broken" rather than "using the default".
+						e := material.Editor(a.th, &a.cacheEd, "Default")
 						e.Color, e.HintColor = colFg, colDim
 						return filled(gtx, colSel, e.Layout)
 					}),
 					layout.Rigid(layout.Spacer{Width: 8}.Layout),
 					layout.Rigid(func(gtx C) D {
-						l := material.Caption(a.th, "MiB  (0 = no limit)")
+						l := material.Caption(a.th, "MiB  (empty = default, 0 = no limit)")
 						l.Color = colDim
 						return l.Layout(gtx)
 					}),
@@ -283,30 +287,50 @@ func (a *App) signOut(s prefs.Server) {
 // it is the same one a server's settings card writes — one policy, whichever
 // surface set it. What differs is the enforcer: madshare sweeps the swarm's
 // cache, and this sweeps its own downloads.
+// saveCacheLimit records the ceiling in the embedded backend and applies it to
+// this device's cache.
+//
+// Three states, as everywhere else this setting appears: an EMPTY box clears the
+// override and falls back to this client's default, a number pins it, and 0 pins
+// "no limit". Empty and 0 are different answers and must stay so.
 func (a *App) saveCacheLimit(text string) {
-	mb, err := strconv.Atoi(strings.TrimSpace(text))
-	if err != nil || mb < 0 {
-		a.setServerMsg("type a whole number of MiB, or 0 for no limit")
-		return
+	var override *int64
+	if s := strings.TrimSpace(text); s != "" {
+		mb, err := strconv.Atoi(s)
+		if err != nil || mb < 0 {
+			a.setServerMsg("type a whole number of MiB, 0 for no limit, or leave it empty for the default")
+			return
+		}
+		n := int64(mb) << 20
+		override = &n
 	}
-	limit := int64(mb) << 20
 
 	go func() {
-		if err := a.be.SetCacheLimit(context.Background(), limit); err != nil {
+		ctx := context.Background()
+		if err := a.be.SetCacheCeiling(ctx, override); err != nil {
 			a.setServerMsg("could not save the download limit: " + err.Error())
 			return
 		}
-		a.mu.Lock()
-		a.cacheLimit = limit
-		a.mu.Unlock()
+		// Re-read rather than computing it here: the backend owns the resolution
+		// of override-over-default, and a second copy of that rule in the UI is
+		// how the two come to disagree.
+		ceiling, err := a.be.CacheCeiling(ctx)
+		if err != nil {
+			a.setServerMsg("saved, but the limit could not be read back: " + err.Error())
+			return
+		}
+		a.setCeiling(ceiling)
 		if a.cache != nil {
 			// Applied now, not at the next download: a person who has just
 			// lowered the limit expects the disk back.
-			a.cache.SetLimit(limit)
+			a.cache.SetLimit(ceiling.Effective)
 		}
-		if limit == 0 {
+		switch {
+		case ceiling.Effective == 0:
 			a.setServerMsg("Downloads are no longer limited")
-		} else {
+		case override == nil:
+			a.setServerMsg("Using the default download limit, " + human(ceiling.Effective))
+		default:
 			a.setServerMsg("Download limit saved")
 		}
 		a.refreshCacheSize()

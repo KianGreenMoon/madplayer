@@ -88,14 +88,17 @@ type App struct {
 	// the music on this device.
 	probs []library.Problem
 
-	scanning   bool
-	loading    bool
-	status     string
-	notice     string
-	srvBusy    bool
-	srvMsg     string
-	cacheUsed  int64
-	cacheLimit int64
+	scanning  bool
+	loading   bool
+	status    string
+	notice    string
+	srvBusy   bool
+	srvMsg    string
+	cacheUsed int64
+	// ceiling is the download limit in its three parts. The FIELD shows the
+	// override — empty when there is none — while the hint names what the
+	// default resolves to, so "empty" is never a value nobody can read.
+	ceiling backend.Ceiling
 
 	view  view
 	level level
@@ -152,17 +155,16 @@ func New(win *app.Window, pl *player.Player, be *backend.Backend) *App {
 	// The ceiling is madshare's setting, not this client's: the same number a
 	// server's settings card writes, read through the embedded backend. A read
 	// that fails means no ceiling for this session rather than no downloads.
-	limit, err := be.CacheLimit(context.Background())
+	ceiling, err := be.CacheCeiling(context.Background())
 	if err != nil {
 		a.status = "could not read the download limit: " + err.Error()
 	}
-	a.cacheLimit = limit
-	a.cacheEd.SetText(fmt.Sprintf("%d", limit>>20))
+	a.setCeiling(ceiling)
 
 	// Remote audio lands beside the rest of what this install owns. A cache that
 	// cannot be opened is not fatal: the device's own music plays regardless, and
 	// only remote tracks are lost — so it is reported and the program carries on.
-	a.cache, err = blobcache.Open(filepath.Join(be.DataDir(), "remote"), limit)
+	a.cache, err = blobcache.Open(filepath.Join(be.DataDir(), "remote"), ceiling.Effective)
 	if err != nil {
 		a.status = "downloads are unavailable: " + err.Error()
 	} else {
@@ -215,6 +217,23 @@ func serverLabel(s prefs.Server) string {
 		return s.Label
 	}
 	return strings.TrimPrefix(strings.TrimPrefix(s.Base, "https://"), "http://")
+}
+
+// setCeiling records the download limit and puts the override — not the
+// effective value — in the editable field.
+//
+// That distinction is the whole point of the three states: showing the
+// effective number in the box would turn "use the default" into a pinned
+// override the moment anybody pressed Save.
+func (a *App) setCeiling(c backend.Ceiling) {
+	a.mu.Lock()
+	a.ceiling = c
+	a.mu.Unlock()
+	if c.Override == nil {
+		a.cacheEd.SetText("")
+		return
+	}
+	a.cacheEd.SetText(fmt.Sprintf("%d", *c.Override>>20))
 }
 
 // prefetchNext warms the track after the current one, so the gap between two

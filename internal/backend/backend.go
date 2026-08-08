@@ -93,14 +93,6 @@ func Open(ctx context.Context, dataDir string, lg *log.Logger) (*Backend, error)
 		// still browses and plays, it just cannot attribute what it imports.
 		b.owner = sql.NullInt64{Int64: id, Valid: true}
 	}
-	if fresh {
-		// Give the download cache a ceiling on the run that creates the database,
-		// and only then: after this, the number is the person's, including a
-		// deliberate 0 meaning no limit.
-		if err := inst.SetCacheLimit(ctx, DefaultCacheLimit); err != nil {
-			lg.Printf("set default download cache limit: %v", err)
-		}
-	}
 	return b, nil
 }
 
@@ -117,6 +109,10 @@ func playerConfig(dataDir string) (config.Config, error) {
 	// drop").
 	cfg.Sources.AllowAny = true
 	cfg.Auth.InitialAdminUser = ownerName
+	// This client's own default for the download cache, in the layer a server
+	// would fill from its TOML file — so the settings panel's "Default" is a real
+	// number here rather than "no limit".
+	cfg.Federation.CacheMaxMB = DefaultCacheMB
 	return cfg.Prepare()
 }
 
@@ -130,37 +126,59 @@ func (b *Backend) Close() {
 // Library is the browse and playback surface.
 func (b *Backend) Library() app.Library { return b.inst.Library() }
 
-// CacheLimit reports the ceiling on cached remote audio, in bytes; 0 = no limit.
+// Ceiling is the limit on downloaded audio in the three parts a settings screen
+// needs: what is in force, the override if one is set, and what this client's
+// default is.
 //
-// It is madshare's own runtime setting (`madnetwork.cache_max_bytes`), read
-// through the facade rather than kept in this client's config file: it is the
-// same policy an operator sets on a server's settings card, and a second copy in
-// a JSON file beside it would be a number that can disagree with itself
+// Restated here rather than handing out madshare's own struct, because the rule
+// that keeps the embedded half out of the widgets is that this package is the
+// ONLY one importing madshare — and the toolkit has an `app` package of its own,
+// so the two must never meet in one file.
+type Ceiling struct {
+	// Effective is the limit actually applied, in bytes. 0 = no limit.
+	Effective int64
+	// Override is the chosen value, or nil when the default applies. A non-nil 0
+	// is a real choice meaning "no limit", which is why it is a pointer.
+	Override *int64
+	// Default is what clearing the override lands on — DefaultCacheMB, in bytes.
+	Default int64
+}
+
+// CacheCeiling reports that limit.
+//
+// It is madshare's own setting, read through the facade rather than kept in this
+// client's config file: the same policy a server's settings card writes, so
+// there is no second copy to disagree with it
 // (docs/architecture/madnetwork-cache.md §"The retention ceiling").
-func (b *Backend) CacheLimit(ctx context.Context) (int64, error) {
-	return b.inst.CacheLimit(ctx)
+func (b *Backend) CacheCeiling(ctx context.Context) (Ceiling, error) {
+	c, err := b.inst.CacheCeiling(ctx)
+	if err != nil {
+		return Ceiling{}, err
+	}
+	return Ceiling{Effective: c.Effective, Override: c.Override, Default: c.Default}, nil
 }
 
-// SetCacheLimit changes that ceiling. The caller applies it to its own cache;
-// this only records the number (and sweeps the swarm's cache, which a player has
-// none of until the mesh arrives).
-func (b *Backend) SetCacheLimit(ctx context.Context, maxBytes int64) error {
-	return b.inst.SetCacheLimit(ctx, maxBytes)
+// SetCacheCeiling writes the override: nil clears it back to this client's
+// default, a value pins it, and 0 pins "no limit". The caller applies the
+// resulting number to its own cache; this records it.
+func (b *Backend) SetCacheCeiling(ctx context.Context, maxBytes *int64) error {
+	return b.inst.SetCacheCeiling(ctx, maxBytes)
 }
 
-// DefaultCacheLimit is what a fresh madplayer install writes into that setting
-// once, on the run that creates its database.
+// DefaultCacheMB is this client's ceiling on downloaded audio, in MiB.
 //
-// The server ships the ceiling OFF because a guessed number would start deleting
-// other people's content on a node that already has some. A first run has no
-// such history — the cache is empty — and a phone with no ceiling at all is a
-// worse default than a stated one. So the number is WRITTEN rather than assumed:
-// it appears in the settings field as a real value the person can see and
-// change, instead of being a hidden fallback that contradicts what the field
-// says.
+// It is supplied as CONFIG, in the layer a server fills from its TOML file
+// (docs/architecture/madnetwork-cache.md §"The retention ceiling"), which is
+// what makes it a real default rather than a value written into the settings
+// once: the person can override it and can clear the override again, and
+// clearing lands back here rather than on "no limit".
 //
-// 2 GiB comes from the shape of the content — a FLAC album is roughly 300 MB.
-const DefaultCacheLimit int64 = 2048 << 20
+// A server ships 0 (no limit) because a guessed ceiling would start deleting
+// other people's content on a node that already has some. A player has no such
+// history — its cache starts empty — and a phone with no ceiling at all is a
+// worse default than a stated one. 2 GiB comes from the shape of the content: a
+// FLAC album is roughly 300 MB.
+const DefaultCacheMB = 2048
 
 // DataDir is where everything this install owns lives.
 func (b *Backend) DataDir() string { return b.dir }

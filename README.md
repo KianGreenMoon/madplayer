@@ -138,6 +138,24 @@ sudo dnf install -y alsa-lib-devel libxkbcommon-x11-devel vulkan-headers
 Gio is **native Wayland** on a Wayland session — it compiles both backends in and
 picks at runtime.
 
+### madshare's own build tags
+
+Both of the server's tags work on this binary, and the sizes are worth knowing
+before deciding (linux/arm64, unstripped, measured 2026-08-08):
+
+| Build | Size |
+|---|---|
+| default | 32 MB |
+| `-tags nowebui` | 31 MB |
+| `-tags "nowebui nofederation"` | 23 MB |
+
+- **`nowebui` is the right default** even though it only saves a megabyte: this
+  client ships its own interface, so the embedded HTML/CSS/JS is a second one
+  nothing can reach.
+- **`nofederation` is not**, tempting as the 8 MB is. Leaving the mesh compiled in
+  means reaching it at level 2b is wiring rather than a rebuild — and 2b is the
+  whole reason for embedding rather than talking HTTP.
+
 ## Running
 
 ```bash

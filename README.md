@@ -1,17 +1,19 @@
 # madplayer
 
-A native music player in Go, for desktop and mobile. Design and rationale live
-in [`../docs/ui/madplayer.md`](../docs/ui/madplayer.md); this file covers how to
-work on the code.
+A native music player in Go, for desktop and mobile. Design and rationale live in
+madshare's `docs/ui/madplayer.md` — that doc is a **cross-client contract** and
+stays there on purpose; this file covers how to work on the code.
 
 **It is an offline player first.** Point it at your music folders and it scans,
 indexes and plays them — no server, no account, no network, nothing to sign in
 to. Reaching a madshare server is a feature layered on top of that, never a
 precondition.
 
-**Status:** the backend is **embedded** (level 2a) and the client **signs in to
-remote madshares** (level 1). This device's library and every server's are
-browsed as one merged list. Still to come: the mesh (level 2b) and the
+**Status:** the backend is **embedded** (level 2a), the client **signs in to
+remote madshares** (level 1), and this device's library and every server's are
+browsed as one merged list. Level 2b — the mesh — is underway: the device can
+become a madnetwork node and keeps its standing with each home server. Still to
+come there: fetching via the swarm with the relay as fallback, and the
 human-readable materialize target.
 
 ## What works
@@ -109,37 +111,45 @@ holds tokens and is written `0600`; there is no keyring here, and that is a real
 limitation rather than an oversight. Signing out forgets the token on this
 device and says so: revoking it happens on the server.
 
-## Its own Go module, on purpose
+## The madshare dependency
 
-`madplayer/` is a **separate module** (`daemonlord.ygg/madplayer`), not part of
-the root `daemonlord.ygg/madshare` one. A GUI toolkit's `require` and `go.sum`
-lines in the server's `go.mod` would be client code arriving in the server by the
-back door — which is the one thing this branch exists to prevent.
+madplayer requires madshare as an ordinary Go module, pinned to a released tag
+and upgraded on purpose. That is what the server's release tagging buys: a
+client pins a known-good server, and a server change lands here when somebody
+chooses it rather than the moment it is written.
 
-Consequences:
+Today that require is resolved by a **`replace` to a checkout beside this one**,
+so the two directories have to sit together:
 
-- The repo root's `go build ./...` / `go test ./...` do **not** cover madplayer.
-  Build and test it from this directory.
-- The dependency points client → server, always: `require daemonlord.ygg/madshare`
-  plus `replace ... => ../` live **here**, never the other way round.
-- **madshare's own `replace` directives do not reach us.** Only the main module's
-  apply, so its local yggstack fork is repeated in this `go.mod` — without that
-  line the build silently resolves upstream and loses three patches the mesh
-  depends on. Keep it in step with the root `go.mod`.
+```
+mediashare/     madshare  (module daemonlord.ygg/madshare)
+madplayer/      this repo
+```
 
-## Branch discipline
+The replace is a stand-in, not the intended end state, and the reason is worth
+knowing before anyone tries to remove it. Upstream is
+<https://github.com/KianGreenMoon/madshare>, but madshare declares its module
+path as `daemonlord.ygg/madshare` — a Yggdrasil-only name that cannot serve
+go-import metadata over the public internet — and Go requires a replacement
+module's `go.mod` to declare the path it is required as. Pointing the replace at
+the GitHub URL is therefore rejected outright rather than merely awkward. The day
+madshare renames its module to `github.com/KianGreenMoon/madshare`, this collapses
+to a single `require` line and the checkout beside us stops being load-bearing.
 
-This lives on the temporary `madplayer` branch and moves to its own repo later,
-so the split stays a `git subtree split -P madplayer`:
+**`third_party/yggstack` is replaced too**, at
+`../mediashare/third_party/yggstack`, and that one is load-bearing right now: only
+the main module's replaces apply, so without it the build silently resolves
+upstream yggstack and loses three patches the mesh depends on. Keep it in step
+with madshare's root `go.mod`.
 
-- **No commit may touch `madplayer/` and anything outside it.** A commit is
-  either client or server, never both. That is what lets a server-side fix reach
-  the main branch on its own.
-- Server changes are made on `aidev` and merged **forward** into `madplayer`.
-  `madplayer` is never merged back.
-- The target is **zero** server changes.
-- `../docs/ui/*` is the cross-client contract, so editing one of those docs is a
-  server commit. Client-only notes belong in this file.
+This is a separate module from madshare on purpose, and always was: a GUI
+toolkit's `require` and `go.sum` lines in the server's `go.mod` would be client
+code arriving in the server by the back door. The dependency points client →
+server, always, never the other way round.
+
+**`docs/ui/*` lives in madshare**, because it is the contract both clients follow.
+A change to one of those docs is a madshare commit; client-only notes belong in
+this file.
 
 ## Layout
 
@@ -273,6 +283,6 @@ Servers panel is a different thing entirely — it authenticates to somebody
 **The APK cannot be built on an aarch64 Linux host.** `gogio` resolves the NDK
 through an `archNDK()` that ends in `panic("unsupported GOARCH: arm64")`, the NDK
 ships no linux-aarch64 host toolchain, and the 16 KB-page emulation wall from
-`../docs/architecture/android-app.md` sits behind both. `android/build-apk.sh`
+madshare's `docs/architecture/android-app.md` sits behind both. `android/build-apk.sh`
 builds on an x86_64 host and refuses loudly elsewhere; `adb` runs natively on
 aarch64, so install-and-look still happens on the development machine.

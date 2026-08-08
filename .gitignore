@@ -3,3 +3,12 @@ android/icon.png
 
 # APK output.
 android/out/
+
+# Assistant context. CLAUDE.md is Claude Code's own working notes for this repo,
+# and .claude/ is whatever tooling it keeps beside them. Both are read every
+# session and neither is part of the program: they describe how to work on this
+# code, not the code itself, and they are edited far too often to belong in the
+# history. Kept local on purpose.
+CLAUDE.md
+.claude/
+AGENTS.md

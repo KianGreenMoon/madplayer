@@ -3,21 +3,33 @@ module daemonlord.ygg/madplayer
 go 1.26.4
 
 require (
-	daemonlord.ygg/madshare v0.0.0
+	daemonlord.ygg/madshare v0.9.0
 	gioui.org v0.10.1
 	github.com/gopxl/beep/v2 v2.1.1
 )
 
-// The embedded backend. In its own repo this becomes a released tag, upgraded on
-// purpose (docs/ui/madplayer.md §"Versioned dependency, not a vendored copy");
-// while the two share a repo, the replace stands in for that.
-replace daemonlord.ygg/madshare => ../
+// The embedded backend, pinned to a released tag and upgraded on purpose — that
+// is what madshare's tagging buys (docs/ui/madplayer.md §"Versioned dependency,
+// not a vendored copy").
+//
+// The replace is what makes the require resolvable today, and it is a stand-in
+// rather than the intended end state. madshare's module path is
+// daemonlord.ygg/madshare, a Yggdrasil-only name that cannot serve go-import
+// metadata over the public internet, and Go requires a replacement module's
+// go.mod to declare the path it is required as — so pointing this at
+// github.com/KianGreenMoon/madshare is rejected outright, not merely
+// inconvenient.
+//
+// Upstream is https://github.com/KianGreenMoon/madshare. The day that module
+// declares itself as github.com/KianGreenMoon/madshare, this whole block becomes
+// one require line and the checkout beside us stops being load-bearing.
+replace daemonlord.ygg/madshare => ../mediashare
 
 // madshare's own replace does NOT reach us: only the MAIN module's replace
 // directives apply, so its local yggstack fork has to be repeated here or the
 // build silently resolves upstream and loses three patches the mesh depends on
 // (third_party/yggstack/MADSHARE-PATCH.md). Keep in step with the root go.mod.
-replace github.com/yggdrasil-network/yggstack => ../third_party/yggstack
+replace github.com/yggdrasil-network/yggstack => ../mediashare/third_party/yggstack
 
 require (
 	gioui.org/shader v1.0.8 // indirect

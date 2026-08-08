@@ -5,9 +5,7 @@ go 1.26.4
 require (
 	daemonlord.ygg/madshare v0.0.0
 	gioui.org v0.10.1
-	github.com/dhowden/tag v0.0.0-20240417053706-3d75831295e8
 	github.com/gopxl/beep/v2 v2.1.1
-	golang.org/x/text v0.38.0
 )
 
 // The embedded backend. In its own repo this becomes a released tag, upgraded on
@@ -29,6 +27,7 @@ require (
 	github.com/bits-and-blooms/bitset v1.24.5 // indirect
 	github.com/bits-and-blooms/bloom/v3 v3.7.1 // indirect
 	github.com/coder/websocket v1.8.15 // indirect
+	github.com/dhowden/tag v0.0.0-20240417053706-3d75831295e8 // indirect
 	github.com/disintegration/imaging v1.6.2 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/ebitengine/oto/v3 v3.4.0 // indirect
@@ -50,6 +49,7 @@ require (
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/quic-go/quic-go v0.60.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
+	github.com/wlynxg/anet v0.0.5 // indirect
 	github.com/yggdrasil-network/yggdrasil-go v0.5.14 // indirect
 	github.com/yggdrasil-network/yggstack v0.0.0-20260619214331-c39db65e5bcc // indirect
 	golang.org/x/crypto v0.53.0 // indirect
@@ -57,6 +57,7 @@ require (
 	golang.org/x/image v0.26.0 // indirect
 	golang.org/x/net v0.56.0 // indirect
 	golang.org/x/sys v0.46.0 // indirect
+	golang.org/x/text v0.38.0 // indirect
 	golang.org/x/time v0.7.0 // indirect
 	gvisor.dev/gvisor v0.0.0-20250812171554-968e93457fe6 // indirect
 	modernc.org/libc v1.72.3 // indirect

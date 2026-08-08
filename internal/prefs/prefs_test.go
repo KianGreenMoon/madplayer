@@ -60,15 +60,7 @@ func TestSetServerIsKeyedByAddress(t *testing.T) {
 	}
 }
 
-func TestCacheLimit(t *testing.T) {
-	if got, want := (Config{}).CacheLimit(), int64(DefaultCacheMB)<<20; got != want {
-		t.Errorf("unset cache limit = %d, want the default %d", got, want)
-	}
-	if got := (Config{CacheMB: 512}).CacheLimit(); got != 512<<20 {
-		t.Errorf("512 MiB = %d", got)
-	}
-	// Negative means "no ceiling", which the cache reads as 0.
-	if got := (Config{CacheMB: -1}).CacheLimit(); got != 0 {
-		t.Errorf("unlimited = %d, want 0", got)
-	}
-}
+// The download cache's ceiling deliberately does NOT live here — it is
+// madshare's own runtime setting, reached through the embedded backend, so the
+// number is the same one a server's settings card writes. Nothing in this
+// package reads or writes one.

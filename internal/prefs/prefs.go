@@ -38,10 +38,10 @@ type Config struct {
 	// an API token, which is why this file is written 0600 (see Save).
 	Servers []Server `json:"servers,omitempty"`
 
-	// CacheMB caps the remote-audio cache, in MiB. 0 means the default; a
-	// negative value means no ceiling at all, which is a thing somebody with a
-	// big disk may legitimately want and should have to ask for.
-	CacheMB int `json:"cache_mb,omitempty"`
+	// The download cache's ceiling is deliberately NOT here. It is madshare's own
+	// runtime setting, read and written through the embedded backend
+	// (backend.CacheLimit), so the number is the same one a server's settings card
+	// writes rather than a second copy that can disagree with it.
 
 	// Roots is no longer used: music folders are data sources in the backend now.
 	// It is still read so an install that predates the embedded backend can hand
@@ -49,16 +49,6 @@ type Config struct {
 	// lost them.
 	Roots []string `json:"roots,omitempty"`
 }
-
-// DefaultCacheMB is the remote-audio cache ceiling when nothing has been chosen.
-//
-// A number had to be picked, and this one is picked from the shape of the
-// content rather than from a round figure: a FLAC album is roughly 300 MB, so
-// 2 GiB holds a handful of them and a great many more MP3s — enough that
-// re-listening to what you played yesterday is usually a cache hit, small
-// enough that a phone does not notice it. It is editable, which is the part that
-// matters, because this guess has never met a real library.
-const DefaultCacheMB = 2048
 
 // Server is one remote madshare this device is signed in to.
 //
@@ -75,18 +65,6 @@ type Server struct {
 	// in plain text: there is no keyring here, and the file is 0600. Revoking it
 	// is done on the server, where it is listed by name.
 	Token string `json:"token"`
-}
-
-// CacheLimit resolves the configured cache ceiling into bytes. A negative
-// setting means unlimited, reported as 0 the way the cache reads it.
-func (c Config) CacheLimit() int64 {
-	switch {
-	case c.CacheMB < 0:
-		return 0
-	case c.CacheMB == 0:
-		return int64(DefaultCacheMB) << 20
-	}
-	return int64(c.CacheMB) << 20
 }
 
 // SetServer adds a server or updates the one already at that address.

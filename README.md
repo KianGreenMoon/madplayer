@@ -85,10 +85,19 @@ There is no useful sense in which this client streams.
   server's madnetwork cache settled on. Last use is the file's mtime, touched on
   every hit (atime is unreliable on a relatime mount, which is nearly all of
   them).
-- The ceiling defaults to **2 GiB** and is editable in the Servers panel. The
-  number comes from the shape of the content — a FLAC album is roughly 300 MB —
-  and has never met a real library, which is why being editable is the part that
-  matters.
+- **The ceiling is madshare's setting, not this client's.** It is the runtime
+  setting `madnetwork.cache_max_bytes`, read and written through the embedded
+  backend (`backend.CacheLimit`) and edited on the **Settings** panel — the same
+  number a server's settings card writes. A second copy in `config.json` would
+  be a number that can disagree with itself.
+- A server ships that ceiling **off**, because a guessed one would start deleting
+  content on a node that already has some. A player has no such history, so a
+  first run **writes** 2 GiB into the setting once — written rather than assumed,
+  so the field shows a real value the person can see and change instead of a
+  hidden fallback. After that the number is theirs, including a deliberate 0
+  meaning no limit.
+- One policy number, one enforcer per cache: madshare sweeps the swarm's cache,
+  this sweeps `remote/`.
 - **Playback is asynchronous** because of this: a download cannot happen on the
   goroutine that handled the click. The next queue item is prefetched, so only
   the first remote track in a run pays the gap.
@@ -231,11 +240,13 @@ go run ./cmd/madplayer
 go test ./internal/...
 ```
 
-On first start it opens on **Folders**: type or paste a path and press *Add
-folder*. There is no native folder picker in Gio, so the path is validated before
-it is accepted — a silently-ignored typo looks exactly like an empty library.
-**Servers** is the other way to get music: an address, a username and a password.
-A person who plays only from a server is never sent back to add a folder.
+On first start it opens on **Settings**: type or paste a folder path and press
+*Add folder*. There is no native folder picker in Gio, so the path is validated
+before it is accepted — a silently-ignored typo looks exactly like an empty
+library. The same panel holds the download limit, because both answer the
+question of what this device keeps on disk. **Servers** is the other way to get
+music: an address, a username and a password. A person who plays only from a
+server is never sent back to add a folder.
 
 State lives in `~/.config/madplayer/` (`app.DataDir()` per platform, which is what
 makes it right on Android): `madshare.db`, `links/` (one symlink per imported
@@ -244,6 +255,11 @@ downloaded audio, plus `config.json` for this device's own preferences and its
 server credentials. Deleting the directory loses the library index, the
 imported-folder list and the sign-ins — never any music, since nothing in there
 is a copy.
+
+Note which of those holds what: `config.json` has the volume and the server
+credentials, while anything that is a **policy** — the download ceiling — is in
+`madshare.db`, because it is madshare's setting and this client is only one of
+its two surfaces.
 
 There is **no local account and no local login**: the identity the backend needs
 is generated at first run, never shown, and its password is thrown away. Nothing

@@ -85,9 +85,16 @@ func (a *App) queuePanel(gtx C) D {
 
 // --- folders / settings -----------------------------------------------------
 
-// settings is where the library comes from. There is no native folder picker in
-// Gio, so the path is typed or pasted — and it is validated before being
-// accepted, because a silently-ignored typo looks exactly like an empty library.
+// settings is this device's own panel: where its music comes from, and how much
+// of somebody else's it keeps. There is no native folder picker in Gio, so a
+// path is typed or pasted — and validated before being accepted, because a
+// silently-ignored typo looks exactly like an empty library.
+//
+// These are PREFERENCES, not an account: there is no password here and nothing
+// to sign in to (docs/ui/madplayer.md §"There is no local account"). The one
+// thing that looks like a server setting — the download limit — is exactly that:
+// madshare's own runtime setting, read from the backend embedded in this
+// process.
 func (a *App) settings(gtx C) D {
 	a.mu.Lock()
 	folders := append([]backend.Folder(nil), a.folders...)
@@ -192,6 +199,10 @@ func (a *App) settings(gtx C) D {
 					})
 				})
 			}),
+			// The download limit sits under the folders because both answer the
+			// same question — what this device keeps on disk. Signing in to a
+			// server is a different question, and lives on its own panel.
+			layout.Rigid(func(gtx C) D { return a.cacheControls(gtx) }),
 		)
 	})
 }

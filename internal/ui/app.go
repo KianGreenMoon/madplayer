@@ -88,13 +88,14 @@ type App struct {
 	// the music on this device.
 	probs []library.Problem
 
-	scanning  bool
-	loading   bool
-	status    string
-	notice    string
-	srvBusy   bool
-	srvMsg    string
-	cacheUsed int64
+	scanning   bool
+	loading    bool
+	status     string
+	notice     string
+	srvBusy    bool
+	srvMsg     string
+	cacheUsed  int64
+	cacheLimit int64
 
 	view  view
 	level level
@@ -146,13 +147,22 @@ func New(win *app.Window, pl *player.Player, be *backend.Backend) *App {
 	}
 	a.cfg = cfg
 	a.vol.Value = float32(cfg.Volume)
-	a.cacheEd.SetText(fmt.Sprintf("%d", cfg.CacheLimit()>>20))
 	pl.SetVolume(cfg.Volume)
+
+	// The ceiling is madshare's setting, not this client's: the same number a
+	// server's settings card writes, read through the embedded backend. A read
+	// that fails means no ceiling for this session rather than no downloads.
+	limit, err := be.CacheLimit(context.Background())
+	if err != nil {
+		a.status = "could not read the download limit: " + err.Error()
+	}
+	a.cacheLimit = limit
+	a.cacheEd.SetText(fmt.Sprintf("%d", limit>>20))
 
 	// Remote audio lands beside the rest of what this install owns. A cache that
 	// cannot be opened is not fatal: the device's own music plays regardless, and
 	// only remote tracks are lost — so it is reported and the program carries on.
-	a.cache, err = blobcache.Open(filepath.Join(be.DataDir(), "remote"), cfg.CacheLimit())
+	a.cache, err = blobcache.Open(filepath.Join(be.DataDir(), "remote"), limit)
 	if err != nil {
 		a.status = "downloads are unavailable: " + err.Error()
 	} else {
@@ -531,14 +541,14 @@ func (a *App) problemBanner(gtx C) D {
 func (a *App) update(gtx C) {
 	if a.btnSettings.Clicked(gtx) {
 		a.view = toggleView(a.view, viewSettings)
-	}
-	if a.btnServers.Clicked(gtx) {
-		a.view = toggleView(a.view, viewServers)
-		if a.view == viewServers {
+		if a.view == viewSettings {
 			// Measuring the cache walks the disk, so it happens when the panel
 			// that shows the number is opened, not every frame.
 			go a.refreshCacheSize()
 		}
+	}
+	if a.btnServers.Clicked(gtx) {
+		a.view = toggleView(a.view, viewServers)
 	}
 	if a.btnQueue.Clicked(gtx) {
 		a.view = toggleView(a.view, viewQueue)
@@ -704,7 +714,7 @@ func (a *App) header(gtx C) D {
 				}),
 				layout.Rigid(layout.Spacer{Width: 8}.Layout),
 				layout.Rigid(func(gtx C) D {
-					return a.smallButton(gtx, &a.btnSettings, "Folders", a.view == viewSettings)
+					return a.smallButton(gtx, &a.btnSettings, "Settings", a.view == viewSettings)
 				}),
 				layout.Rigid(layout.Spacer{Width: 8}.Layout),
 				layout.Rigid(func(gtx C) D {

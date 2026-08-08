@@ -114,7 +114,7 @@ func (a *App) artistList(gtx C) D {
 		case loading:
 			return a.emptyState(gtx, "Reading your library…")
 		case folders == 0 && !a.lib.Remote():
-			return a.emptyState(gtx, "No music folders yet. Open Folders to add one, or Servers to sign in to one.")
+			return a.emptyState(gtx, "No music folders yet. Open Settings to add one, or Servers to sign in to one.")
 		case a.lib.Remote():
 			// A server answering with nothing is not the same as having nothing:
 			// an account without content.access gets the guest listing, same

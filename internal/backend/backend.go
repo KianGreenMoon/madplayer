@@ -93,6 +93,14 @@ func Open(ctx context.Context, dataDir string, lg *log.Logger) (*Backend, error)
 		// still browses and plays, it just cannot attribute what it imports.
 		b.owner = sql.NullInt64{Int64: id, Valid: true}
 	}
+	if fresh {
+		// Give the download cache a ceiling on the run that creates the database,
+		// and only then: after this, the number is the person's, including a
+		// deliberate 0 meaning no limit.
+		if err := inst.SetCacheLimit(ctx, DefaultCacheLimit); err != nil {
+			lg.Printf("set default download cache limit: %v", err)
+		}
+	}
 	return b, nil
 }
 
@@ -121,6 +129,38 @@ func (b *Backend) Close() {
 
 // Library is the browse and playback surface.
 func (b *Backend) Library() app.Library { return b.inst.Library() }
+
+// CacheLimit reports the ceiling on cached remote audio, in bytes; 0 = no limit.
+//
+// It is madshare's own runtime setting (`madnetwork.cache_max_bytes`), read
+// through the facade rather than kept in this client's config file: it is the
+// same policy an operator sets on a server's settings card, and a second copy in
+// a JSON file beside it would be a number that can disagree with itself
+// (docs/architecture/madnetwork-cache.md §"The retention ceiling").
+func (b *Backend) CacheLimit(ctx context.Context) (int64, error) {
+	return b.inst.CacheLimit(ctx)
+}
+
+// SetCacheLimit changes that ceiling. The caller applies it to its own cache;
+// this only records the number (and sweeps the swarm's cache, which a player has
+// none of until the mesh arrives).
+func (b *Backend) SetCacheLimit(ctx context.Context, maxBytes int64) error {
+	return b.inst.SetCacheLimit(ctx, maxBytes)
+}
+
+// DefaultCacheLimit is what a fresh madplayer install writes into that setting
+// once, on the run that creates its database.
+//
+// The server ships the ceiling OFF because a guessed number would start deleting
+// other people's content on a node that already has some. A first run has no
+// such history — the cache is empty — and a phone with no ceiling at all is a
+// worse default than a stated one. So the number is WRITTEN rather than assumed:
+// it appears in the settings field as a real value the person can see and
+// change, instead of being a hidden fallback that contradicts what the field
+// says.
+//
+// 2 GiB comes from the shape of the content — a FLAC album is roughly 300 MB.
+const DefaultCacheLimit int64 = 2048 << 20
 
 // DataDir is where everything this install owns lives.
 func (b *Backend) DataDir() string { return b.dir }

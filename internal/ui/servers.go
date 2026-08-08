@@ -43,12 +43,6 @@ func (a *App) serversPanel(gtx C) D {
 	if a.btnSignIn.Clicked(gtx) && !busy {
 		a.signIn(a.srvAddr.Text(), a.srvUser.Text(), a.srvPass.Text())
 	}
-	if a.btnCacheSave.Clicked(gtx) {
-		a.saveCacheLimit(a.cacheEd.Text())
-	}
-	if a.btnCacheDrop.Clicked(gtx) {
-		a.clearCache()
-	}
 
 	return layout.Inset{Top: 16, Bottom: 16, Left: 20, Right: 20}.Layout(gtx, func(gtx C) D {
 		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
@@ -79,7 +73,6 @@ func (a *App) serversPanel(gtx C) D {
 					return a.serverRow(gtx, servers[i], &a.rmServer[i])
 				})
 			}),
-			layout.Rigid(func(gtx C) D { return a.cacheControls(gtx) }),
 		)
 	})
 }
@@ -134,10 +127,19 @@ func (a *App) serverRow(gtx C, s prefs.Server, rm *widget.Clickable) D {
 }
 
 // cacheControls is the one resource decision this client asks a person to make.
+// It lives on the Settings panel and is handled there — the buttons are read in
+// one place so a panel that is not showing cannot act on a click.
 func (a *App) cacheControls(gtx C) D {
 	a.mu.Lock()
-	used := a.cacheUsed
+	used, limit := a.cacheUsed, a.cacheLimit
 	a.mu.Unlock()
+
+	if a.btnCacheSave.Clicked(gtx) {
+		a.saveCacheLimit(a.cacheEd.Text())
+	}
+	if a.btnCacheDrop.Clicked(gtx) {
+		a.clearCache()
+	}
 
 	return layout.Inset{Top: 16}.Layout(gtx, func(gtx C) D {
 		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
@@ -145,7 +147,8 @@ func (a *App) cacheControls(gtx C) D {
 			layout.Rigid(func(gtx C) D {
 				return a.sectionHint(gtx, fmt.Sprintf(
 					"Tracks played from a server are kept here so playing them again needs no network. "+
-						"Using %s. The oldest go first when the limit is reached.", human(used)))
+						"Using %s of %s. The oldest go first when the limit is reached.",
+					human(used), ceilingText(limit)))
 			}),
 			layout.Rigid(func(gtx C) D {
 				return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
@@ -273,33 +276,38 @@ func (a *App) signOut(s prefs.Server) {
 	}()
 }
 
+// saveCacheLimit records the ceiling in the embedded backend and applies it to
+// this device's cache.
+//
+// The number lives in madshare's settings, not in this client's config file, so
+// it is the same one a server's settings card writes — one policy, whichever
+// surface set it. What differs is the enforcer: madshare sweeps the swarm's
+// cache, and this sweeps its own downloads.
 func (a *App) saveCacheLimit(text string) {
 	mb, err := strconv.Atoi(strings.TrimSpace(text))
 	if err != nil || mb < 0 {
 		a.setServerMsg("type a whole number of MiB, or 0 for no limit")
 		return
 	}
-	a.mu.Lock()
-	// 0 in the box means "no limit"; the config spells that -1, because 0 there
-	// is "nothing chosen" and resolves to the default.
-	if mb == 0 {
-		a.cfg.CacheMB = -1
-	} else {
-		a.cfg.CacheMB = mb
-	}
-	cfg := a.cfg
-	a.srvMsg = "Download limit saved"
-	a.mu.Unlock()
+	limit := int64(mb) << 20
 
 	go func() {
-		if err := a.store.Save(cfg); err != nil {
-			a.setServerMsg("could not save: " + err.Error())
+		if err := a.be.SetCacheLimit(context.Background(), limit); err != nil {
+			a.setServerMsg("could not save the download limit: " + err.Error())
 			return
 		}
+		a.mu.Lock()
+		a.cacheLimit = limit
+		a.mu.Unlock()
 		if a.cache != nil {
 			// Applied now, not at the next download: a person who has just
 			// lowered the limit expects the disk back.
-			a.cache.SetLimit(cfg.CacheLimit())
+			a.cache.SetLimit(limit)
+		}
+		if limit == 0 {
+			a.setServerMsg("Downloads are no longer limited")
+		} else {
+			a.setServerMsg("Download limit saved")
 		}
 		a.refreshCacheSize()
 	}()
@@ -340,6 +348,15 @@ func (a *App) setServerMsg(msg string) {
 	a.srvMsg = msg
 	a.mu.Unlock()
 	a.win.Invalidate()
+}
+
+// ceilingText names the limit, or says there is none — "of 0" would read as a
+// cache that may hold nothing, which is the opposite of what 0 means.
+func ceilingText(limit int64) string {
+	if limit <= 0 {
+		return "no limit"
+	}
+	return human(limit)
 }
 
 // human renders a byte count the way a person reads a disk.

@@ -1,11 +1,33 @@
 # madplayer
 
-The native client for madshare — a Go GUI for desktop and mobile. Design and
-rationale live in [`../docs/ui/madplayer.md`](../docs/ui/madplayer.md); this file
-covers only how to work on the code.
+A native music player in Go, for desktop and mobile. Design and rationale live
+in [`../docs/ui/madplayer.md`](../docs/ui/madplayer.md); this file covers how to
+work on the code.
 
-**Status:** toolkit decided (**Gio**, see `spike/README.md`), level 1 not started.
-Nothing here is a product yet.
+**It is an offline player first.** Point it at your music folders and it scans,
+indexes and plays them — no server, no account, no network, nothing to sign in
+to. Reaching a madshare server is a feature layered on top of that, never a
+precondition.
+
+**Status:** local player built (scan, index, browse, search, queue, playback).
+The madshare client is written but not yet wired to a screen.
+
+## What works
+
+- **Folder scanning**, in place. Nothing is copied, moved or written into the
+  scanned tree — the same hard invariant the server's import-in-place data
+  sources carry. A rescan skips files whose size and mtime are unchanged.
+- **Browse**: artists → albums → tracks, over resolved entities rather than raw
+  tags, with search across both artist roles.
+- **Playback**: MP3, FLAC, WAV and Ogg Vorbis, with a queue, shuffle, three-mode
+  repeat, seeking and volume.
+- **Durations** are measured by the decoder in the background, so the list
+  appears immediately with `—` instead of waiting on a walk over every file.
+
+M4A/AAC/Opus files **are indexed but cannot be played**: they need cgo bindings
+or ffmpeg, which is listed under the native client's own burdens in the design
+doc. Showing such a track and saying it cannot be played is honest; hiding it
+would look like the file is missing.
 
 ## Its own Go module, on purpose
 
@@ -16,11 +38,11 @@ back door — which is the one thing this branch exists to prevent.
 
 Consequences:
 
-- The repo root's `go build ./...` / `go test ./...` **do not** cover madplayer.
+- The repo root's `go build ./...` / `go test ./...` do **not** cover madplayer.
   Build and test it from this directory.
-- Level 2 (embedding the backend in-process) adds
-  `require daemonlord.ygg/madshare` plus a `replace ... => ../` **here**, never
-  the other way round. The dependency points client → server, always.
+- Embedding the backend in-process later adds `require daemonlord.ygg/madshare`
+  plus a `replace ... => ../` **here**, never the other way round. The dependency
+  points client → server, always.
 
 ## Branch discipline
 
@@ -32,67 +54,84 @@ so the split stays a `git subtree split -P madplayer`:
   the main branch on its own.
 - Server changes are made on `aidev` and merged **forward** into `madplayer`.
   `madplayer` is never merged back.
-- The target is **zero** server changes. The HTTP API is the shared contract and
-  is meant to be complete; a genuine gap is a server design decision, not
-  something the client works around.
+- The target is **zero** server changes.
 - `../docs/ui/*` is the cross-client contract, so editing one of those docs is a
   server commit. Client-only notes belong in this file.
 
 ## Layout
 
 ```
-internal/madshare/   HTTP client for a madshare server — durable
-spike/               the toolkit-decision screen; promoted out of spike/ at level 1
-  internal/demo/     fixture corpus + library walk that feed it
-  gio/               track list + player bar
-  android/           APK packaging (x86_64 build host only — see spike/README.md)
+cmd/madplayer/       the program
+internal/library/    scan, entity resolution, browse, search — no I/O beyond reading files
+internal/queue/      play queue: index arithmetic, shuffle, repeat
+internal/player/     decode, position, seek, queue advance — no audio device
+internal/audio/      the audio device (cgo/ALSA). The ONLY package that needs one
+internal/madshare/   HTTP client for a madshare server — for the connected half, not yet wired
+android/             APK packaging (x86_64 build host only — see below)
 ```
 
-`internal/madshare` is deliberately a thin mirror of the server's JSON. Every
-rule that could be re-derived client-side — which names are artists, which file
-to play, sort order, disc grouping, availability — is decided server-side, and
-this package carries the answer. The list is in
-[`../docs/ui/madplayer.md`](../docs/ui/madplayer.md) §"What the server already
-computes"; re-deriving any of it produces a client that quietly disagrees with
-the web UI about what the library contains.
+The layering has one rule worth keeping: **`internal/player` does not import an
+audio device.** The output is injected as a `player.Sink`, so every decision —
+decode, seek, position, repeat, error recovery — is tested with a silent test
+double, and the one package that needs a sound card sits at the edge of the
+program. `internal/audio` is the whole of the cgo surface.
+
+## The rules that are ports, not inventions
+
+`internal/library/identity.go` and `internal/queue` are **ports** of code that
+already exists on the server side, and they say so in their doc comments:
+
+| Here | Ported from | Contract |
+|---|---|---|
+| `library.EffectiveArtist` etc. | `database/entities.go` | `docs/architecture/artist-album-model.md` |
+| `library.Index` browse rules | `database/library.go` | `docs/ui/artists-and-performers.md` |
+| `queue` index arithmetic | `webui/static/js/queue-ops.js` | `docs/ui/player-and-queue.md` |
+| disc grouping | `webui/static/js/disc.js` | `docs/architecture/disc-numbering.md` |
+
+They are duplicated because madplayer must run with no server at all — but the
+same folder scanned here and uploaded there has to produce the same artists, the
+same albums and the same buckets. `internal/library/index_test.go` pins this
+against the worked example in `artists-and-performers.md`, and
+`internal/queue/queue_test.go` mirrors `tests/js/queue-ops.test.mjs` case for
+case. If one of those needs different expectations from its twin, the contract
+has changed and the doc moves in the same commit.
 
 ## Build prerequisites (Linux)
 
-Gio is cgo. On Fedora both of these are optional — each backend has a fallback —
-but without them you must pass the matching tag on every build:
-
 ```bash
-sudo dnf install -y libxkbcommon-x11-devel vulkan-headers
+sudo dnf install -y alsa-lib-devel libxkbcommon-x11-devel vulkan-headers
 ```
 
-- `libxkbcommon-x11-devel` — the X11 backend; without it build `-tags nox11`
+- `alsa-lib-devel` — **required**: the audio output (oto) will not build without
+  it. PipeWire's ALSA compatibility handles the rest at runtime.
+- `libxkbcommon-x11-devel` — Gio's X11 backend; without it build `-tags nox11`
   (Wayland only).
-- `vulkan-headers` — the Vulkan backend; without it build `-tags novulkan`
+- `vulkan-headers` — Gio's Vulkan backend; without it build `-tags novulkan`
   (falls back to OpenGL ES).
+
+Gio is **native Wayland** on a Wayland session — it compiles both backends in and
+picks at runtime.
 
 ## Running
 
 ```bash
-# fixtures: 5000 rows, multi-script text — the scroll and text-rendering test
-go run ./spike/gio
-
-# against a real server (start one from the repo root first)
-MADPLAYER_BASE=http://localhost:3000 MADPLAYER_TOKEN=<api token> go run ./spike/gio
+go run ./cmd/madplayer
+go test ./internal/...
 ```
 
-Gio is **native Wayland** on a Wayland session — it compiles both backends in and
-picks at runtime, verified by running with `DISPLAY` unset.
+On first start it opens on **Folders**: type or paste a path and press *Add
+folder*. There is no native folder picker in Gio, so the path is validated
+before it is accepted — a silently-ignored typo looks exactly like an empty
+library.
 
-Android: see `spike/README.md` §Android. Short version — **the APK cannot be built
-on this aarch64 host**; `gogio` panics on `linux/arm64` by construction.
-`spike/android/build-apks.sh` builds it on an x86_64 box, and `adb install` works
-from here.
+State lives in `~/.config/madplayer/` (`config.json`, `library.json`). Deleting
+it loses nothing but the scan cache.
 
-| Env | Meaning |
-|---|---|
-| `MADPLAYER_BASE` | madshare base URL. Unset → generated fixtures. |
-| `MADPLAYER_TOKEN` | API token from `/settings`. Unset → anonymous, i.e. the guest listing. |
-| `MADPLAYER_ROWS` | fixture row count (default 5000). |
+## Android
 
-The spikes show which of those two modes they are in, in the header. A spike that
-silently fell back to fixtures would have you judging a toolkit on the wrong data.
+**The APK cannot be built on an aarch64 Linux host.** `gogio` resolves the NDK
+through an `archNDK()` that ends in `panic("unsupported GOARCH: arm64")`, the NDK
+ships no linux-aarch64 host toolchain, and the 16 KB-page emulation wall from
+`../docs/architecture/android-app.md` sits behind both. `android/build-apk.sh`
+builds on an x86_64 host and refuses loudly elsewhere; `adb` runs natively on
+aarch64, so install-and-look still happens on the development machine.

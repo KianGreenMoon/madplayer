@@ -1,0 +1,77 @@
+// Package audio is the real audio device — the one place in madplayer that
+// needs a sound card, and therefore cgo (ALSA on Linux, CoreAudio on macOS,
+// WASAPI on Windows) by way of beep's speaker and oto.
+//
+// It is a package of its own precisely so nothing else has to be. Everything
+// that decides anything — decode, seek, position, queue advance, the whole UI —
+// lives behind player.Sink and builds and tests on a machine with no audio at
+// all.
+package audio
+
+import (
+	"sync"
+	"time"
+
+	"github.com/gopxl/beep/v2"
+	"github.com/gopxl/beep/v2/speaker"
+)
+
+// Speaker adapts beep's process-global speaker to player.Sink.
+type Speaker struct {
+	once   sync.Once
+	inited bool
+}
+
+// New returns an unopened speaker.
+func New() *Speaker { return &Speaker{} }
+
+// Init opens the device.
+//
+// beep's speaker is a process-global that panics if initialised twice, so this
+// is guarded — a second player in the same process (a test, a restart after a
+// device change) must not take the program down.
+func (s *Speaker) Init(rate beep.SampleRate, bufferSize int) error {
+	var err error
+	s.once.Do(func() {
+		err = speaker.Init(rate, bufferSize)
+		s.inited = err == nil
+	})
+	return err
+}
+
+func (s *Speaker) Play(st beep.Streamer) {
+	if s.inited {
+		speaker.Play(st)
+	}
+}
+
+func (s *Speaker) Lock() {
+	if s.inited {
+		speaker.Lock()
+	}
+}
+
+func (s *Speaker) Unlock() {
+	if s.inited {
+		speaker.Unlock()
+	}
+}
+
+func (s *Speaker) Clear() {
+	if s.inited {
+		speaker.Clear()
+	}
+}
+
+// Close releases the device.
+func (s *Speaker) Close() error {
+	if !s.inited {
+		return nil
+	}
+	speaker.Clear()
+	// Give the device a moment to drain before closing, or the last fraction of
+	// a second is cut off with an audible click on exit.
+	time.Sleep(20 * time.Millisecond)
+	speaker.Close() // returns nothing; the device is process-global
+	return nil
+}

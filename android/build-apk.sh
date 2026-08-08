@@ -1,5 +1,5 @@
 #!/bin/sh
-# Build the madplayer spike as an Android APK.
+# Build madplayer as an Android APK.
 #
 # MUST RUN ON AN x86_64 HOST. Not a preference — gogio resolves the NDK through
 # an archNDK() that ends in `panic("unsupported GOARCH: arm64")` on Linux/arm64
@@ -15,12 +15,12 @@
 #   Android NDK r23+            $ANDROID_HOME/ndk/<version>
 #   go install gioui.org/cmd/gogio@latest
 #
-# Usage:  ./build-apks.sh [outdir]      (default: ./out)
+# Usage:  ./build-apk.sh [outdir]       (default: ./out)
 
 set -eu
 
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-root=$(CDPATH= cd -- "$here/../.." && pwd)   # madplayer/
+root=$(CDPATH= cd -- "$here/.." && pwd)      # madplayer/
 out=${1:-$here/out}
 
 arch=$(uname -m)
@@ -42,15 +42,15 @@ mkdir -p "$out"
 
 # The packagers require a launcher icon; generate it rather than commit a blob.
 icon="$here/icon.png"
-[ -f "$icon" ] || (cd "$root" && go run ./spike/android/icon "$icon")
+[ -f "$icon" ] || (cd "$root" && go run ./android/icon "$icon")
 
 echo "==> $out/madplayer.apk"
 (cd "$root" && gogio \
 	-target android \
-	-appid ygg.daemonlord.madplayer.spike \
+	-appid ygg.daemonlord.madplayer \
 	-icon "$icon" \
 	-o "$out/madplayer.apk" \
-	./spike/gio)
+	./cmd/madplayer)
 
 echo
 echo "built:"
@@ -59,6 +59,5 @@ echo
 echo "install on a connected phone:"
 echo "  adb install -r $out/madplayer.apk"
 echo
-echo "It runs standalone on the phone: no server needed, the fixture corpus is"
-echo "compiled in. That is the point — judge scroll and text rendering on the"
-echo "actual target."
+echo "It runs standalone: no server and no account. Point it at a folder on the"
+echo "phone and it scans, indexes and plays what is there."

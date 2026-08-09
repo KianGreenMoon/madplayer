@@ -33,6 +33,10 @@ type meshServer struct {
 	holders atomic.Int32 // GET /api/madnetwork/holders/…
 	keys    []string     // who it says holds the blob
 	size    int64
+	// lastSeen ages a holder, so a test can hand the client the kind of plan a
+	// real server sends: freshest first, with nodes that have been gone for days
+	// still on it.
+	lastSeen map[string]int64
 }
 
 func newMeshServer(t *testing.T, body string, keys ...string) *meshServer {
@@ -48,7 +52,9 @@ func newMeshServer(t *testing.T, body string, keys ...string) *meshServer {
 			ms.holders.Add(1)
 			hs := make([]map[string]any, 0, len(ms.keys))
 			for _, k := range ms.keys {
-				hs = append(hs, map[string]any{"key": k, "name": "a device"})
+				hs = append(hs, map[string]any{
+					"key": k, "name": "a device", "last_seen": ms.lastSeen[k],
+				})
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"hash":    strings.TrimPrefix(r.URL.Path, "/api/madnetwork/holders/"),
@@ -338,6 +344,39 @@ func TestAPartlyWrittenSwarmFetchIsNotRetriedOverTheRelay(t *testing.T) {
 	}
 	if n := ms.relay.Load(); n != 0 {
 		t.Fatalf("relay hit %d time(s) after the swarm had already written", n)
+	}
+}
+
+// TestStaleHoldersReachTheSwarmUntouched is the client half of a cost measured
+// against a live server on 2026-08-09.
+//
+// The plan that arrived named holders last seen 21 and 54 hours earlier, and
+// each dead one costs the swarm four stall timeouts before it is retired — about
+// ninety seconds of the four minutes those fetches took. With one live holder and
+// no stale ones the same server delivered in 1m43s.
+//
+// The client passes the plan through exactly as given: which nodes are worth
+// dialling is the server's call, it is the one with the graph, and a client that
+// re-derives it disagrees with every other client. So this pins the pass-through
+// rather than a filter, and it is the test that changes if a client-side cutoff
+// is ever the answer.
+func TestStaleHoldersReachTheSwarmUntouched(t *testing.T) {
+	stale := time.Now().Add(-54 * time.Hour).Unix()
+	ms := newMeshServer(t, "RELAY bytes", "live", "gone")
+	ms.lastSeen = map[string]int64{"live": time.Now().Unix(), "gone": stale}
+
+	sw := &fakeSwarm{body: "SWARM bytes"}
+	f := meshFetcher(t, ms, sw, &fakeVouch{ok: true})
+
+	path, err := f.Local(context.Background(), ms.track(hashA))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := read(t, path); got != "SWARM bytes" {
+		t.Fatalf("played %q, want the swarm's copy", got)
+	}
+	if want := []string{"live", "gone"}; !equal(sw.holders, want) {
+		t.Fatalf("swarm asked %v, want %v — the server's plan, order and all", sw.holders, want)
 	}
 }
 

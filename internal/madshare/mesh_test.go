@@ -3,9 +3,12 @@ package madshare
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
+	"time"
 )
 
 // The mesh calls a device makes to its home server. The server's side is tested
@@ -77,6 +80,48 @@ func TestPushHoldingsSendsAnEmptyListNotNull(t *testing.T) {
 	}
 	if len(hashes) != 0 {
 		t.Errorf("hashes = %v, want empty", hashes)
+	}
+}
+
+// TestHoldersKeepsStaleHoldersInTheServersOrder pins a decision that cost real
+// time to find, measured 2026-08-09: the client does NOT second-guess the fetch
+// plan, and the plan can contain nodes that have been gone for days.
+//
+// The server sends holders freshest-first and applies no staleness cutoff on its
+// catalog branch. Against a live server that meant being handed nodes last seen
+// 21 and 54 hours earlier, and each dead one costs the swarm four stall timeouts
+// before it is retired — about ninety seconds of the four minutes those fetches
+// took.
+//
+// Keys() therefore preserves the order exactly, because that order is the only
+// thing standing between a fetch and dialling the corpse first. Filtering here
+// was considered and rejected: which nodes are worth dialling is the server's
+// call (it is the one with the graph), and a client that re-derives it quietly
+// disagrees with every other client. When a cutoff lands it belongs in
+// MadnetworkBlobProviders, and this test should keep passing unchanged.
+func TestHoldersKeepsStaleHoldersInTheServersOrder(t *testing.T) {
+	now := time.Now().Unix()
+	body := fmt.Sprintf(`{"hash":"abc","size":17428924,"holders":[
+		{"key":"live","name":"mainframe","last_seen":%d},
+		{"key":"gone","name":"fedora","last_seen":%d},
+		{"key":"ancient","name":"old test node","last_seen":%d}]}`,
+		now-20, now-21*3600, now-54*3600)
+
+	var h Holders
+	if err := json.Unmarshal([]byte(body), &h); err != nil {
+		t.Fatal(err)
+	}
+	if h.Size != 17428924 {
+		t.Errorf("size = %d, want the advertised total", h.Size)
+	}
+	want := []string{"live", "gone", "ancient"}
+	if got := h.Keys(); !slices.Equal(got, want) {
+		t.Errorf("Keys() = %v, want %v — the server's order, stale entries and all", got, want)
+	}
+	// last_seen is decoded rather than dropped: nothing acts on it today, and a
+	// client-side cutoff would start here if the server's one never arrives.
+	if h.Holders[2].LastSeen != now-54*3600 {
+		t.Errorf("last_seen = %d, want it carried through", h.Holders[2].LastSeen)
 	}
 }
 

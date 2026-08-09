@@ -131,6 +131,7 @@ type App struct {
 	btnShuffle, btnRepeat, btnClearQueue  widget.Clickable
 	btnAddFolder, btnRescan, btnUndo      widget.Clickable
 	btnSignIn, btnCacheSave, btnCacheDrop widget.Clickable
+	meshOn                                widget.Bool
 	rmFolder                              []widget.Clickable
 	rmServer                              []widget.Clickable
 	rmQueue                               []widget.Clickable
@@ -157,6 +158,10 @@ func New(win *app.Window, pl *player.Player, be *backend.Backend) *App {
 	a.cfg = cfg
 	a.vol.Value = float32(cfg.Volume)
 	pl.SetVolume(cfg.Volume)
+	// The switch shows what was ASKED for, not what happened. They differ on a
+	// device with no fpcalc, and the caption beside it is where that is explained
+	// — a box that silently unticked itself would look like it had not been saved.
+	a.meshOn.Value = cfg.Mesh
 
 	// The ceiling is madshare's setting, not this client's: the same number a
 	// server's settings card writes, read through the embedded backend. A read
@@ -174,7 +179,7 @@ func New(win *app.Window, pl *player.Player, be *backend.Backend) *App {
 	if err != nil {
 		a.status = "downloads are unavailable: " + err.Error()
 	} else {
-		a.fetch = remote.New(a.cache)
+		a.fetch = remote.New(a.cache, log.Default())
 		pl.SetFetcher(a.fetch)
 	}
 	a.applyServers()
@@ -193,6 +198,13 @@ func New(win *app.Window, pl *player.Player, be *backend.Backend) *App {
 	if node, up := be.Mesh(); up {
 		a.enrol = mesh.New(node, log.Default())
 		go a.enrol.Run(context.Background())
+		if a.fetch != nil {
+			// Downloads now prefer the swarm. The enrolment goes with it because a
+			// mesh fetch presents a token, and only enrolment knows which one — the
+			// two are installed together so there is no window in which the fetcher
+			// would try the mesh with no vouch to present.
+			a.fetch.SetSwarm(be, a.enrol)
+		}
 	}
 
 	// Hand over the folders an older, self-scanning madplayer kept in its config,

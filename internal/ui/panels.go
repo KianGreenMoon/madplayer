@@ -203,6 +203,7 @@ func (a *App) settings(gtx C) D {
 			// same question — what this device keeps on disk. Signing in to a
 			// server is a different question, and lives on its own panel.
 			layout.Rigid(func(gtx C) D { return a.cacheControls(gtx) }),
+			layout.Rigid(func(gtx C) D { return a.meshControls(gtx) }),
 		)
 	})
 }

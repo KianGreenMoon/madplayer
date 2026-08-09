@@ -44,7 +44,7 @@ func fetcher(t *testing.T, srv *httptest.Server) *Fetcher {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := New(cache)
+	f := New(cache, quiet())
 	f.SetServers([]library.Server{{
 		Base:   srv.URL,
 		Label:  "host",
@@ -91,7 +91,7 @@ func TestTheSameAudioFromTwoServersIsCachedOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := New(cache)
+	f := New(cache, quiet())
 	f.SetServers([]library.Server{
 		{Base: one.URL, Label: "one", Client: madshare.New(one.URL, "tok")},
 		{Base: two.URL, Label: "two", Client: madshare.New(two.URL, "tok")},
@@ -117,7 +117,7 @@ func TestATrackWhoseServerIsGoneSaysSo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := New(cache)
+	f := New(cache, quiet())
 
 	_, err = f.Local(context.Background(), &queue.Item{URL: "http://gone:3000/files/x/a.mp3"})
 	if err == nil || !strings.Contains(err.Error(), "signed in") {
@@ -159,7 +159,7 @@ func TestServerRefusalsAreTranslated(t *testing.T) {
 // real deployment, and the bare host must not shadow it.
 func TestTheLongestMatchingServerWins(t *testing.T) {
 	cache, _ := blobcache.Open(t.TempDir(), 0)
-	f := New(cache)
+	f := New(cache, quiet())
 	bare := madshare.New("http://host:3000", "bare")
 	under := madshare.New("http://host:3000/madshare", "under")
 	f.SetServers([]library.Server{
@@ -167,11 +167,11 @@ func TestTheLongestMatchingServerWins(t *testing.T) {
 		{Base: "http://host:3000/madshare", Label: "under", Client: under},
 	})
 
-	got, err := f.clientFor("http://host:3000/madshare/files/abc/a.mp3")
+	got, err := f.serverFor("http://host:3000/madshare/files/abc/a.mp3")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != under {
+	if got.Client != under {
 		t.Error("the bare host shadowed the server mounted under a path")
 	}
 }

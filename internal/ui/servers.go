@@ -12,6 +12,7 @@ import (
 	"gioui.org/widget/material"
 
 	"daemonlord.ygg/madplayer/internal/madshare"
+	"daemonlord.ygg/madplayer/internal/mesh"
 	"daemonlord.ygg/madplayer/internal/prefs"
 )
 
@@ -178,6 +179,103 @@ func (a *App) cacheControls(gtx C) D {
 	})
 }
 
+// meshControls is the madnetwork switch and what it is currently doing.
+//
+// It exists because the switch was otherwise unreachable: prefs.Mesh and
+// backend.Options honoured it from the day they were written, and nothing ever
+// set them, so the only way to join the mesh was to hand-edit config.json. A
+// feature nobody can turn on is indistinguishable from one that does not work.
+//
+// The toggle needs a RESTART, and says so rather than pretending. Whether this
+// device is a node is decided in the config the backend is built from, and there
+// is deliberately no way to turn it on later — two ways to become a node could
+// disagree about whether this one is.
+func (a *App) meshControls(gtx C) D {
+	if a.meshOn.Update(gtx) {
+		a.saveMesh(a.meshOn.Value)
+	}
+
+	problem := a.be.MeshProblem()
+	_, up := a.be.Mesh()
+	var rounds []mesh.Status
+	if a.enrol != nil {
+		rounds = a.enrol.Status()
+	}
+
+	return layout.Inset{Top: 16}.Layout(gtx, func(gtx C) D {
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+			layout.Rigid(func(gtx C) D { return a.sectionTitle(gtx, "The madnetwork") }),
+			layout.Rigid(func(gtx C) D {
+				return a.sectionHint(gtx,
+					"Fetch tracks from whoever has them — your other devices and the servers you are "+
+						"signed in to — instead of always from the server that listed them, and share "+
+						"what you have fetched back. Your own music folders are never shared. "+
+						"Takes effect when madplayer restarts.")
+			}),
+			layout.Rigid(func(gtx C) D {
+				cb := material.CheckBox(a.th, &a.meshOn, "Use the madnetwork")
+				cb.Color, cb.IconColor = colFg, colFg
+				return cb.Layout(gtx)
+			}),
+			layout.Rigid(func(gtx C) D {
+				// One line saying what is actually true right now. The three cases are
+				// different problems with different answers: a switch that is off, a
+				// switch that is on and could not be honoured (fpcalc), and a node that
+				// is up but has not yet been vouched for by anybody.
+				var txt string
+				switch {
+				case problem != "":
+					txt = problem
+				case up:
+					txt = meshRoundsText(rounds)
+				case a.meshOn.Value:
+					txt = "Off until madplayer restarts."
+				default:
+					txt = "Off. Tracks are downloaded from the server that listed them."
+				}
+				return layout.Inset{Top: 8}.Layout(gtx, func(gtx C) D {
+					l := material.Caption(a.th, txt)
+					l.Color = colDim
+					return l.Layout(gtx)
+				})
+			}),
+		)
+	})
+}
+
+// meshRoundsText summarises enrolment for the person who flipped the switch.
+//
+// A node that is up is not yet a node that can fetch: it needs a vouch from a
+// home server, and that is the thing most likely to be missing (no server signed
+// in to, or one that has not answered yet). Saying "on" without saying that would
+// be the same silence the switch itself used to have.
+func meshRoundsText(rounds []mesh.Status) string {
+	if len(rounds) == 0 {
+		return "On, but no server is signed in to — a device is vouched for by a server, so " +
+			"tracks still come from wherever they are listed."
+	}
+	var enrolled, peers, advertised int
+	var problem string
+	for _, r := range rounds {
+		if !r.Enrolled.IsZero() {
+			enrolled++
+		}
+		if r.Problem != "" && problem == "" {
+			problem = r.Problem
+		}
+		peers += r.Peers
+		advertised += r.Advertised
+	}
+	if enrolled == 0 {
+		if problem != "" {
+			return "On, but not vouched for yet: " + problem
+		}
+		return "On. Waiting for a server to vouch for this device…"
+	}
+	return fmt.Sprintf("On — vouched for by %d of %d server(s), %d peer(s), sharing %d downloaded track(s).",
+		enrolled, len(rounds), peers, advertised)
+}
+
 func (a *App) sectionTitle(gtx C, txt string) D {
 	l := material.Body1(a.th, txt)
 	l.Color = colFg
@@ -335,6 +433,24 @@ func (a *App) saveCacheLimit(text string) {
 		}
 		a.refreshCacheSize()
 	}()
+}
+
+// saveMesh records the switch. Nothing else happens now, by design: the backend
+// was built with the old answer and keeps it until the next launch.
+func (a *App) saveMesh(on bool) {
+	a.mu.Lock()
+	a.cfg.Mesh = on
+	cfg := a.cfg
+	a.mu.Unlock()
+	if err := a.store.Save(cfg); err != nil {
+		a.setServerMsg("could not save the madnetwork setting: " + err.Error())
+		return
+	}
+	if on {
+		a.setServerMsg("The madnetwork is on from the next start of madplayer")
+		return
+	}
+	a.setServerMsg("The madnetwork is off from the next start of madplayer")
 }
 
 func (a *App) clearCache() {

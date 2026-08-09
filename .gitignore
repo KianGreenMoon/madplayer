@@ -5,9 +5,11 @@ android/icon.png
 android/out/
 
 # Compiled binaries. `go build ./...` drops one per main package in the working
-# directory — /main from android/icon, /madplayer from cmd/madplayer.
+# directory — /main from android/icon, /madplayer from cmd/madplayer,
+# /meshcheck from cmd/meshcheck.
 /main
 /madplayer
+/meshcheck
 
 # Assistant context. CLAUDE.md is Claude Code's own working notes for this repo,
 # and .claude/ is whatever tooling it keeps beside them. Both are read every

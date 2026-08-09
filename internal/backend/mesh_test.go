@@ -2,11 +2,15 @@ package backend
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log"
 	"os/exec"
 	"strings"
 	"testing"
+	"time"
+
+	"daemonlord.ygg/madshare/app"
 )
 
 // openTestBackend is openBackend with the mesh switch under test.
@@ -93,5 +97,27 @@ func TestOpenWithMeshStartsOrExplains(t *testing.T) {
 	}
 	if len(net.Key()) != 64 {
 		t.Errorf("node key = %q, want 64 hex characters", net.Key())
+	}
+}
+
+// A device that is not a node says so rather than hanging. The fetcher installs
+// the swarm only when Mesh reports it up, so this is the facade defending itself
+// against a caller that did not check — and the failure it must not have is
+// blocking forever on a transfer nobody started, which is a music player that
+// stops playing.
+func TestFetchBlobWithNoMeshFails(t *testing.T) {
+	be := openTestBackend(t, Options{})
+	done := make(chan error, 1)
+	go func() {
+		_, err := be.FetchBlob(context.Background(), strings.Repeat("a", 64), 0, []string{"bb22"})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, app.ErrNoMesh) {
+			t.Fatalf("FetchBlob without a mesh = %v, want ErrNoMesh", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("FetchBlob blocked on a device with no madnetwork node")
 	}
 }

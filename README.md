@@ -11,10 +11,10 @@ precondition.
 
 **Status:** the backend is **embedded** (level 2a), the client **signs in to
 remote madshares** (level 1), and this device's library and every server's are
-browsed as one merged list. Level 2b — the mesh — is underway: the device can
-become a madnetwork node and keeps its standing with each home server. Still to
-come there: fetching via the swarm with the relay as fallback, and the
-human-readable materialize target.
+browsed as one merged list. Level 2b — the mesh — is nearly there: the device can
+become a madnetwork node, keeps its standing with each home server, and **plays
+network tracks off the swarm with the relay as the fallback**. Still to come
+there: the human-readable materialize target.
 
 ## What works
 
@@ -103,6 +103,44 @@ There is no useful sense in which this client streams.
 - **Playback is asynchronous** because of this: a download cannot happen on the
   goroutine that handled the click. The next queue item is prefetched, so only
   the first remote track in a run pays the gap.
+
+### Two ways to get the bytes
+
+`internal/remote` owns the choice, and it is the only place that knows there is
+one. The **swarm** asks whoever holds the blob; the **relay** asks the one server
+that named it. The relay is not a degraded mode — it is level 1, it works with no
+mesh at all, and every reason the swarm has to decline lands there silently: no
+node on this device, a track named without a content hash, no vouch from that
+server yet, or nobody holding it. Only a swarm fetch that *tried and failed* logs
+a line, because a mesh that quietly never works looks exactly like one that does.
+
+- **The swarm gets a budget, not the caller's whole deadline**
+  (`remote.DefaultSwarmBudget`, 20 s). This is not a tidiness rule, it is the
+  difference between music and none: measured against a real server, the relay
+  delivered a 20 MB track in 3.8 s and the swarm took 4 m 05 s, so an unbounded
+  mesh attempt spent the entire allowance and handed the relay a context that was
+  already dead. Expiring is an ordinary decline — nothing has been written, so
+  the relay takes over with what is left.
+- **Holders come from `GET /api/madnetwork/holders/{hash}`, always.** The design
+  doc offers a browse row's own `versions[].holders[]` as the cheaper source and
+  this client never has one: those rows are the `/madnetwork` page's, and what
+  madplayer merges is each server's ordinary library, whose track rows carry no
+  holders.
+- **Mesh fetches run one at a time.** The mesh carries one vouch and it is
+  installed process-wide, so presenting the token and fetching is one indivisible
+  step — otherwise a prefetch for another server's track swaps the token out from
+  under a fetch already running.
+- **Once bytes have landed, there is no falling back.** The swarm's copy is
+  written to the cache only after the transfer is complete and verified, and if
+  that write fails part-way the relay is not tried: a second source's bytes
+  appended to the first's decode as noise instead of failing.
+- **A swarm fetch stores the blob twice, on purpose.** `backend.FetchBlob` lands
+  it in madshare's own `cache/madnetwork/` — hash-named, no extension — and that
+  is the only directory this node seeds from and the only one `Holdings`
+  advertises. `internal/remote` then copies it into `remote/` under a name the
+  decoders can read, since they pick by extension. The corollary is worth
+  knowing: **a device that only ever used the relay seeds nothing**, because
+  relay downloads never touch the seeding cache.
 
 **The credential is an API token, never the password.** `SignIn` spends the
 password once — log in, mint a token, drop the session — and what is kept is a

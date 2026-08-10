@@ -160,7 +160,7 @@ Today that require is resolved by a **`replace` to a checkout beside this one**,
 so the two directories have to sit together:
 
 ```
-mediashare/     madshare  (module daemonlord.ygg/madshare)
+madshare/       madshare  (module daemonlord.ygg/madshare)
 madplayer/      this repo
 ```
 
@@ -175,7 +175,7 @@ madshare renames its module to `github.com/KianGreenMoon/madshare`, this collaps
 to a single `require` line and the checkout beside us stops being load-bearing.
 
 **`third_party/yggstack` is replaced too**, at
-`../mediashare/third_party/yggstack`, and that one is load-bearing right now: only
+`../madshare/third_party/yggstack`, and that one is load-bearing right now: only
 the main module's replaces apply, so without it the build silently resolves
 upstream yggstack and loses three patches the mesh depends on. Keep it in step
 with madshare's root `go.mod`.

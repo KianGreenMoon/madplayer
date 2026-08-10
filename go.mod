@@ -3,7 +3,7 @@ module daemonlord.ygg/madplayer
 go 1.26.4
 
 require (
-	daemonlord.ygg/madshare v0.9.0
+	daemonlord.ygg/madshare v0.8.6
 	gioui.org v0.10.1
 	github.com/gopxl/beep/v2 v2.1.1
 )
@@ -23,13 +23,13 @@ require (
 // Upstream is https://github.com/KianGreenMoon/madshare. The day that module
 // declares itself as github.com/KianGreenMoon/madshare, this whole block becomes
 // one require line and the checkout beside us stops being load-bearing.
-replace daemonlord.ygg/madshare => ../mediashare
+replace daemonlord.ygg/madshare => ../madshare
 
 // madshare's own replace does NOT reach us: only the MAIN module's replace
 // directives apply, so its local yggstack fork has to be repeated here or the
 // build silently resolves upstream and loses three patches the mesh depends on
 // (third_party/yggstack/MADSHARE-PATCH.md). Keep in step with the root go.mod.
-replace github.com/yggdrasil-network/yggstack => ../mediashare/third_party/yggstack
+replace github.com/yggdrasil-network/yggstack => ../madshare/third_party/yggstack
 
 require (
 	gioui.org/shader v1.0.8 // indirect

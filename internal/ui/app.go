@@ -13,7 +13,6 @@ import (
 	"image/color"
 
 	"gioui.org/app"
-	"gioui.org/io/key"
 	"gioui.org/layout"
 	"gioui.org/op"
 	"gioui.org/op/clip"
@@ -105,6 +104,10 @@ type App struct {
 	// override — empty when there is none — while the hint names what the
 	// default resolves to, so "empty" is never a value nobody can read.
 	ceiling backend.Ceiling
+
+	// title is the last string handed to the window manager, so retitle can tell
+	// a changed track from sixty identical frames.
+	title string
 
 	view  view
 	level level
@@ -566,8 +569,35 @@ func (a *App) save() {
 	_ = a.store.Save(cfg)
 }
 
+// windowTitle is what the taskbar, the window list and an alt-tab switcher say
+// this window is. A music player that is not the front window is exactly where
+// the title has to answer "what is this" — so it names the track, and keeps the
+// program's own name on the end so the entry is still identifiable when nothing
+// is playing.
+func (a *App) windowTitle() string {
+	cur := a.pl.Current()
+	if cur == nil {
+		return "madplayer"
+	}
+	t := cur.Title
+	if cur.Artist != "" {
+		t += " — " + cur.Artist
+	}
+	return t + " · madplayer"
+}
+
+// retitle pushes the title only when it CHANGED. Setting it every frame is sixty
+// window-manager round trips a second for a string that moves once a song.
+func (a *App) retitle() {
+	if t := a.windowTitle(); t != a.title {
+		a.title = t
+		a.win.Option(app.Title(t))
+	}
+}
+
 func (a *App) layout(gtx C) D {
 	a.update(gtx)
+	a.retitle()
 	paint.FillShape(gtx.Ops, colBg, clip.Rect{Max: gtx.Constraints.Max}.Op())
 
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
@@ -617,25 +647,8 @@ func (a *App) update(gtx C) {
 		a.pl.ClearQueue()
 	}
 
-	// Escape steps back one level: it closes the search first, then walks the
-	// drill up. This is the same order the web UI's back handler uses, and it is
-	// what a phone's hardware back button will need when this reaches Android.
-	for {
-		ev, ok := gtx.Event(key.Filter{Name: key.NameEscape})
-		if !ok {
-			break
-		}
-		if ke, isKey := ev.(key.Event); !isKey || ke.State != key.Press {
-			continue
-		}
-		switch {
-		case a.view != viewBrowse:
-			a.search.SetText("")
-			a.view = viewBrowse
-		default:
-			a.drillUp()
-		}
-	}
+	a.handleKeys(gtx)
+
 	if a.crumbHome.Clicked(gtx) {
 		a.level, a.artist, a.album = levelArtists, nil, nil
 		go a.reload()

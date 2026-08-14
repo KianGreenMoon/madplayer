@@ -204,8 +204,45 @@ func (a *App) settings(gtx C) D {
 			// server is a different question, and lives on its own panel.
 			layout.Rigid(func(gtx C) D { return a.cacheControls(gtx) }),
 			layout.Rigid(func(gtx C) D { return a.meshControls(gtx) }),
+			layout.Rigid(func(gtx C) D { return a.shortcutHelp(gtx) }),
 		)
 	})
+}
+
+// shortcutHelp prints the keyboard bindings, generated from the same table that
+// installs them (keys.go). A hand-written list is a list that drifts, and a
+// shortcut nobody can discover may as well not exist.
+func (a *App) shortcutHelp(gtx C) D {
+	return layout.Inset{Top: 18}.Layout(gtx, func(gtx C) D {
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+			layout.Rigid(func(gtx C) D {
+				l := material.Body1(a.th, "Keyboard")
+				l.Color = colFg
+				return l.Layout(gtx)
+			}),
+			layout.Rigid(func(gtx C) D {
+				return layout.Inset{Top: 4}.Layout(gtx, func(gtx C) D {
+					l := material.Caption(a.th, shortcutSummary())
+					l.Color = colDim
+					return l.Layout(gtx)
+				})
+			}),
+		)
+	})
+}
+
+// shortcutSummary is the one-paragraph rendering of the bindings. Unlabelled
+// entries are aliases of a labelled one and are left out on purpose — printing
+// both spellings of "next track" makes the list longer without saying more.
+func shortcutSummary() string {
+	parts := make([]string, 0, len(shortcuts))
+	for _, s := range shortcuts {
+		if s.label == "" {
+			continue
+		}
+		parts = append(parts, s.label+" "+strings.ToLower(s.does))
+	}
+	return strings.Join(parts, "  ·  ")
 }
 
 // describeFolder is a folder's second line: how it went, or why it cannot be

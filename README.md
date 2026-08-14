@@ -9,12 +9,17 @@ indexes and plays them — no server, no account, no network, nothing to sign in
 to. Reaching a madshare server is a feature layered on top of that, never a
 precondition.
 
-**Status:** the backend is **embedded** (level 2a), the client **signs in to
-remote madshares** (level 1), and this device's library and every server's are
-browsed as one merged list. Level 2b — the mesh — is nearly there: the device can
-become a madnetwork node, keeps its standing with each home server, and **plays
-network tracks off the swarm with the relay as the fallback**. Still to come
-there: the human-readable materialize target.
+**Status:** a usable desktop player. The backend is **embedded** (level 2a), the
+client **signs in to remote madshares** (level 1), and this device's library and
+every server's are browsed as one merged list. It has cover art, keyboard
+control, an editable queue that survives a restart, and it answers the media
+keys and fills the desktop's media widget.
+
+Level 2b — the mesh — is nearly there: the device can become a madnetwork node,
+keeps its standing with each home server, and **plays network tracks off the
+swarm with the relay as the fallback**. Still owed there: the human-readable
+materialize target, whose three open questions are in `docs/ui/madplayer.md`
+§"Where the bytes live" and are **madshare design decisions, not client ones**.
 
 ## What works
 

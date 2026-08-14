@@ -10,8 +10,6 @@ import (
 	"gioui.org/unit"
 	"gioui.org/widget"
 
-	"golang.org/x/exp/shiny/materialdesign/icons"
-
 	"daemonlord.ygg/madplayer/internal/artwork"
 	"daemonlord.ygg/madplayer/internal/library"
 )
@@ -101,16 +99,6 @@ func (a *App) coverPlaceholder(gtx C, px int) D {
 		return iconNoCover.Layout(gtx, colLine)
 	})
 }
-
-// iconNoCover is the record drawn on a coverless tile. A failure to build it is
-// not worth reporting: the tile is then plain, which is the same message.
-var iconNoCover = func() *widget.Icon {
-	ic, err := widget.NewIcon(icons.AVAlbum)
-	if err != nil {
-		return nil
-	}
-	return ic
-}()
 
 // albumCoverPath is the file an album's cover is read from: the first track on
 // it that this machine actually holds.

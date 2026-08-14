@@ -36,6 +36,11 @@ there: the human-readable materialize target.
   the arrows, `N`/`P`, `S`, `R`, `/`; the full list is printed in Settings).
 - **Cover art**, read out of the music itself. See *Where a cover comes from*
   below.
+- **Queue editing**: *Play next* and *Add to queue* on every track row (on
+  hover) and on an album header, and ↑/↓/× in the queue panel. Clicking a row
+  still replaces the queue with the view you clicked in — that is the contract
+  in `docs/ui/player-and-queue.md`, and these are the ways of choosing music
+  that do not throw away what you had built.
 - **A folder that is not there** (unplugged drive, ejected card) says so, keeps its
   tracks listed, and marks them "not on this device right now". On a server a
   vanished import is an incident; on a player it is Tuesday.

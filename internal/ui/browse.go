@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"image"
 	"strings"
 
 	"gioui.org/layout"
@@ -27,6 +28,12 @@ type entry struct {
 func (a *App) ensureRows(n int) {
 	if len(a.rows) < n {
 		a.rows = append(a.rows, make([]widget.Clickable, n-len(a.rows))...)
+	}
+	// The per-row queue buttons are grown with the rows they sit on, so an index
+	// that is valid for one is valid for all three.
+	if len(a.rowNext) < n {
+		a.rowNext = append(a.rowNext, make([]widget.Clickable, n-len(a.rowNext))...)
+		a.rowAdd = append(a.rowAdd, make([]widget.Clickable, n-len(a.rowAdd))...)
 	}
 }
 
@@ -244,7 +251,7 @@ func (a *App) trackList(gtx C) D {
 				if a.rows[i].Clicked(gtx) {
 					a.playFrom(tracks, e.index)
 				}
-				return a.trackRow(gtx, &a.rows[i], e.track, e.index+1)
+				return a.trackRow(gtx, i, e.track, e.index+1)
 			})
 		}),
 	)
@@ -259,6 +266,14 @@ func (a *App) trackList(gtx C) D {
 func (a *App) albumHeader(gtx C, tracks []*library.Track) D {
 	if a.btnPlayAlbum.Clicked(gtx) {
 		a.playFrom(tracks, 0)
+	}
+	// The album's three actions are the same three a track row offers, spelled
+	// out. That is what teaches the two icons on the rows below.
+	if a.btnAlbumNext.Clicked(gtx) {
+		a.enqueue(tracks, true)
+	}
+	if a.btnAlbumAdd.Clicked(gtx) {
+		a.enqueue(tracks, false)
 	}
 	total := 0.0
 	for _, t := range tracks {
@@ -303,6 +318,14 @@ func (a *App) albumHeader(gtx C, tracks []*library.Track) D {
 							layout.Rigid(func(gtx C) D {
 								return a.smallButton(gtx, &a.btnPlayAlbum, "Play", false)
 							}),
+							layout.Rigid(layout.Spacer{Width: 8}.Layout),
+							layout.Rigid(func(gtx C) D {
+								return a.smallButton(gtx, &a.btnAlbumNext, "Play next", false)
+							}),
+							layout.Rigid(layout.Spacer{Width: 8}.Layout),
+							layout.Rigid(func(gtx C) D {
+								return a.smallButton(gtx, &a.btnAlbumAdd, "Add to queue", false)
+							}),
 						)
 					}),
 				)
@@ -328,6 +351,84 @@ func (a *App) playFrom(tracks []*library.Track, index int) {
 		a.notice = "Queue replaced — Undo to restore it"
 	}
 }
+
+// enqueue adds tracks to the queue WITHOUT replacing it: right after what is
+// playing, or at the end.
+//
+// This is the other half of clicking a row, and the reason it had to exist: with
+// only playFrom, every way of choosing music threw away the queue you had built.
+// It follows docs/ui/player-and-queue.md — both mark the queue dirty, and
+// neither disturbs what is playing, including on an empty queue, where adding
+// starts nothing. The web UI does the same, and a queue that silently began
+// playing because something was added to it would be a different program.
+func (a *App) enqueue(tracks []*library.Track, next bool) {
+	playable := make([]*library.Track, 0, len(tracks))
+	for _, t := range tracks {
+		if t.Available() {
+			playable = append(playable, t)
+		}
+	}
+	if len(playable) == 0 {
+		a.notice = "Nothing there to queue — those tracks are not on this device right now"
+		return
+	}
+
+	items := a.itemsFromTracks(playable)
+	if next {
+		a.pl.PlayNext(items...)
+	} else {
+		a.pl.Append(items...)
+	}
+	a.notice = enqueueNotice(len(playable), len(tracks), next)
+}
+
+// enqueueNotice says what was added and — when they differ — how many were left
+// out. A silent partial add on an album with one unplugged drive in it is the
+// case worth naming.
+func enqueueNotice(added, asked int, next bool) string {
+	where := "added to the queue"
+	if next {
+		where = "playing next"
+	}
+	what := fmt.Sprintf("%d tracks", added)
+	if added == 1 {
+		what = "1 track"
+	}
+	if skipped := asked - added; skipped > 0 {
+		return fmt.Sprintf("%s %s — %d not on this device right now", what, where, skipped)
+	}
+	return what + " " + where
+}
+
+// rowActions are the two queue buttons on a track row. They appear on hover, so
+// a list of music is a list of music rather than a wall of controls, and the
+// space is reserved either way — buttons that push the duration column sideways
+// as the pointer moves are worse than buttons that are always there.
+//
+// Hover is read from the row AND from the buttons themselves: moving the pointer
+// onto a button leaves the row's own area, and without this the controls would
+// vanish exactly as they were reached.
+func (a *App) rowActions(gtx C, i int, t *library.Track) D {
+	if a.rowNext[i].Clicked(gtx) {
+		a.enqueue([]*library.Track{t}, true)
+	}
+	if a.rowAdd[i].Clicked(gtx) {
+		a.enqueue([]*library.Track{t}, false)
+	}
+
+	show := a.rows[i].Hovered() || a.rowNext[i].Hovered() || a.rowAdd[i].Hovered()
+	if !show {
+		return D{Size: image.Pt(gtx.Dp(2*rowActionSize+8), 0)}
+	}
+	return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+		layout.Rigid(func(gtx C) D { return a.iconButton(gtx, &a.rowNext[i], iconPlayNext, rowActionSize) }),
+		layout.Rigid(layout.Spacer{Width: 8}.Layout),
+		layout.Rigid(func(gtx C) D { return a.iconButton(gtx, &a.rowAdd[i], iconAddQueue, rowActionSize) }),
+	)
+}
+
+// rowActionSize is the side of a row's icon buttons.
+const rowActionSize = unit.Dp(26)
 
 // trackProblem is why a row cannot be played, in the user's terms — and the
 // reasons are deliberately different sentences. Bytes nothing can reach are
@@ -420,11 +521,15 @@ func (a *App) discHeader(gtx C, txt string) D {
 	})
 }
 
-// trackRow renders number, title, performer and duration.
+// trackRow renders number, title, performer, the queue buttons and duration.
 //
 // The per-row artist is the PERFORMER — the track's own credit, not the album
 // artist — which is what makes a compilation readable.
-func (a *App) trackRow(gtx C, click *widget.Clickable, t *library.Track, fallbackNum int) D {
+//
+// It takes the row's INDEX rather than its clickable, because a row now owns
+// three widgets and one index is what keeps them pointing at the same track.
+func (a *App) trackRow(gtx C, i int, t *library.Track, fallbackNum int) D {
+	click := &a.rows[i]
 	cur := a.pl.Current()
 	key := rowKey(t)
 	playing := key != "" && cur != nil && cur.RowKey() == key
@@ -469,6 +574,8 @@ func (a *App) trackRow(gtx C, click *widget.Clickable, t *library.Track, fallbac
 				}
 				return D{}
 			}),
+			layout.Rigid(layout.Spacer{Width: 8}.Layout),
+			layout.Rigid(func(gtx C) D { return a.rowActions(gtx, i, t) }),
 			layout.Rigid(func(gtx C) D { return a.rowMeta(gtx, t.DurationString()) }),
 		)
 	})
@@ -554,7 +661,7 @@ func (a *App) searchResults(gtx C) D {
 			if clicked {
 				a.playFrom(res.Tracks, indexOfTrack(res.Tracks, it.track))
 			}
-			return a.trackRow(gtx, &a.rows[i], it.track, 0)
+			return a.trackRow(gtx, i, it.track, 0)
 		}
 	})
 }

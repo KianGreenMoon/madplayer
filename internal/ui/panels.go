@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"fmt"
+	"image"
 	"strings"
 
 	"gioui.org/layout"
@@ -14,7 +15,13 @@ import (
 
 // --- queue panel ------------------------------------------------------------
 
-// queuePanel is the editable queue: click a row to play it, × to remove.
+// queuePanel is the editable queue: click a row to play it, ↑/↓ to move it, ×
+// to remove.
+//
+// Reordering is buttons rather than a drag. Gio has no drag-and-drop for list
+// rows, a hand-rolled one is a lot of state to get subtly wrong, and two arrows
+// are reachable with a trackpad, a touchscreen and a shaky hand alike — which a
+// 40-pixel drag target is not.
 func (a *App) queuePanel(gtx C) D {
 	items := a.pl.QueueItems()
 	if len(items) == 0 {
@@ -22,7 +29,10 @@ func (a *App) queuePanel(gtx C) D {
 	}
 
 	if len(a.rmQueue) < len(items) {
-		a.rmQueue = append(a.rmQueue, make([]widget.Clickable, len(items)-len(a.rmQueue))...)
+		n := len(items) - len(a.rmQueue)
+		a.rmQueue = append(a.rmQueue, make([]widget.Clickable, n)...)
+		a.upQueue = append(a.upQueue, make([]widget.Clickable, len(items)-len(a.upQueue))...)
+		a.downQueue = append(a.downQueue, make([]widget.Clickable, len(items)-len(a.downQueue))...)
 	}
 	a.ensureRows(len(items))
 	cur := a.pl.QueueIndex()
@@ -53,6 +63,14 @@ func (a *App) queuePanel(gtx C) D {
 				if a.rmQueue[i].Clicked(gtx) {
 					a.pl.RemoveAt(i)
 				}
+				// Moving off either end is a no-op in the queue, so the buttons
+				// are simply not drawn there rather than drawn dead.
+				if i > 0 && a.upQueue[i].Clicked(gtx) {
+					a.pl.MoveInQueue(i, i-1)
+				}
+				if i < len(items)-1 && a.downQueue[i].Clicked(gtx) {
+					a.pl.MoveInQueue(i, i+1)
+				}
 				return a.row(gtx, &a.rows[i], i == cur, func(gtx C) D {
 					return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
 						layout.Flexed(1, func(gtx C) D {
@@ -74,7 +92,21 @@ func (a *App) queuePanel(gtx C) D {
 							)
 						}),
 						layout.Rigid(func(gtx C) D {
-							return a.smallButton(gtx, &a.rmQueue[i], "×", false)
+							if i == 0 {
+								return D{Size: image.Pt(gtx.Dp(rowActionSize), 0)}
+							}
+							return a.iconButton(gtx, &a.upQueue[i], iconUp, rowActionSize)
+						}),
+						layout.Rigid(layout.Spacer{Width: 4}.Layout),
+						layout.Rigid(func(gtx C) D {
+							if i == len(items)-1 {
+								return D{Size: image.Pt(gtx.Dp(rowActionSize), 0)}
+							}
+							return a.iconButton(gtx, &a.downQueue[i], iconDown, rowActionSize)
+						}),
+						layout.Rigid(layout.Spacer{Width: 10}.Layout),
+						layout.Rigid(func(gtx C) D {
+							return a.iconButton(gtx, &a.rmQueue[i], iconRemove, rowActionSize)
 						}),
 					)
 				})

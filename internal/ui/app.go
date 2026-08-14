@@ -141,12 +141,20 @@ type App struct {
 	btnPrev, btnPlay, btnNext             widget.Clickable
 	btnShuffle, btnRepeat, btnClearQueue  widget.Clickable
 	btnAddFolder, btnRescan, btnUndo      widget.Clickable
-	btnPlayAlbum                          widget.Clickable
+	btnPlayAlbum, btnAlbumNext            widget.Clickable
+	btnAlbumAdd                           widget.Clickable
 	btnSignIn, btnCacheSave, btnCacheDrop widget.Clickable
 	meshOn                                widget.Bool
 	rmFolder                              []widget.Clickable
 	rmServer                              []widget.Clickable
 	rmQueue                               []widget.Clickable
+	// rowNext and rowAdd are the per-row queue buttons, indexed exactly like
+	// rows — see ensureRows, which grows all three together.
+	rowNext []widget.Clickable
+	rowAdd  []widget.Clickable
+	// upQueue and downQueue reorder the queue panel.
+	upQueue   []widget.Clickable
+	downQueue []widget.Clickable
 }
 
 // New wires the UI to a player and the embedded backend.

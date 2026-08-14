@@ -72,6 +72,9 @@ type App struct {
 	lib   *library.Library
 	cache *blobcache.Cache
 	fetch *remote.Fetcher
+	// art is the cover cache. It reads files on its own goroutines and asks for
+	// a repaint when one lands.
+	art *covers
 	// enrol keeps this device's standing with each home server when the mesh is
 	// running: a vouch, a way onto the underlay, and an advertisement of what it
 	// holds. Nil when the mesh is off, which is the default.
@@ -87,6 +90,11 @@ type App struct {
 	albums  []*library.Album
 	tracks  []*library.Track
 	found   library.SearchResults
+
+	// albumArt maps an album row to the file its cover is read from. It is
+	// rebuilt with the album list rather than kept: the keys are the rows
+	// themselves, so a stale entry would pin an album nothing is showing.
+	albumArt map[*library.Album]string
 
 	// probs is the libraries that did not answer the last fetch. It is shown
 	// beside the rows, never instead of them: a server being down must not blank
@@ -133,6 +141,7 @@ type App struct {
 	btnPrev, btnPlay, btnNext             widget.Clickable
 	btnShuffle, btnRepeat, btnClearQueue  widget.Clickable
 	btnAddFolder, btnRescan, btnUndo      widget.Clickable
+	btnPlayAlbum                          widget.Clickable
 	btnSignIn, btnCacheSave, btnCacheDrop widget.Clickable
 	meshOn                                widget.Bool
 	rmFolder                              []widget.Clickable
@@ -143,6 +152,7 @@ type App struct {
 // New wires the UI to a player and the embedded backend.
 func New(win *app.Window, pl *player.Player, be *backend.Backend) *App {
 	a := &App{win: win, th: newTheme(), store: prefs.Default(), pl: pl, be: be, lib: library.New(be.Library())}
+	a.art = newCovers(win.Invalidate)
 	a.list.Axis = layout.Vertical
 	a.queueList.Axis = layout.Vertical
 	a.serverList.Axis = layout.Vertical
@@ -336,6 +346,7 @@ func (a *App) reload() {
 		if artist != nil {
 			albums, probs, err := a.lib.Albums(ctx, artist)
 			a.finishLoad(func() { a.albums, a.loading = albums, false }, probs, err)
+			a.loadAlbumArt(albums)
 			return
 		}
 	case levelTracks:
@@ -495,6 +506,54 @@ func describeFolders(folders []backend.Folder) string {
 		s += fmt.Sprintf(" · %d folder(s) not connected", missing)
 	}
 	return s
+}
+
+// loadAlbumArt finds the file each album's cover is read from, in the
+// background, after the rows are already on screen.
+//
+// This is the same rule the durations follow: the list renders IMMEDIATELY and
+// the extras arrive later, because a list that waits for a cover per row is a
+// list that does not appear. Only the device library is asked (see
+// library.DeviceAlbumTracks) — a server's album shows the placeholder until
+// something from it plays, at which point the download is on disk and the
+// player bar reads the cover out of it.
+func (a *App) loadAlbumArt(albums []*library.Album) {
+	a.mu.Lock()
+	a.albumArt = map[*library.Album]string{}
+	a.mu.Unlock()
+	if len(albums) == 0 {
+		return
+	}
+
+	go func() {
+		ctx := context.Background()
+		found := 0
+		for _, al := range albums {
+			tracks, err := a.lib.DeviceAlbumTracks(ctx, al)
+			if err != nil || len(tracks) == 0 {
+				continue
+			}
+			path := albumCoverPath(tracks)
+			if path == "" {
+				continue
+			}
+			a.mu.Lock()
+			// The album list can have been replaced while this ran; writing into
+			// a map that is no longer the one on screen is harmless, but the rows
+			// it describes are gone, so there is nothing to repaint for.
+			if a.albumArt != nil {
+				a.albumArt[al] = path
+			}
+			a.mu.Unlock()
+			found++
+			if found%8 == 0 {
+				a.win.Invalidate()
+			}
+		}
+		if found > 0 {
+			a.win.Invalidate()
+		}
+	}()
 }
 
 // probeDurations fills in lengths the backend has none for.

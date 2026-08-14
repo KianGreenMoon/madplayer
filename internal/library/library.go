@@ -284,6 +284,32 @@ func (l *Library) AlbumTracks(ctx context.Context, al *Album) ([]*Track, []Probl
 	return mergeTracks(lists), probs, nil
 }
 
+// DeviceAlbumTracks is AlbumTracks restricted to the library on THIS machine.
+//
+// It exists for one caller — cover art in the album list — and the restriction
+// is the point. A cover is read out of an audio file, so it needs a path, and
+// only a track carries one; asking every signed-in server for the tracks of
+// every album on screen would turn scrolling a list into a fan-out. The device
+// library answers from SQLite in microseconds, and an album this machine does
+// not hold has no cover here, which is the truth rather than a limitation.
+//
+// A missing device origin is not an error: it is an album that lives only on a
+// server.
+func (l *Library) DeviceAlbumTracks(ctx context.Context, al *Album) ([]*Track, error) {
+	l.mu.RLock()
+	device := l.device
+	l.mu.RUnlock()
+	if al == nil || device == nil {
+		return nil, nil
+	}
+	for _, o := range al.Origins {
+		if o.OnDevice() {
+			return device.AlbumTracks(ctx, o.ID, al.Title)
+		}
+	}
+	return nil, nil
+}
+
 // Search matches artists in both credit roles, album titles and track titles,
 // across every library.
 //

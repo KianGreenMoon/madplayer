@@ -32,7 +32,10 @@ there: the human-readable materialize target.
   the backend's own ingest pipeline, running in-process — the same passes a server
   runs on an upload.
 - **Playback**: MP3, FLAC, WAV and Ogg Vorbis, with a queue, shuffle, three-mode
-  repeat, seeking and volume.
+  repeat, seeking and volume — from the buttons or from the keyboard (Space,
+  the arrows, `N`/`P`, `S`, `R`, `/`; the full list is printed in Settings).
+- **Cover art**, read out of the music itself. See *Where a cover comes from*
+  below.
 - **A folder that is not there** (unplugged drive, ejected card) says so, keeps its
   tracks listed, and marks them "not on this device right now". On a server a
   vanished import is an incident; on a player it is Tuesday.
@@ -72,6 +75,39 @@ Four consequences are worth knowing before reading that code:
 Re-ordering the merged list is the one place this client is allowed to sort — N
 lists that each arrived ordered do not concatenate into an ordered list — and it
 sorts by the server's own keys.
+
+## Where a cover comes from
+
+`internal/artwork` reads the **file**, not the library index, and that is a
+deliberate divergence from the rule that the backend decides everything.
+madshare's ingest does extract cover images — it built variants for this
+library on first scan — but the embedder facade reports only whether an album
+*has* one (`database.AlbumEntry.HasImage`) and offers no way to reach the bytes:
+there is no image twin of `Library.BlobPath`. Reading the audio file's own tags
+is therefore not a re-derivation of a server rule, it is the only route this
+client has. **A facade call would be the better long-term answer** and is worth
+adding to madshare when somebody is in there anyway.
+
+Two properties are worth keeping even after that call exists: it works with the
+network unplugged, and it cannot disagree with the file.
+
+- **Embedded art wins, the folder is the fallback.** A compilation has one
+  folder and twelve different covers, so the picture frame in the track's own
+  tags is the artist's answer for *that* track. Failing that, the best-named
+  image beside the music is used (`cover`, `folder`, `front`, …, then any single
+  image — a sleeve scanned as `IMG_2231.jpg` is still that album's cover).
+- **The folder searched is the ORIGINAL's, not the link's.** A scanned track is
+  reached through `links/<hash>/`, a directory holding one symlink and never a
+  cover, so the path is resolved before its folder is read. This is load-bearing:
+  without it, no folder cover is ever found for a scanned library.
+- **Album rows ask only the device library** (`library.DeviceAlbumTracks`). A
+  cover needs a file path, only a track carries one, and asking every signed-in
+  server for the tracks of every album on screen would turn scrolling into a
+  fan-out. A server's album shows the placeholder until something from it plays
+  — at which point the download is on disk and the player bar reads the cover
+  out of it, which is what `player.CurrentPath` exists for.
+- Covers are scaled to 320 px and the cache is bounded. An untouched 3000×3000
+  booklet scan is 36 MB of pixels for a 40 dp thumbnail.
 
 ## Remote tracks are downloaded, not streamed
 
@@ -194,6 +230,7 @@ this file.
 ```
 cmd/madplayer/       the program
 internal/backend/    madshare, embedded: the data dir, the silent identity, folders
+internal/artwork/    cover art, read out of the music file or the folder beside it
 internal/library/    the merged browse view — sources, the merge rule, disc headers
 internal/prefs/      the settings that belong to this device (volume, servers, cache)
 internal/queue/      play queue: index arithmetic, shuffle, repeat

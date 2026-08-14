@@ -5,7 +5,10 @@ go 1.26.4
 require (
 	daemonlord.ygg/madshare v0.8.6
 	gioui.org v0.10.1
+	github.com/dhowden/tag v0.0.0-20240417053706-3d75831295e8
 	github.com/gopxl/beep/v2 v2.1.1
+	golang.org/x/exp/shiny v0.0.0-20250408133849-7e4ce0ab07d0
+	golang.org/x/image v0.26.0
 )
 
 // The embedded backend, pinned to a released tag and upgraded on purpose — that
@@ -39,7 +42,6 @@ require (
 	github.com/bits-and-blooms/bitset v1.24.5 // indirect
 	github.com/bits-and-blooms/bloom/v3 v3.7.1 // indirect
 	github.com/coder/websocket v1.8.15 // indirect
-	github.com/dhowden/tag v0.0.0-20240417053706-3d75831295e8 // indirect
 	github.com/disintegration/imaging v1.6.2 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/ebitengine/oto/v3 v3.4.0 // indirect
@@ -65,8 +67,6 @@ require (
 	github.com/yggdrasil-network/yggdrasil-go v0.5.14 // indirect
 	github.com/yggdrasil-network/yggstack v0.0.0-20260619214331-c39db65e5bcc // indirect
 	golang.org/x/crypto v0.53.0 // indirect
-	golang.org/x/exp/shiny v0.0.0-20250408133849-7e4ce0ab07d0 // indirect
-	golang.org/x/image v0.26.0 // indirect
 	golang.org/x/net v0.56.0 // indirect
 	golang.org/x/sys v0.46.0 // indirect
 	golang.org/x/text v0.38.0 // indirect

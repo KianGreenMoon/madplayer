@@ -70,12 +70,17 @@ type Player struct {
 	qmu sync.Mutex
 	q   *queue.Queue
 
-	mu     sync.Mutex
-	src    *source
-	ctrl   *beep.Ctrl
-	vol    *effects.Volume
-	gen    uint64 // guards against a stale end-of-track callback, and a stale load
-	volume float64
+	mu   sync.Mutex
+	src  *source
+	ctrl *beep.Ctrl
+	vol  *effects.Volume
+	// srcPath is the file src was decoded from. It is kept because a downloaded
+	// track's bytes are only nameable AFTER the fetch: the queue item carries a
+	// URL, and whatever wants to read the file itself — cover art, a tag reader
+	// — needs the path the download landed at.
+	srcPath string
+	gen     uint64 // guards against a stale end-of-track callback, and a stale load
+	volume  float64
 
 	// fetch makes a remote item's bytes local. It is nil in an offline build of
 	// the program's wiring, and a remote item then simply fails to play — which
@@ -149,6 +154,18 @@ func (p *Player) Current() *queue.Item {
 	p.qmu.Lock()
 	defer p.qmu.Unlock()
 	return p.q.Current()
+}
+
+// CurrentPath is the file being decoded right now, or "" when nothing is open.
+//
+// It is not the same as Current().Path, and the difference is the point: a
+// remote track has no path until its download finishes, and this reports the
+// file the bytes actually landed in. Anything that wants to READ what is playing
+// — the cover art, a tag view — needs that one and not the queue item's.
+func (p *Player) CurrentPath() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.srcPath
 }
 
 func (p *Player) Shuffled() bool {
@@ -465,7 +482,7 @@ func (p *Player) playCurrent() {
 	p.mu.Lock()
 	p.sink.Clear()
 	p.src.Close()
-	p.src, p.ctrl, p.vol = nil, nil, nil
+	p.src, p.ctrl, p.vol, p.srcPath = nil, nil, nil, ""
 	p.gen++
 	gen := p.gen
 	if p.cancel != nil {
@@ -523,7 +540,7 @@ func (p *Player) load(ctx context.Context, gen uint64, item *queue.Item) {
 		return
 	}
 
-	p.src = src
+	p.src, p.srcPath = src, path
 	delete(p.failed, item.RowKey()) // it played this time
 	streamer := beep.Streamer(src.streamer)
 	if src.format.SampleRate != SampleRate {
@@ -616,7 +633,7 @@ func (p *Player) stop() {
 	p.mu.Lock()
 	p.sink.Clear()
 	p.src.Close()
-	p.src, p.ctrl, p.vol = nil, nil, nil
+	p.src, p.ctrl, p.vol, p.srcPath = nil, nil, nil, ""
 	p.gen++
 	p.loading = false
 	if p.cancel != nil {

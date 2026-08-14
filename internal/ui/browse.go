@@ -156,7 +156,7 @@ func (a *App) albumList(gtx C) D {
 		return D{}
 	}
 	a.mu.Lock()
-	albums, loading := a.albums, a.loading
+	albums, loading, art := a.albums, a.loading, a.albumArt
 	a.mu.Unlock()
 	if len(albums) == 0 {
 		if loading {
@@ -179,6 +179,8 @@ func (a *App) albumList(gtx C) D {
 		}
 		return a.row(gtx, &a.rows[i], false, func(gtx C) D {
 			return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+				layout.Rigid(func(gtx C) D { return a.cover(gtx, art[al], 40) }),
+				layout.Rigid(layout.Spacer{Width: 12}.Layout),
 				layout.Flexed(1, func(gtx C) D { return a.rowTitle(gtx, al.Title, false) }),
 				layout.Rigid(func(gtx C) D { return a.originBadge(gtx, al.Origins) }),
 				layout.Rigid(func(gtx C) D { return a.rowMeta(gtx, meta) }),
@@ -229,17 +231,83 @@ func (a *App) trackList(gtx C) D {
 
 	entries := albumEntries(tracks)
 	a.ensureRows(len(entries))
-	lst := material.List(a.th, &a.list)
-	lst.Indicator.Color = colLine
-	return lst.Layout(gtx, len(entries), func(gtx C, i int) D {
-		e := entries[i]
-		if e.track == nil {
-			return a.discHeader(gtx, e.header)
-		}
-		if a.rows[i].Clicked(gtx) {
-			a.playFrom(tracks, e.index)
-		}
-		return a.trackRow(gtx, &a.rows[i], e.track, e.index+1)
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		layout.Rigid(func(gtx C) D { return a.albumHeader(gtx, tracks) }),
+		layout.Flexed(1, func(gtx C) D {
+			lst := material.List(a.th, &a.list)
+			lst.Indicator.Color = colLine
+			return lst.Layout(gtx, len(entries), func(gtx C, i int) D {
+				e := entries[i]
+				if e.track == nil {
+					return a.discHeader(gtx, e.header)
+				}
+				if a.rows[i].Clicked(gtx) {
+					a.playFrom(tracks, e.index)
+				}
+				return a.trackRow(gtx, &a.rows[i], e.track, e.index+1)
+			})
+		}),
+	)
+}
+
+// albumHeader is the sleeve above an album's tracks: the cover, what the record
+// is, and one button to start it.
+//
+// The cover comes from the first track this machine holds — the same rule the
+// album rows use — so a server-only album shows the placeholder rather than a
+// gap. It is the one place large enough for art to be worth showing at size.
+func (a *App) albumHeader(gtx C, tracks []*library.Track) D {
+	if a.btnPlayAlbum.Clicked(gtx) {
+		a.playFrom(tracks, 0)
+	}
+	total := 0.0
+	for _, t := range tracks {
+		total += t.Duration
+	}
+	meta := fmt.Sprintf("%d tracks", len(tracks))
+	if total > 0 {
+		meta += "  ·  " + clock(total)
+	}
+	if a.album.Year > 0 {
+		meta = fmt.Sprintf("%d  ·  %s", a.album.Year, meta)
+	}
+
+	return layout.Inset{Top: 4, Bottom: 14, Left: 20, Right: 20}.Layout(gtx, func(gtx C) D {
+		return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+			layout.Rigid(func(gtx C) D { return a.cover(gtx, albumCoverPath(tracks), 104) }),
+			layout.Rigid(layout.Spacer{Width: 16}.Layout),
+			layout.Flexed(1, func(gtx C) D {
+				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+					layout.Rigid(func(gtx C) D {
+						l := material.H6(a.th, a.album.Title)
+						l.Color = colFg
+						l.MaxLines = 2
+						return l.Layout(gtx)
+					}),
+					layout.Rigid(func(gtx C) D {
+						l := material.Body2(a.th, a.album.ArtistName)
+						l.Color = colDim
+						l.MaxLines = 1
+						return l.Layout(gtx)
+					}),
+					layout.Rigid(layout.Spacer{Height: 6}.Layout),
+					layout.Rigid(func(gtx C) D {
+						l := material.Caption(a.th, meta)
+						l.Color = colDim
+						l.MaxLines = 1
+						return l.Layout(gtx)
+					}),
+					layout.Rigid(layout.Spacer{Height: 10}.Layout),
+					layout.Rigid(func(gtx C) D {
+						return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
+							layout.Rigid(func(gtx C) D {
+								return a.smallButton(gtx, &a.btnPlayAlbum, "Play", false)
+							}),
+						)
+					}),
+				)
+			}),
+		)
 	})
 }
 

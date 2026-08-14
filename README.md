@@ -309,6 +309,20 @@ node on this device, a track named without a content hash, no vouch from that
 server yet, or nobody holding it. Only a swarm fetch that *tried and failed* logs
 a line, because a mesh that quietly never works looks exactly like one that does.
 
+- **The mesh has to be switched on, and it is off by default.** Settings ›
+  *Use the madnetwork*, then restart — whether this device is a node is decided
+  in the config the backend is built from. With it off, every fetch is the relay
+  and the swarm never runs. That is by design; what was NOT by design is that it
+  never ran when switched on either — see below.
+- **The enrolment used to never learn its servers** (fixed 2026-08-15).
+  `applyServers` is the one place that tells every consumer which servers there
+  are, and it skipped a nil enrolment silently — while running *before* the mesh
+  was built. So the enrolment loop started with an empty server list, nothing
+  ever filled it, no capability token was ever fetched, `Present` returned false
+  and every swarm fetch declined without a word. The madnetwork had never once
+  been used. It is now structural rather than positional: the list is computed
+  and kept whether or not there is an enrolment to hand it to, and handed over
+  the moment one exists, so the order cannot matter again.
 - **The swarm gets a budget, not the caller's whole deadline**
   (`remote.DefaultSwarmBudget`, 20 s). This is not a tidiness rule, it is the
   difference between music and none: measured against a real server, the relay

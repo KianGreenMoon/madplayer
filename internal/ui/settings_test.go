@@ -126,3 +126,50 @@ func TestSavingTheMeshSwitchReachesTheConfigFile(t *testing.T) {
 		t.Fatalf("turning it off did not reach the settings file (err=%v)", err)
 	}
 }
+
+// The servers this device is signed in to are worked out and KEPT whether or not
+// the mesh exists to receive them.
+//
+// The bug this pins: applyServers used to skip a nil enrolment silently, and it
+// ran before the mesh was built — so the enrolment loop started with an empty
+// server list, nothing ever filled it, no capability token was ever fetched, and
+// every swarm fetch declined for want of a vouch. Without a word, for a week. The
+// madnetwork had never once been used.
+func TestTheServerListSurvivesHavingNoMeshToTellYet(t *testing.T) {
+	a := testApp(t)
+	if a.enrol != nil {
+		t.Fatal("a mesh-off backend produced an enrolment loop")
+	}
+
+	a.mu.Lock()
+	a.cfg.Servers = []prefs.Server{{Base: "https://one.example", Label: "one", Token: "t1"}}
+	a.mu.Unlock()
+	a.applyServers()
+
+	a.mu.Lock()
+	homes := a.homes
+	a.mu.Unlock()
+
+	if len(homes) != 1 {
+		t.Fatalf("kept %d home server(s), want 1 — a mesh built later would learn nothing", len(homes))
+	}
+	if homes[0].Base != "https://one.example" || homes[0].Label != "one" {
+		t.Errorf("home = %+v", homes[0])
+	}
+	if homes[0].Client == nil {
+		t.Error("the home server has no client, so nothing could ask it for a token")
+	}
+
+	// Signing out has to reach the mesh too: it stops this device taking that
+	// server's word about strangers.
+	a.mu.Lock()
+	a.cfg.Servers = nil
+	a.mu.Unlock()
+	a.applyServers()
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.homes) != 0 {
+		t.Errorf("kept %d home server(s) after signing out of every one", len(a.homes))
+	}
+}

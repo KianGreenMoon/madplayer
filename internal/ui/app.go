@@ -97,6 +97,9 @@ type App struct {
 	mu      sync.Mutex
 	cfg     prefs.Config
 	folders []backend.Folder
+	// homes is the signed-in servers in the mesh's vocabulary, kept whether or
+	// not there is an enrolment yet to hand them to (see applyServers).
+	homes []mesh.Server
 
 	// the rows currently on screen, one slice per drill level
 	artists []*library.Artist
@@ -260,6 +263,32 @@ func newApp(win *app.Window, pl *player.Player, be *backend.Backend, store *pref
 		a.fetch = remote.New(a.cache, log.Default())
 		pl.SetFetcher(a.fetch)
 	}
+	// The mesh, when this device is a node.
+	//
+	// This MUST be built before applyServers below, and the ordering is the whole
+	// bug it was written to fix: applyServers is the one place that tells every
+	// consumer which servers there are, and it skips a nil enrolment silently. It
+	// used to run first, so the enrolment loop started with an empty server list
+	// and nothing ever filled it — no home server, so no capability token, so
+	// Present returned false, so every swarm fetch declined without a word and
+	// the madnetwork had never once been used. The comment here claimed this
+	// order for a week while the code did the opposite.
+	if node, up := be.Mesh(); up {
+		a.enrol = mesh.New(node, log.Default())
+		go a.enrol.Run(context.Background())
+		if a.fetch != nil {
+			// Downloads now prefer the swarm. The enrolment goes with it because a
+			// mesh fetch presents a token, and only enrolment knows which one — the
+			// two are installed together so there is no window in which the fetcher
+			// would try the mesh with no vouch to present.
+			a.fetch.SetSwarm(be, a.enrol)
+		}
+		// Whatever applyServers has already worked out, if it ran first.
+		a.tellMesh()
+	}
+
+	// LAST of the wiring, on purpose: everything it hands the server list to has
+	// to exist by now.
 	a.applyServers()
 
 	// Where network music is kept, and what is already in there. The reconcile
@@ -277,21 +306,6 @@ func newApp(win *app.Window, pl *player.Player, be *backend.Backend, store *pref
 		a.mediaBus.Load().Update()
 		a.markQueueDirty()
 		win.Invalidate()
-	}
-
-	// The mesh, when this device is a node. Started before the servers are
-	// applied, so the first enrolment round happens on the same pass that first
-	// learns which servers there are.
-	if node, up := be.Mesh(); up {
-		a.enrol = mesh.New(node, log.Default())
-		go a.enrol.Run(context.Background())
-		if a.fetch != nil {
-			// Downloads now prefer the swarm. The enrolment goes with it because a
-			// mesh fetch presents a token, and only enrolment knows which one — the
-			// two are installed together so there is no window in which the fetcher
-			// would try the mesh with no vouch to present.
-			a.fetch.SetSwarm(be, a.enrol)
-		}
 	}
 
 	// The queue as it was left. Restored BEFORE the library loads, because it is
@@ -329,21 +343,42 @@ func (a *App) applyServers() {
 	if a.fetch != nil {
 		a.fetch.SetServers(servers)
 	}
-	if a.enrol != nil {
-		// The same list, in the mesh's own vocabulary. Signing out of a server
-		// has to reach here too: it stops this device taking that server's word
-		// about strangers, which is a fact about the mesh and not only about the
-		// screen.
-		homes := make([]mesh.Server, 0, len(saved))
-		for _, s := range saved {
-			homes = append(homes, mesh.Server{
-				Base:   s.Base,
-				Label:  serverLabel(s),
-				Client: madshare.New(s.Base, s.Token),
-			})
-		}
-		go a.enrol.SetServers(context.Background(), homes)
+	// The same list, in the mesh's own vocabulary. Signing out of a server has to
+	// reach here too: it stops this device taking that server's word about
+	// strangers, which is a fact about the mesh and not only about the screen.
+	//
+	// It is COMPUTED AND KEPT whether or not there is an enrolment to hand it to,
+	// and that is the fix for the bug this whole path had: it used to skip a nil
+	// enrolment silently, so running before the mesh was built meant the mesh
+	// never learned there were any servers at all, and every swarm fetch declined
+	// for want of a vouch. Keeping it makes the order stop mattering.
+	homes := make([]mesh.Server, 0, len(saved))
+	for _, s := range saved {
+		homes = append(homes, mesh.Server{
+			Base:   s.Base,
+			Label:  serverLabel(s),
+			Client: madshare.New(s.Base, s.Token),
+		})
 	}
+	a.mu.Lock()
+	a.homes = homes
+	a.mu.Unlock()
+	a.tellMesh()
+}
+
+// tellMesh hands the enrolment the servers this device is signed in to.
+//
+// Called from applyServers and again the moment an enrolment exists, so whichever
+// of the two happens first, the mesh ends up knowing. A device that is not a node
+// has nothing to tell.
+func (a *App) tellMesh() {
+	a.mu.Lock()
+	enrol, homes := a.enrol, a.homes
+	a.mu.Unlock()
+	if enrol == nil {
+		return
+	}
+	go enrol.SetServers(context.Background(), homes)
 }
 
 // serverLabel is what a server is called on screen: the name the person gave it,

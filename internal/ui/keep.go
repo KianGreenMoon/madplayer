@@ -20,12 +20,12 @@ import (
 // and handed to the library as an ordinary folder import — so it is the same
 // kind of row as the music that was always here.
 //
-// The word on screen is "Keep on this device" rather than madshare's
-// "Materialize". Materialize is right on an admin page, where the question is
-// what enters a moderated catalogue; on a player the question is whether you
-// still have the song on the train, and the answer should be in those words.
-// The cross-client wording rule is the owner's to change, so this is flagged in
-// the README rather than settled here.
+// The word on screen is "Keep on this device", and that is now the cross-client
+// rule rather than this client's local preference: docs/ui/madnetwork-page.md
+// decides the word by where the content LANDS — into a server's library it is
+// Materialize, onto a person's own device it is this. Two acts, two words. A
+// server is not "this device" and a player has no catalogue to admit anything
+// to, so one word would have been wrong on one of them whichever won.
 
 // startKeeper builds the keeper once the downloader exists.
 //

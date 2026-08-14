@@ -129,11 +129,12 @@ directory instead of hiding it in application storage.
   automatic fallback: a program that silently changed its own layout halfway
   through a collection would be worse than one that asked.
 
-The button says **"Keep on this device"** rather than madshare's *Materialize*.
-Materialize is right on an admin page, where the question is what enters a
-moderated catalogue; on a player the question is whether you still have the song
-on the train. **The cross-client wording rule is madshare's**, so this is flagged
-here rather than settled.
+The button says **"Keep on this device"**, and that is the cross-client rule
+rather than this client's local preference: `docs/ui/madnetwork-page.md` decides
+the word by **where the content lands** — into a server's library it is
+*Materialize*, onto a person's own device it is this. Two acts, two words. A
+server is not "this device" and a player has no catalogue to admit anything to,
+so one word would have been wrong on one of them whichever won.
 
 ## The queue survives a restart
 

@@ -43,6 +43,8 @@ materialize target, whose three open questions are in `docs/ui/madplayer.md`
   desktop's media bus* below.
 - **Cover art**, read out of the music itself. See *Where a cover comes from*
   below.
+- **Keeping network music**: a track from a server or the madnetwork can be
+  saved onto this device as an ordinary file. See *Keeping network music* below.
 - **Queue editing**: *Play next* and *Add to queue* on every track row (on
   hover) and on an album header, and ↑/↓/× in the queue panel. Clicking a row
   still replaces the queue with the view you clicked in — that is the contract
@@ -87,6 +89,50 @@ Four consequences are worth knowing before reading that code:
 Re-ordering the merged list is the one place this client is allowed to sort — N
 lists that each arrived ordered do not concatenate into an ordered list — and it
 sorts by the server's own keys.
+
+## Keeping network music
+
+`docs/ui/madplayer.md` §"Where the bytes live" settled this on 2026-08-15, and
+the shape is one idea rather than three answers: **the destination is a folder
+madplayer manages** — `<music dir>/madplayer` by default, overridable in
+Settings — laid out `Artist/Album/NN - Title.ext`. That answers "which of the
+scanned folders?" by not asking it, while keeping the music inside the music
+directory instead of hiding it in application storage.
+
+- **It lands as an ordinary library row.** The folder is a data source like any
+  other, so a kept track is links-backed exactly like scanned music — one kind
+  of entry, which is what the design requires.
+- **Already there is decided by content hash, not by path**, so the same audio
+  asked for twice is recognised even if its tags changed in between. Materialize
+  gets pressed twice; this is what makes that free.
+- **A taken NAME and a failed WRITE are different things.** Anything occupying
+  the name — a file, a directory, a dangling symlink — is a collision and takes
+  a short content-hash suffix, once. A write that fails is refused and reported:
+  no retry under a second name, because working around a broken disk is how a
+  music folder gains files nobody meant.
+- **The folder is madplayer's.** A file somebody else puts in it is ignored with
+  a warning in Settings — not adopted, and not moved on their behalf. Telling
+  ours from theirs needs a record (`materialized.json`), which lives in the data
+  directory rather than the music folder so it survives the library database
+  being thrown away — which is the exact case the re-register pass exists for.
+- **Nothing is created until something is kept.** An earlier version probed the
+  folder at startup, and probing means creating, so every launch and every test
+  run left an empty `madplayer` folder in somebody's music directory. One did,
+  in `~/Musik`, which is how it was found.
+- **The fallback is never silent.** A folder you CHOSE that cannot be written is
+  refused; the DEFAULT falls back to the app's data directory with a sentence
+  saying so — on Android that is private storage no file manager can browse,
+  which breaks the promise this design makes.
+- **"Save with technical names"** switches to hash-paths wholesale, for a
+  filesystem that will not take the human ones. A preference and not an
+  automatic fallback: a program that silently changed its own layout halfway
+  through a collection would be worse than one that asked.
+
+The button says **"Keep on this device"** rather than madshare's *Materialize*.
+Materialize is right on an admin page, where the question is what enters a
+moderated catalogue; on a player the question is whether you still have the song
+on the train. **The cross-client wording rule is madshare's**, so this is flagged
+here rather than settled.
 
 ## The queue survives a restart
 
@@ -314,6 +360,7 @@ cmd/madplayer/       the program
 packaging/           the desktop entry, the icon generator, the user-level installer
 internal/backend/    madshare, embedded: the data dir, the silent identity, folders
 internal/artwork/    cover art, read out of the music file or the folder beside it
+internal/materialize/ where network music is kept, what it is named, and what is ours
 internal/mpris/      the desktop's media bus: media keys, the system media widget
 internal/library/    the merged browse view — sources, the merge rule, disc headers
 internal/prefs/      the settings that belong to this device (volume, servers, cache)

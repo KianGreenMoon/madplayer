@@ -27,6 +27,7 @@ import (
 	"daemonlord.ygg/madplayer/internal/blobcache"
 	"daemonlord.ygg/madplayer/internal/library"
 	"daemonlord.ygg/madplayer/internal/madshare"
+	"daemonlord.ygg/madplayer/internal/materialize"
 	"daemonlord.ygg/madplayer/internal/mesh"
 	"daemonlord.ygg/madplayer/internal/mpris"
 	"daemonlord.ygg/madplayer/internal/player"
@@ -78,6 +79,15 @@ type App struct {
 	// art is the cover cache. It reads files on its own goroutines and asks for
 	// a repaint when one lands.
 	art *covers
+	// keeper copies network music into the folder madplayer manages. Nil when
+	// there is no downloader, which is an install whose cache would not open.
+	keeper *materialize.Keeper
+	// keepStrays is music somebody else put in the managed folder. Ignored, and
+	// said out loud in Settings.
+	keepStrays []string
+	// keeping is a keep in flight. They run one at a time: each is a download,
+	// and twenty at once compete for one link and finish no sooner.
+	keeping bool
 	// enrol keeps this device's standing with each home server when the mesh is
 	// running: a vouch, a way onto the underlay, and an advertisement of what it
 	// holds. Nil when the mesh is off, which is the default.
@@ -151,7 +161,10 @@ type App struct {
 	btnShuffle, btnRepeat, btnClearQueue  widget.Clickable
 	btnAddFolder, btnRescan, btnUndo      widget.Clickable
 	btnPlayAlbum, btnAlbumNext            widget.Clickable
-	btnAlbumAdd                           widget.Clickable
+	btnAlbumAdd, btnAlbumKeep             widget.Clickable
+	btnKeepDirSave                        widget.Clickable
+	keepDirEd                             widget.Editor
+	keepTechnical                         widget.Bool
 	btnSignIn, btnCacheSave, btnCacheDrop widget.Clickable
 	meshOn                                widget.Bool
 	rmFolder                              []widget.Clickable
@@ -164,6 +177,8 @@ type App struct {
 	// upQueue and downQueue reorder the queue panel.
 	upQueue   []widget.Clickable
 	downQueue []widget.Clickable
+	// rowKeep is the per-row "keep on this device" button.
+	rowKeep []widget.Clickable
 
 	// saveQueue asks the one queue writer for a save. Buffered by one, so a
 	// burst of edits collapses into a single write (see queuestate.go).
@@ -210,6 +225,7 @@ func newApp(win *app.Window, pl *player.Player, be *backend.Backend, store *pref
 	a.srvPass.SingleLine = true
 	a.srvPass.Mask = '•'
 	a.cacheEd.SingleLine = true
+	a.keepDirEd.SingleLine = true
 
 	cfg, err := a.store.Load()
 	if err != nil {
@@ -222,6 +238,8 @@ func newApp(win *app.Window, pl *player.Player, be *backend.Backend, store *pref
 	// device with no fpcalc, and the caption beside it is where that is explained
 	// — a box that silently unticked itself would look like it had not been saved.
 	a.meshOn.Value = cfg.Mesh
+	a.keepTechnical.Value = cfg.KeepTechnicalNames
+	a.keepDirEd.SetText(cfg.KeepDir)
 
 	// The ceiling is madshare's setting, not this client's: the same number a
 	// server's settings card writes, read through the embedded backend. A read
@@ -243,6 +261,12 @@ func newApp(win *app.Window, pl *player.Player, be *backend.Backend, store *pref
 		pl.SetFetcher(a.fetch)
 	}
 	a.applyServers()
+
+	// Where network music is kept, and what is already in there. The reconcile
+	// is what re-registers music still on disk after a library was thrown away,
+	// so it runs on the way in rather than waiting to be asked.
+	a.startKeeper()
+	go a.reconcileKept()
 
 	// The player advances the queue from its own goroutine, so a repaint has to
 	// be asked for rather than assumed. The same signal is what warms the next
@@ -1061,6 +1085,18 @@ func rowKey(t *library.Track) string {
 		return ""
 	}
 	return queue.Key(c.Path, c.URL)
+}
+
+// setNoticeAsync writes the one-line notice from a background goroutine.
+//
+// The notice is otherwise set during update(), on the UI's own goroutine, so the
+// lock and the repaint are only needed on this path — which is every long
+// operation that has something to say while it runs.
+func (a *App) setNoticeAsync(msg string) {
+	a.mu.Lock()
+	a.notice = msg
+	a.mu.Unlock()
+	a.win.Invalidate()
 }
 
 func (a *App) setStatus(msg string) {

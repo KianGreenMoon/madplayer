@@ -25,6 +25,11 @@ var (
 	iconUp       = mustIcon(icons.NavigationArrowUpward)
 	iconDown     = mustIcon(icons.NavigationArrowDownward)
 	iconRemove   = mustIcon(icons.ContentClear)
+	// iconKeep is "keep this on the device": a download, which is literally what
+	// it does — the bytes come off the network onto this disk.
+	iconKeep = mustIcon(icons.FileFileDownload)
+	// iconKept is the same row once the file is here.
+	iconKept = mustIcon(icons.ActionDone)
 	// iconNoCover is the record drawn on a tile whose music has no art.
 	iconNoCover = mustIcon(icons.AVAlbum)
 )

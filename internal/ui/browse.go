@@ -34,6 +34,7 @@ func (a *App) ensureRows(n int) {
 	if len(a.rowNext) < n {
 		a.rowNext = append(a.rowNext, make([]widget.Clickable, n-len(a.rowNext))...)
 		a.rowAdd = append(a.rowAdd, make([]widget.Clickable, n-len(a.rowAdd))...)
+		a.rowKeep = append(a.rowKeep, make([]widget.Clickable, n-len(a.rowKeep))...)
 	}
 }
 
@@ -275,6 +276,9 @@ func (a *App) albumHeader(gtx C, tracks []*library.Track) D {
 	if a.btnAlbumAdd.Clicked(gtx) {
 		a.enqueue(tracks, false)
 	}
+	if a.btnAlbumKeep.Clicked(gtx) {
+		a.keep(tracks, a.albumArtistName())
+	}
 	total := 0.0
 	for _, t := range tracks {
 		total += t.Duration
@@ -326,6 +330,7 @@ func (a *App) albumHeader(gtx C, tracks []*library.Track) D {
 							layout.Rigid(func(gtx C) D {
 								return a.smallButton(gtx, &a.btnAlbumAdd, "Add to queue", false)
 							}),
+							layout.Rigid(func(gtx C) D { return a.albumKeepButton(gtx, tracks) }),
 						)
 					}),
 				)
@@ -416,15 +421,44 @@ func (a *App) rowActions(gtx C, i int, t *library.Track) D {
 		a.enqueue([]*library.Track{t}, false)
 	}
 
-	show := a.rows[i].Hovered() || a.rowNext[i].Hovered() || a.rowAdd[i].Hovered()
-	if !show {
-		return D{Size: image.Pt(gtx.Dp(2*rowActionSize+8), 0)}
+	// Keeping is offered only for music that is somewhere else. A track already
+	// on this device has nothing to keep, and a button saying otherwise would be
+	// a button that does nothing.
+	keepable := a.keepable(t)
+	if keepable && a.rowKeep[i].Clicked(gtx) {
+		a.keep([]*library.Track{t}, a.albumArtistName())
 	}
-	return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+
+	show := a.rows[i].Hovered() || a.rowNext[i].Hovered() || a.rowAdd[i].Hovered() || a.rowKeep[i].Hovered()
+	width := 2*rowActionSize + 8
+	if keepable {
+		width += rowActionSize + 8
+	}
+	if !show {
+		return D{Size: image.Pt(gtx.Dp(width), 0)}
+	}
+	children := []layout.FlexChild{
 		layout.Rigid(func(gtx C) D { return a.iconButton(gtx, &a.rowNext[i], iconPlayNext, rowActionSize) }),
 		layout.Rigid(layout.Spacer{Width: 8}.Layout),
 		layout.Rigid(func(gtx C) D { return a.iconButton(gtx, &a.rowAdd[i], iconAddQueue, rowActionSize) }),
-	)
+	}
+	if keepable {
+		children = append(children,
+			layout.Rigid(layout.Spacer{Width: 8}.Layout),
+			layout.Rigid(func(gtx C) D { return a.iconButton(gtx, &a.rowKeep[i], iconKeep, rowActionSize) }),
+		)
+	}
+	return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx, children...)
+}
+
+// albumArtistName is the album artist when an album is open, and "" otherwise —
+// which is what a search hit is, and what makes keepTrack fall back to the
+// track's own credit.
+func (a *App) albumArtistName() string {
+	if a.album == nil {
+		return ""
+	}
+	return a.album.ArtistName
 }
 
 // rowActionSize is the side of a row's icon buttons.
@@ -723,4 +757,36 @@ func (a *App) chevron(gtx C) D {
 		l.Color = colDim
 		return l.Layout(gtx)
 	})
+}
+
+// albumKeepButton offers to keep the whole album, and only when some of it is
+// somewhere else. An album already on this device has nothing to keep.
+func (a *App) albumKeepButton(gtx C, tracks []*library.Track) D {
+	remote := 0
+	for _, t := range tracks {
+		if a.keepable(t) {
+			remote++
+		}
+	}
+	if remote == 0 {
+		return D{}
+	}
+	a.mu.Lock()
+	busy := a.keeping
+	a.mu.Unlock()
+
+	label := "Keep on this device"
+	if remote < len(tracks) {
+		// Naming the count is the honest version: half the album is already here,
+		// and a button that says "keep the album" would be promising more work
+		// than it is about to do.
+		label = fmt.Sprintf("Keep %d on this device", remote)
+	}
+	if busy {
+		label = "Keeping…"
+	}
+	return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
+		layout.Rigid(layout.Spacer{Width: 8}.Layout),
+		layout.Rigid(func(gtx C) D { return a.smallButton(gtx, &a.btnAlbumKeep, label, busy) }),
+	)
 }

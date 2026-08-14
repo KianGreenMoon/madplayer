@@ -236,6 +236,7 @@ func (a *App) settings(gtx C) D {
 			// server is a different question, and lives on its own panel.
 			layout.Rigid(func(gtx C) D { return a.cacheControls(gtx) }),
 			layout.Rigid(func(gtx C) D { return a.meshControls(gtx) }),
+			layout.Rigid(func(gtx C) D { return a.keepControls(gtx) }),
 			layout.Rigid(func(gtx C) D { return a.shortcutHelp(gtx) }),
 		)
 	})
@@ -334,5 +335,170 @@ func (a *App) removeFolder(f backend.Folder) {
 		a.setStatus("Removed " + f.Path + " — the files themselves are untouched")
 		a.loadFolders()
 		a.reload()
+	}()
+}
+
+// --- keeping network music --------------------------------------------------
+
+// keepControls is where network music goes when it is kept.
+//
+// It sits under the download limit because the two are the same question asked
+// twice: the limit is what this device keeps TEMPORARILY so a track plays again
+// without the network, and this is what it keeps ON PURPOSE, in the music
+// folder, where a file manager and a backup can both see it.
+func (a *App) keepControls(gtx C) D {
+	a.mu.Lock()
+	keeper, strays := a.keeper, a.keepStrays
+	a.mu.Unlock()
+
+	// The note is empty until something has actually been kept: nothing is
+	// probed before then, so nothing is known.
+	note := ""
+	if keeper != nil {
+		note = keeper.Note()
+	}
+
+	if a.btnKeepDirSave.Clicked(gtx) {
+		a.saveKeepDir(a.keepDirEd.Text())
+	}
+	if a.keepTechnical.Update(gtx) {
+		a.saveKeepTechnical(a.keepTechnical.Value)
+	}
+
+	root, kept := "", 0
+	if keeper != nil {
+		root, kept = keeper.Root(), keeper.Kept()
+	}
+
+	return layout.Inset{Top: 18}.Layout(gtx, func(gtx C) D {
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+			layout.Rigid(func(gtx C) D {
+				l := material.Body1(a.th, "Music kept from the network")
+				l.Color = colFg
+				return l.Layout(gtx)
+			}),
+			layout.Rigid(func(gtx C) D {
+				return layout.Inset{Top: 4, Bottom: 10}.Layout(gtx, func(gtx C) D {
+					l := material.Caption(a.th, keepBlurb(root, kept))
+					l.Color = colDim
+					return l.Layout(gtx)
+				})
+			}),
+
+			layout.Rigid(func(gtx C) D {
+				return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+					layout.Flexed(1, func(gtx C) D {
+						ed := material.Editor(a.th, &a.keepDirEd, root)
+						ed.Color, ed.HintColor = colFg, colDim
+						return filled(gtx, colSel, ed.Layout)
+					}),
+					layout.Rigid(layout.Spacer{Width: 8}.Layout),
+					layout.Rigid(func(gtx C) D {
+						return a.smallButton(gtx, &a.btnKeepDirSave, "Save", false)
+					}),
+				)
+			}),
+
+			layout.Rigid(func(gtx C) D {
+				return layout.Inset{Top: 10}.Layout(gtx, func(gtx C) D {
+					return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+						layout.Rigid(func(gtx C) D {
+							cb := material.CheckBox(a.th, &a.keepTechnical, "Save with technical names")
+							cb.Color, cb.IconColor = colFg, colAccent
+							return cb.Layout(gtx)
+						}),
+					)
+				})
+			}),
+			layout.Rigid(func(gtx C) D {
+				return layout.Inset{Top: 4}.Layout(gtx, func(gtx C) D {
+					l := material.Caption(a.th, "Names files by content hash instead of Artist/Album/Title. "+
+						"For a card or a drive that will not take the ordinary names.")
+					l.Color = colDim
+					return l.Layout(gtx)
+				})
+			}),
+
+			// The fallback and the strays are both warnings, and both are things
+			// the person cannot see for themselves by looking at the folder.
+			layout.Rigid(func(gtx C) D { return a.keepWarning(gtx, note) }),
+			layout.Rigid(func(gtx C) D { return a.keepWarning(gtx, strayWarning(strays)) }),
+		)
+	})
+}
+
+// keepBlurb is the sentence above the folder box.
+func keepBlurb(root string, kept int) string {
+	if root == "" {
+		return "Tracks you keep from a server or the madnetwork are saved as ordinary files. " +
+			"Downloads are unavailable in this install, so there is nowhere to keep them."
+	}
+	s := "Tracks you keep from a server or the madnetwork are saved into " + root +
+		" as Artist/Album/Track, and added to your library like any other folder. " +
+		"This folder is madplayer's — put your own music in a folder you add above."
+	switch kept {
+	case 0:
+	case 1:
+		s += " 1 track kept so far."
+	default:
+		s += fmt.Sprintf(" %d tracks kept so far.", kept)
+	}
+	return s
+}
+
+func (a *App) keepWarning(gtx C, text string) D {
+	if text == "" {
+		return D{}
+	}
+	return layout.Inset{Top: 10}.Layout(gtx, func(gtx C) D {
+		l := material.Caption(a.th, text)
+		l.Color = colWarn
+		return l.Layout(gtx)
+	})
+}
+
+// saveKeepDir writes the folder setting and rebuilds the keeper against it.
+//
+// The keeper is rebuilt rather than patched because the RECORD belongs to a
+// root: a keeper still holding the old folder's list would call the new folder's
+// files strays, and the old folder's files ours.
+func (a *App) saveKeepDir(dir string) {
+	dir = strings.TrimSpace(dir)
+	go func() {
+		a.mu.Lock()
+		a.cfg.KeepDir = dir
+		cfg := a.cfg
+		a.mu.Unlock()
+		if err := a.store.Save(cfg); err != nil {
+			a.setNoticeAsync("could not save the folder: " + err.Error())
+			return
+		}
+		a.startKeeper()
+		a.reconcileKept()
+		a.mu.Lock()
+		root := ""
+		if a.keeper != nil {
+			root = a.keeper.Root()
+		}
+		a.mu.Unlock()
+		a.setNoticeAsync("Network music will be kept in " + root)
+	}()
+}
+
+// saveKeepTechnical writes the naming setting. Files already written keep the
+// names they have: renaming somebody's collection because a checkbox moved would
+// be a surprise, and the record maps paths, not rules.
+func (a *App) saveKeepTechnical(on bool) {
+	go func() {
+		a.mu.Lock()
+		a.cfg.KeepTechnicalNames = on
+		cfg := a.cfg
+		a.mu.Unlock()
+		if err := a.store.Save(cfg); err != nil {
+			a.setNoticeAsync("could not save the setting: " + err.Error())
+			return
+		}
+		a.startKeeper()
+		a.win.Invalidate()
 	}()
 }

@@ -43,9 +43,17 @@ type Keeper struct {
 	dataDir   string
 	root      string
 	technical bool
-	rec       *Record
-	fetch     Fetcher
-	reg       Registrar
+	// explicit records that the folder was CHOSEN rather than defaulted, which
+	// decides what happens when it turns out not to be writable: a chosen folder
+	// is refused and reported, a defaulted one falls back.
+	explicit bool
+	// checked memoises the writability probe, and note carries what to say when
+	// the fallback was taken.
+	checked bool
+	note    string
+	rec     *Record
+	fetch   Fetcher
+	reg     Registrar
 }
 
 // NewKeeper loads the record for a root and returns a keeper over it.
@@ -53,9 +61,63 @@ type Keeper struct {
 // A record that will not parse is reported and the keeper works anyway, with an
 // empty one: the cost is that existing files look like strays, which is the safe
 // direction.
-func NewKeeper(dataDir, root string, technical bool, f Fetcher, r Registrar) (*Keeper, error) {
+func NewKeeper(dataDir, root string, explicit, technical bool, f Fetcher, r Registrar) (*Keeper, error) {
 	rec, err := LoadRecord(dataDir, root)
-	return &Keeper{dataDir: dataDir, root: root, technical: technical, rec: rec, fetch: f, reg: r}, err
+	return &Keeper{
+		dataDir: dataDir, root: root, explicit: explicit, technical: technical,
+		rec: rec, fetch: f, reg: r,
+	}, err
+}
+
+// Note is what to say about the folder, or "".
+//
+// It is empty until something has been kept, because nothing is probed — and so
+// nothing is known — before then.
+func (k *Keeper) Note() string {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return k.note
+}
+
+// ensureRoot probes the folder the first time it is needed, and takes the
+// fallback if it may.
+//
+// A folder somebody CHOSE is refused and reported when it cannot be written:
+// they named a place, and quietly writing somewhere else is worse than saying
+// no. A DEFAULTED folder falls back into the app's own data directory, which on
+// a phone is the ordinary case rather than the exception — with the sentence
+// that says the music will not be visible to a file manager there, because that
+// breaks the promise the whole design makes.
+func (k *Keeper) ensureRoot() error {
+	if k.checked {
+		if k.note != "" && k.explicit {
+			return errors.New(k.note)
+		}
+		return nil
+	}
+	k.checked = true
+
+	if err := Writable(k.root); err == nil {
+		return nil
+	} else if k.explicit {
+		k.note = fmt.Sprintf("%s cannot be written to: %v", k.root, err)
+		return errors.New(k.note)
+	}
+
+	fallback := filepath.Join(k.dataDir, DirName)
+	if err := Writable(fallback); err != nil {
+		k.note = fmt.Sprintf("neither %s nor %s can be written to: %v", k.root, fallback, err)
+		return errors.New(k.note)
+	}
+	k.note = fmt.Sprintf("Your music folder cannot be written to, so network music is kept in %s — where a file manager will not find it. Set a folder in Settings to change that.", fallback)
+	k.root = fallback
+	// The record belongs to a root, so the fallback gets its own. Nothing has
+	// been written yet, so there is nothing to carry over.
+	rec, err := LoadRecord(k.dataDir, fallback)
+	if err == nil {
+		k.rec = rec
+	}
+	return nil
 }
 
 // Root is the managed folder.
@@ -99,6 +161,10 @@ func (k *Keeper) Keep(ctx context.Context, tr Track, item *queue.Item) (Result, 
 
 	k.mu.Lock()
 	defer k.mu.Unlock()
+
+	if err := k.ensureRoot(); err != nil {
+		return Result{}, err
+	}
 
 	// Already ours, under any name. Matching by content hash rather than by path
 	// is what makes this survive the tags having been edited since.

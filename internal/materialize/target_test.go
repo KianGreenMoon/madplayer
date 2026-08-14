@@ -235,40 +235,26 @@ func TestWritableProbesRatherThanReasons(t *testing.T) {
 	}
 }
 
-// The fallback is never silent: on a phone it is the ordinary case, and it
-// breaks the promise the whole design makes — that the music sits where a file
-// manager can see it.
-func TestResolveFallsBackAndSaysSo(t *testing.T) {
+// Resolve names the folder and touches no disk.
+//
+// An earlier version probed here, and probing means creating — so every launch
+// and every test run left an empty madplayer folder in somebody's music
+// directory whether or not they ever kept a track. A test run created one in the
+// developer's own ~/Musik, which is how this was found.
+func TestResolveNamesTheFolderWithoutCreatingIt(t *testing.T) {
 	data := t.TempDir()
 
-	// A setting that works is taken as it is, with nothing to explain.
-	want := filepath.Join(t.TempDir(), "elsewhere")
-	if root, note := Resolve(want, data); root != want || note != "" {
-		t.Errorf("root = %q note = %q, want the setting and no note", root, note)
+	chosen := filepath.Join(t.TempDir(), "elsewhere")
+	root, explicit := Resolve(chosen, data)
+	if root != chosen || !explicit {
+		t.Errorf("root = %q explicit = %v, want the setting, chosen", root, explicit)
+	}
+	if _, err := os.Stat(chosen); !os.IsNotExist(err) {
+		t.Errorf("Resolve created %s", chosen)
 	}
 
-	// A setting that cannot be written falls back INTO the data directory, and
-	// the note names both places.
-	readonly := filepath.Join(t.TempDir(), "ro")
-	if err := os.Mkdir(readonly, 0o500); err != nil {
-		t.Fatal(err)
-	}
-	blocked := filepath.Join(readonly, "sub")
-	root, note := Resolve(blocked, data)
-	if want := filepath.Join(data, DirName); root != want {
-		t.Errorf("root = %q, want the fallback %q", root, want)
-	}
-	if note == "" {
-		t.Fatal("the fallback was silent")
-	}
-	for _, mention := range []string{blocked, filepath.Join(data, DirName), "file manager"} {
-		if !strings.Contains(note, mention) {
-			t.Errorf("note %q does not mention %q", note, mention)
-		}
-	}
-
-	// Whitespace is not a setting.
-	if root, _ := Resolve("   ", data); root == "   " {
-		t.Error("a blank setting was taken as a folder")
+	// No setting is a DEFAULT, which is what may fall back later.
+	if _, explicit := Resolve("   ", data); explicit {
+		t.Error("a blank setting was treated as a chosen folder")
 	}
 }

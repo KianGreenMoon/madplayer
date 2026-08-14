@@ -52,7 +52,7 @@ func keeper(t *testing.T, technical bool) (*Keeper, *fakeFetch, *fakeReg, string
 	}
 
 	f, r := &fakeFetch{path: source}, &fakeReg{}
-	k, err := NewKeeper(data, root, technical, f, r)
+	k, err := NewKeeper(data, root, true, technical, f, r)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -336,5 +336,78 @@ func TestReconcileOnAnEmptyFolder(t *testing.T) {
 	}
 	if reg.ensured != 0 {
 		t.Error("an empty folder was added to the library")
+	}
+}
+
+// A folder somebody CHOSE is refused when it cannot be written: they named a
+// place, and quietly writing somewhere else is worse than saying no.
+func TestAChosenFolderThatCannotBeWrittenIsRefused(t *testing.T) {
+	data := t.TempDir()
+	readonly := filepath.Join(t.TempDir(), "ro")
+	if err := os.Mkdir(readonly, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	chosen := filepath.Join(readonly, "kept")
+
+	src := filepath.Join(t.TempDir(), "a.flac")
+	if err := os.WriteFile(src, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	k, err := NewKeeper(data, chosen, true, false, &fakeFetch{path: src}, &fakeReg{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := k.Keep(context.Background(), track("aaa"), remote("aaa")); err == nil {
+		t.Fatal("a chosen folder that cannot be written was accepted")
+	}
+	if got := k.Root(); got != chosen {
+		t.Errorf("root moved to %q — a chosen folder must not be swapped out underneath", got)
+	}
+}
+
+// A DEFAULTED folder falls back into the app's own data directory, which on a
+// phone is the ordinary case — with the sentence saying the music will not be
+// visible to a file manager there.
+func TestADefaultedFolderFallsBackAndSaysSo(t *testing.T) {
+	data := t.TempDir()
+	readonly := filepath.Join(t.TempDir(), "ro")
+	if err := os.Mkdir(readonly, 0o500); err != nil {
+		t.Fatal(err)
+	}
+
+	src := filepath.Join(t.TempDir(), "a.flac")
+	if err := os.WriteFile(src, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	k, err := NewKeeper(data, filepath.Join(readonly, "music"), false, false, &fakeFetch{path: src}, &fakeReg{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := k.Keep(context.Background(), track("aaa"), remote("aaa"))
+	if err != nil {
+		t.Fatalf("the fallback did not happen: %v", err)
+	}
+	if want := filepath.Join(data, DirName); k.Root() != want {
+		t.Errorf("root = %q, want the fallback %q", k.Root(), want)
+	}
+	if !strings.HasPrefix(got.Path, filepath.Join(data, DirName)) {
+		t.Errorf("wrote to %q, want inside the fallback", got.Path)
+	}
+	if note := k.Note(); !strings.Contains(note, "file manager") {
+		t.Errorf("note = %q, want it to say the music will not be browsable", note)
+	}
+}
+
+// Nothing is created until something is actually kept — an empty folder in
+// somebody's music directory on every launch is litter.
+func TestNothingIsCreatedUntilSomethingIsKept(t *testing.T) {
+	data, root := t.TempDir(), filepath.Join(t.TempDir(), "madplayer")
+	if _, err := NewKeeper(data, root, false, false, &fakeFetch{}, &fakeReg{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(root); !os.IsNotExist(err) {
+		t.Errorf("building a keeper created %s", root)
 	}
 }

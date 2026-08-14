@@ -586,7 +586,11 @@ func (a *App) trackRow(gtx C, i int, t *library.Track, fallbackNum int) D {
 // searchResults renders the three sections. An artist or album hit DRILLS (and
 // clears the search); a track hit PLAYS.
 func (a *App) searchResults(gtx C) D {
+	// Under the lock: doSearch writes this from a background goroutine, and a
+	// layout function is not a place to read a slice somebody else is replacing.
+	a.mu.Lock()
 	res := a.found
+	a.mu.Unlock()
 	type item struct {
 		section string
 		artist  *library.Artist

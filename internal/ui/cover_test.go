@@ -57,3 +57,27 @@ func TestAlbumHeaderLaysOut(t *testing.T) {
 		t.Fatal("the album header laid out to nothing")
 	}
 }
+
+// Walking into an album from row 340 of an artist list and coming back to row 1
+// is the small thing that makes a large library tiring to browse.
+func TestComingBackUpRestoresTheScrollPosition(t *testing.T) {
+	a := testApp(t)
+
+	a.list.Position.First = 340
+	a.setLevel(levelAlbums)
+	if a.list.Position.First != 0 {
+		t.Errorf("drilling in kept the previous list's offset (%d) — new content starts at the top", a.list.Position.First)
+	}
+
+	a.list.Position.First = 7
+	a.setLevel(levelArtists)
+	if a.list.Position.First != 340 {
+		t.Errorf("came back to row %d, want 340", a.list.Position.First)
+	}
+
+	// And forward again is the album list's own place, not the artist list's.
+	a.setLevel(levelAlbums)
+	if a.list.Position.First != 0 {
+		t.Errorf("drilling in again landed at %d, want the top", a.list.Position.First)
+	}
+}

@@ -127,7 +127,13 @@ type App struct {
 	album  *library.Album
 
 	// widgets
-	list                                  widget.List
+	list widget.List
+	// listPos remembers where each drill level was scrolled to, so coming back
+	// up lands where you left rather than at the top (see setLevel).
+	listPos [3]layout.Position
+	// folderList is the Settings panel's own scroll state. It used to share the
+	// queue panel's, which meant opening one scrolled the other.
+	folderList                            widget.List
 	queueList                             widget.List
 	serverList                            widget.List
 	search                                widget.Editor
@@ -195,6 +201,7 @@ func newApp(win *app.Window, pl *player.Player, be *backend.Backend, store *pref
 	a.art.cache.SpillDir(filepath.Join(be.DataDir(), "covers"))
 	a.list.Axis = layout.Vertical
 	a.queueList.Axis = layout.Vertical
+	a.folderList.Axis = layout.Vertical
 	a.serverList.Axis = layout.Vertical
 	a.search.SingleLine = true
 	a.folderEd.SingleLine = true
@@ -447,21 +454,36 @@ func problemLine(probs []library.Problem) string {
 	return strings.Join(labels, ", ") + " did not answer — showing everything else"
 }
 
+// setLevel changes the drill depth and moves the one list widget with it.
+//
+// Going DOWN opens new content, which starts at the top. Coming back UP restores
+// where that level was left — walking into an album from row 340 of an artist
+// list and coming back to row 1 is the small thing that makes a large library
+// tiring to browse.
+func (a *App) setLevel(to level) {
+	a.listPos[a.level] = a.list.Position
+	if to > a.level {
+		a.listPos[to] = layout.Position{}
+	}
+	a.level = to
+	a.list.Position = a.listPos[to]
+}
+
 // drill opens an artist, loading their albums in the background.
 func (a *App) drillArtist(ar *library.Artist) {
 	a.mu.Lock()
-	a.artist, a.album, a.level, a.albums = ar, nil, levelAlbums, nil
+	a.artist, a.album, a.albums = ar, nil, nil
+	a.setLevel(levelAlbums)
 	a.mu.Unlock()
-	a.list.Position = layout.Position{}
 	go a.reload()
 }
 
 // drillAlbum opens an album, loading its tracks in the background.
 func (a *App) drillAlbum(al *library.Album) {
 	a.mu.Lock()
-	a.album, a.level, a.tracks = al, levelTracks, nil
+	a.album, a.tracks = al, nil
+	a.setLevel(levelTracks)
 	a.mu.Unlock()
-	a.list.Position = layout.Position{}
 	go a.reload()
 }
 
@@ -786,11 +808,13 @@ func (a *App) update(gtx C) {
 	a.handleKeys(gtx)
 
 	if a.crumbHome.Clicked(gtx) {
-		a.level, a.artist, a.album = levelArtists, nil, nil
+		a.artist, a.album = nil, nil
+		a.setLevel(levelArtists)
 		go a.reload()
 	}
 	if a.crumbArt.Clicked(gtx) {
-		a.level, a.album = levelAlbums, nil
+		a.album = nil
+		a.setLevel(levelAlbums)
 		go a.reload()
 	}
 
@@ -891,11 +915,13 @@ func toggleView(cur, want view) view {
 func (a *App) drillUp() bool {
 	switch a.level {
 	case levelTracks:
-		a.level, a.album = levelAlbums, nil
+		a.album = nil
+		a.setLevel(levelAlbums)
 		go a.reload()
 		return true
 	case levelAlbums:
-		a.level, a.artist = levelArtists, nil
+		a.artist = nil
+		a.setLevel(levelArtists)
 		go a.reload()
 		return true
 	}

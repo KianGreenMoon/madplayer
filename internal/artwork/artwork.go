@@ -192,8 +192,13 @@ func (c *Cache) Get(path string) (img image.Image, settled bool) {
 	}
 	c.mu.Lock()
 	if e, ok := c.entries[path]; ok {
+		// Read the fields UNDER the lock and return copies. Returning the entry's
+		// fields after unlocking is a data race with the loader writing them, and
+		// the race detector says so — this is a background goroutine filling in a
+		// struct the layout function reads sixty times a second.
+		img, done := e.img, e.done
 		c.mu.Unlock()
-		return e.img, e.done
+		return img, done
 	}
 	c.entries[path] = &entry{}
 	c.order = append(c.order, path)

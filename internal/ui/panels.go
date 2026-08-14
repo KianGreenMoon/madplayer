@@ -201,7 +201,7 @@ func (a *App) settings(gtx C) D {
 				if len(folders) == 0 {
 					return a.emptyState(gtx, "No folders yet.")
 				}
-				return material.List(a.th, &a.queueList).Layout(gtx, len(folders), func(gtx C, i int) D {
+				return material.List(a.th, &a.folderList).Layout(gtx, len(folders), func(gtx C, i int) D {
 					return layout.Inset{Top: 6, Bottom: 6}.Layout(gtx, func(gtx C) D {
 						f := folders[i]
 						return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,

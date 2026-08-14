@@ -15,11 +15,12 @@ every server's are browsed as one merged list. It has cover art, keyboard
 control, an editable queue that survives a restart, and it answers the media
 keys and fills the desktop's media widget.
 
-Level 2b — the mesh — is nearly there: the device can become a madnetwork node,
-keeps its standing with each home server, and **plays network tracks off the
-swarm with the relay as the fallback**. Still owed there: the human-readable
-materialize target, whose three open questions are in `docs/ui/madplayer.md`
-§"Where the bytes live" and are **madshare design decisions, not client ones**.
+Level 2b — the mesh — is **built**: the device can become a madnetwork node,
+keeps its standing with each home server, **plays network tracks off the swarm
+with the relay as the fallback**, and **keeps them on this device** as ordinary
+files in a folder it manages. The three questions `docs/ui/madplayer.md`
+§"Where the bytes live" left open were settled by the owner on 2026-08-15 and
+are written into that doc.
 
 ## What works
 

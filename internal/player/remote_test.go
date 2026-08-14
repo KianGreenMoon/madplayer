@@ -3,6 +3,9 @@ package player
 import (
 	"context"
 	"errors"
+	"io"
+	"os"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -20,6 +23,18 @@ type fakeFetcher struct {
 	block   chan struct{} // closed to let a fetch finish
 	calls   atomic.Int32
 	stopped chan struct{} // closed when a fetch is cancelled
+}
+
+// Stream is what the player actually calls now. It reuses Local so every test
+// here keeps testing WHEN the player resolves a remote item — a file already on
+// disk seeks, which is exactly the "already cached" case.
+func (f *fakeFetcher) Stream(ctx context.Context, item *queue.Item) (io.ReadCloser, string, error) {
+	path, err := f.Local(ctx, item)
+	if err != nil {
+		return nil, "", err
+	}
+	rc, err := os.Open(path)
+	return rc, filepath.Ext(path), err
 }
 
 func (f *fakeFetcher) Local(ctx context.Context, item *queue.Item) (string, error) {

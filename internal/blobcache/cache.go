@@ -1,10 +1,12 @@
 // Package blobcache holds audio fetched from a remote server on local disk.
 //
-// It exists because of a decoder fact, not a design preference: go-mp3 walks
-// every frame header before it will report a length, and beep's flac takes its
-// seek path only over an io.ReadSeeker. Both amount to "the whole file, on
-// disk", so a remote track is fetched in full and then decoded from here. There
-// is no useful sense in which this client streams.
+// It keeps a copy so that playing a track twice costs one download, and so that
+// a track survives the network going away. It does NOT exist because the
+// decoders need a whole file — that was believed for a long time and it is
+// wrong. go-mp3 walks every frame header only when its source is an io.Seeker,
+// and beep's flac picks its seeking parser on the same test; hand either a
+// reader that does not seek and it starts on the first fraction of a percent.
+// See stream.go, which is what a remote track is played through now.
 //
 // The DIRECTORY IS AUTHORITATIVE and there is no index — the same rule the
 // server's madnetwork cache settled on (docs/architecture/madnetwork-cache.md).

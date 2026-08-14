@@ -34,6 +34,16 @@ func clock(sec float64) string {
 
 func (a *App) playerBar(gtx C) D {
 	elapsed, total := a.pl.Position()
+	// A streaming mp3 has no length of its own — go-mp3 only computes one by
+	// walking the whole file, which is exactly what a stream refuses to do. The
+	// library knows it anyway, so the bar uses the queue item's duration and the
+	// clock reads correctly from the first second. FLAC needs none of this: its
+	// STREAMINFO carries the sample count.
+	if total <= 0 {
+		if cur := a.pl.Current(); cur != nil {
+			total = cur.Duration
+		}
+	}
 	if !a.seeking && total > 0 {
 		a.seek.Value = float32(elapsed / total)
 	}
@@ -157,7 +167,21 @@ func (a *App) transport(gtx C, elapsed, total float64) D {
 			l.Color = colDim
 			return l.Layout(gtx)
 		}),
-		layout.Flexed(1, material.Slider(a.th, &a.seek).Layout),
+		layout.Flexed(1, func(gtx C) D {
+			// While a track is still arriving there is nothing to scrub through,
+			// and the slider says so by going quiet rather than by moving and
+			// doing nothing. (The player refuses the seek regardless — beep's mp3
+			// decoder panics on a non-seekable source.)
+			sl := material.Slider(a.th, &a.seek)
+			if !a.pl.Seekable() {
+				sl.Color = colLine
+				// Disabled() is a context that delivers no events, so the thumb
+				// cannot be dragged at all — better than dragging it into a seek
+				// that is silently refused further down.
+				return sl.Layout(gtx.Disabled())
+			}
+			return sl.Layout(gtx)
+		}),
 		layout.Rigid(func(gtx C) D {
 			gtx.Constraints.Min.X = gtx.Dp(48)
 			l := material.Caption(a.th, clock(total))

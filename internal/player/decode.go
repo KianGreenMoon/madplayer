@@ -8,6 +8,7 @@ package player
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,13 +30,14 @@ import (
 // hiding it would look like the file is missing.
 // The decoders disagree about their parameter type — mp3 and vorbis take an
 // io.ReadCloser, flac and wav an io.Reader — so each is wrapped to a common
-// signature over *os.File, which satisfies both.
-var decodable = map[string]func(*os.File) (beep.StreamSeekCloser, beep.Format, error){
-	".mp3":  func(f *os.File) (beep.StreamSeekCloser, beep.Format, error) { return mp3.Decode(f) },
-	".flac": func(f *os.File) (beep.StreamSeekCloser, beep.Format, error) { return flac.Decode(f) },
-	".wav":  func(f *os.File) (beep.StreamSeekCloser, beep.Format, error) { return wav.Decode(f) },
-	".ogg":  func(f *os.File) (beep.StreamSeekCloser, beep.Format, error) { return vorbis.Decode(f) },
-	".oga":  func(f *os.File) (beep.StreamSeekCloser, beep.Format, error) { return vorbis.Decode(f) },
+// signature over io.ReadCloser, which satisfies both and, unlike *os.File, does
+// not force the source to be seekable.
+var decodable = map[string]func(io.ReadCloser) (beep.StreamSeekCloser, beep.Format, error){
+	".mp3":  func(r io.ReadCloser) (beep.StreamSeekCloser, beep.Format, error) { return mp3.Decode(r) },
+	".flac": func(r io.ReadCloser) (beep.StreamSeekCloser, beep.Format, error) { return flac.Decode(r) },
+	".wav":  func(r io.ReadCloser) (beep.StreamSeekCloser, beep.Format, error) { return wav.Decode(r) },
+	".ogg":  func(r io.ReadCloser) (beep.StreamSeekCloser, beep.Format, error) { return vorbis.Decode(r) },
+	".oga":  func(r io.ReadCloser) (beep.StreamSeekCloser, beep.Format, error) { return vorbis.Decode(r) },
 }
 
 // Decodable reports whether this build can play the file.
@@ -53,11 +55,18 @@ func (e *ErrUnsupported) Error() string {
 	return fmt.Sprintf("no decoder for %s files in this build", e.Ext)
 }
 
-// source is an open, decoded file.
+// source is an open, decoded stream of audio.
 type source struct {
 	streamer beep.StreamSeekCloser
 	format   beep.Format
-	file     *os.File
+	closer   io.Closer
+	// seekable is false while the bytes are still arriving.
+	//
+	// It is not a nicety: beep's mp3 decoder PANICS if Seek is called on a
+	// non-seekable source ("The Seek method will panic if rc is not io.Seeker"),
+	// so this is what stands between a scrub during a download and the program
+	// dying in the audio path.
+	seekable bool
 }
 
 func (s *source) Close() error {
@@ -65,29 +74,59 @@ func (s *source) Close() error {
 		return nil
 	}
 	err := s.streamer.Close()
-	// Some decoders take ownership of the file and close it themselves, so a
+	// Some decoders take ownership of the reader and close it themselves, so a
 	// second close here is expected and its error is not news.
-	_ = s.file.Close()
+	if s.closer != nil {
+		_ = s.closer.Close()
+	}
 	return err
 }
 
-// open decodes a file for playback.
+// open decodes a file for playback. The file seeks, so everything downstream
+// can.
 func open(path string) (*source, error) {
+	// The extension is checked BEFORE the file is opened, so a container this
+	// build cannot decode reports that rather than whatever the filesystem says.
+	// The UI tells "cannot be played" from "not on this device right now" in
+	// different words, and a missing m4a must not claim to be the second.
 	ext := strings.ToLower(filepath.Ext(path))
-	dec, ok := decodable[ext]
-	if !ok {
+	if _, ok := decodable[ext]; !ok {
 		return nil, &ErrUnsupported{Ext: ext}
 	}
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
-	streamer, format, err := dec(f)
+	src, err := openReader(f, ext)
 	if err != nil {
 		f.Close()
 		return nil, err
 	}
-	return &source{streamer: streamer, format: format, file: f}, nil
+	return src, nil
+}
+
+// openReader decodes whatever a reader hands over, which may be a file that is
+// still being written.
+//
+// A reader that does not seek is what makes streaming work at all: go-mp3 skips
+// its whole-file length walk when its source is not an io.Seeker, and beep's
+// flac picks its non-seeking parser for the same reason. Measured on real files,
+// a decoder is ready after 0.0%–0.2% of the bytes instead of 100% of them.
+//
+// The extension still decides the decoder — there is no sniffing here, and the
+// name is all a growing file has to go on.
+func openReader(rc io.ReadCloser, ext string) (*source, error) {
+	ext = strings.ToLower(ext)
+	dec, ok := decodable[ext]
+	if !ok {
+		return nil, &ErrUnsupported{Ext: ext}
+	}
+	streamer, format, err := dec(rc)
+	if err != nil {
+		return nil, err
+	}
+	_, seekable := rc.(io.Seeker)
+	return &source{streamer: streamer, format: format, closer: rc, seekable: seekable}, nil
 }
 
 // Probe returns a file's duration in seconds by decoding just its header.

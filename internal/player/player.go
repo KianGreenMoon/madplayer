@@ -3,6 +3,7 @@ package player
 import (
 	"context"
 	"errors"
+	"io"
 	"math"
 	"sync"
 	"time"
@@ -20,7 +21,18 @@ import (
 // a remote track is a download that finishes before it plays. The player does
 // not care where the file came from — only that it can be opened.
 type Fetcher interface {
+	// Local returns a complete file. It is what a caller that needs the WHOLE
+	// track uses — keeping a copy on this device, for instance.
 	Local(ctx context.Context, item *queue.Item) (string, error)
+	// Stream returns a reader that can be decoded while the bytes are still
+	// arriving, and the extension that says which decoder to use.
+	//
+	// It exists because the wait was the whole problem: a remote track used to
+	// be silent until every byte of it had landed, which on a slow link is
+	// minutes of a window that looks broken. The decoders never required that —
+	// they require a reader, and only take their whole-file path when handed one
+	// that seeks.
+	Stream(ctx context.Context, item *queue.Item) (io.ReadCloser, string, error)
 }
 
 // Sink is the audio output.
@@ -509,11 +521,28 @@ func (p *Player) Position() (elapsed, total float64) {
 	return float64(pos) / rate, float64(length) / rate
 }
 
+// Seekable reports whether the track playing right now can be scrubbed.
+//
+// It is false while a remote track is still arriving: the stream is decoded from
+// a reader that deliberately does not seek, which is the very thing that let it
+// start playing early. It becomes true when the same track is played again from
+// the cache.
+func (p *Player) Seekable() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.src != nil && p.src.seekable
+}
+
 // Seek moves to a position in seconds, clamped to the track.
+//
+// A source that is still arriving is left alone, and that guard is load-bearing
+// rather than tidy: beep's mp3 decoder PANICS when Seek is called on a
+// non-seekable reader, so without it a scrub during a download would take the
+// whole program down from inside the audio path.
 func (p *Player) Seek(seconds float64) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.src == nil {
+	if p.src == nil || !p.src.seekable {
 		return
 	}
 	rate := float64(p.src.format.SampleRate)
@@ -608,11 +637,7 @@ func (p *Player) playCurrent() {
 // load resolves an item to a file, decodes it and installs it as the playing
 // source — unless the queue moved on while it was working.
 func (p *Player) load(ctx context.Context, gen uint64, item *queue.Item) {
-	path, err := p.resolve(ctx, item)
-	var src *source
-	if err == nil {
-		src, err = open(path)
-	}
+	src, path, err := p.openItem(ctx, item)
 
 	p.mu.Lock()
 	if gen != p.gen {
@@ -687,20 +712,48 @@ func (p *Player) load(ctx context.Context, gen uint64, item *queue.Item) {
 
 // resolve finds the file to decode. A local path is used as it is; anything else
 // is a download.
-func (p *Player) resolve(ctx context.Context, item *queue.Item) (string, error) {
+// openItem decodes an item, from this machine's disk or from a download that has
+// only just started.
+//
+// The second result is the local path when there is one, and "" while a track is
+// still arriving — the cover art reads it, and a track being streamed has no
+// path anybody should show yet.
+func (p *Player) openItem(ctx context.Context, item *queue.Item) (*source, string, error) {
 	if item.Path != "" {
-		return item.Path, nil
+		src, err := open(item.Path)
+		return src, item.Path, err
 	}
 	if item.URL == "" {
-		return "", errors.New("this track has no audio to play")
+		return nil, "", errors.New("this track has no audio to play")
 	}
 	p.mu.Lock()
 	fetch := p.fetch
 	p.mu.Unlock()
 	if fetch == nil {
-		return "", errors.New("this track is on a server, and no connection is configured")
+		return nil, "", errors.New("this track is on a server, and no connection is configured")
 	}
-	return fetch.Local(ctx, item)
+
+	// Streamed, not waited for. A reader that blocks at the tail of a growing
+	// file lets the decoder start on the first fraction of a percent of it, which
+	// is the difference between a track that plays now and one that plays in four
+	// minutes.
+	rc, ext, err := fetch.Stream(ctx, item)
+	if err != nil {
+		return nil, "", err
+	}
+	src, err := openReader(rc, ext)
+	if err != nil {
+		rc.Close()
+		return nil, "", err
+	}
+	// A cached track comes back seekable, and then it has a path like any other.
+	path := ""
+	if src.seekable {
+		if f, ok := rc.(interface{ Name() string }); ok {
+			path = f.Name()
+		}
+	}
+	return src, path, nil
 }
 
 // SetFetcher installs what downloads remote tracks. Without one, a remote item

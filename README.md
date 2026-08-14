@@ -239,13 +239,42 @@ network unplugged, and it cannot disagree with the file.
 - **A cover can also be asked for as a file** (`Cache.File`), which is what the
   media bus needs; see *On the desktop's media bus*.
 
-## Remote tracks are downloaded, not streamed
+## Remote tracks are streamed, and cached as they arrive
 
-This is forced by the decoders, not chosen: go-mp3 walks every frame header
-before it will report a length (`ensureFrameStartsAndLength`), and beep's flac
-takes its seek path only over an `io.ReadSeeker`. Both mean the whole file has
-to be on disk, so `internal/blobcache` fetches it and the decoder opens that.
-There is no useful sense in which this client streams.
+**This section used to say the opposite, and it was wrong.** The claim was that
+go-mp3 walks every frame header before reporting a length and beep's flac takes
+its seek path only over an `io.ReadSeeker`, so the whole file had to be on disk
+first. Both halves are true **only for a seekable reader** — go-mp3 skips the
+walk entirely when its source is not an `io.Seeker` (`decode.go`: `if _, ok :=
+d.source.reader.(io.Seeker); !ok { return nil }`), and beep's flac picks
+`flac.New` over `flac.NewSeek` on the same test. What forced the wait was
+handing the decoder an `*os.File`, not the decoder.
+
+Measured on real music before this was rebuilt:
+
+| | old behaviour | decoded from a non-seekable reader |
+|---|---|---|
+| 6.6 MB MP3 | wait for all 6.6 MB | decoder ready in **60 ms**, having read **0.0%** |
+| 37 MB FLAC | wait for all 37 MB | ready in **107 ms** at **0.2%**; first audio at **156 ms** |
+
+So `blobcache.Stream` hands back a reader over the download as it lands: it
+blocks at the tail rather than reporting an end that has not happened, and it is
+**deliberately not an `io.Seeker`**, because that is the flag the decoders read.
+A blob already cached comes back as an ordinary `*os.File`, so replaying a track
+is unchanged.
+
+Two costs, both paid on purpose:
+
+- **A streaming track cannot be scrubbed.** `player.Seekable` reports it and the
+  seek bar goes quiet. This is not merely cosmetic: beep's mp3 decoder
+  *panics* on `Seek` over a non-seekable source, so the guard in `player.Seek`
+  is what stands between a drag and the process dying inside the audio path.
+- **A streaming MP3 does not know its own length**, since that is what the walk
+  computed. The player bar falls back to the queue item's duration, which the
+  library knew all along. FLAC needs none of this — `STREAMINFO` carries the
+  sample count, so it reports its length even while streaming.
+
+The cache itself is unchanged in every other way:
 
 - The **cache is keyed by content hash**, so the same audio offered by two
   servers is one file, and a server changing address orphans nothing.

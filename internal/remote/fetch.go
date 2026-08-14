@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -145,7 +146,39 @@ func (f *Fetcher) Local(ctx context.Context, item *queue.Item) (string, error) {
 		return "", err
 	}
 	key, ext := cacheKey(item)
-	return f.cache.Get(ctx, key, ext, func(ctx context.Context, w io.Writer) error {
+	return f.cache.Get(ctx, key, ext, f.fill(srv, item))
+}
+
+// Stream is Local without the wait: a reader over the download as it arrives.
+//
+// Same fetch — same swarm-then-relay choice, same cache file, same cancellation
+// — handed over while it runs rather than after it finishes. A track already
+// cached comes back as an ordinary seekable file, so replaying one is unchanged.
+//
+// The extension travels with the reader because the decoders pick by it, and a
+// file that is still being written has nothing else to go on.
+func (f *Fetcher) Stream(ctx context.Context, item *queue.Item) (io.ReadCloser, string, error) {
+	if item.Path != "" {
+		rc, err := os.Open(item.Path)
+		return rc, filepath.Ext(item.Path), err
+	}
+	if item.URL == "" {
+		return nil, "", errors.New("this track has no audio to play")
+	}
+	srv, err := f.serverFor(item.URL)
+	if err != nil {
+		return nil, "", err
+	}
+	key, ext := cacheKey(item)
+	rc, err := f.cache.Stream(ctx, key, ext, f.fill(srv, item))
+	return rc, ext, err
+}
+
+// fill is the one fetch body both Local and Stream run, so the choice between
+// the swarm and the relay is made in one place and cannot drift between "play
+// this" and "keep this".
+func (f *Fetcher) fill(srv library.Server, item *queue.Item) blobcache.Fetch {
+	return func(ctx context.Context, w io.Writer) error {
 		wrote, err := f.fromSwarm(ctx, srv, item, w)
 		switch {
 		case wrote && err == nil:
@@ -162,7 +195,7 @@ func (f *Fetcher) Local(ctx context.Context, item *queue.Item) (string, error) {
 			f.log.Printf("madplayer: swarm fetch failed, falling back to %s: %v", srv.Label, err)
 		}
 		return f.fromRelay(ctx, srv.Client, item, w)
-	})
+	}
 }
 
 // fromSwarm fetches from whoever holds the blob.

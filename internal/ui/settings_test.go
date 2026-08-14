@@ -58,9 +58,10 @@ func testApp(t *testing.T) *App {
 	}
 	t.Cleanup(be.Close)
 
-	a := New(new(app.Window), pl, be)
-	a.store = &prefs.Store{Dir: dir}
-	return a
+	// The store is named UP FRONT rather than replaced afterwards: by then the
+	// saved queue has already been read and the background writer is already
+	// pointed at the real settings directory.
+	return newApp(new(app.Window), pl, be, &prefs.Store{Dir: dir})
 }
 
 // headless is a layout context with no window behind it.

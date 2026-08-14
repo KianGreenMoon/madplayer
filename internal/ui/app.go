@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"image"
@@ -77,9 +78,6 @@ type App struct {
 	// art is the cover cache. It reads files on its own goroutines and asks for
 	// a repaint when one lands.
 	art *covers
-	// mpris is this player's presence on the desktop's media bus, or nil when
-	// there is no session bus to be on. Every method on it is nil-safe.
-	mpris *mpris.Service
 	// enrol keeps this device's standing with each home server when the mesh is
 	// running: a vouch, a way onto the underlay, and an advertisement of what it
 	// holds. Nil when the mesh is off, which is the default.
@@ -160,11 +158,37 @@ type App struct {
 	// upQueue and downQueue reorder the queue panel.
 	upQueue   []widget.Clickable
 	downQueue []widget.Clickable
+
+	// saveQueue asks the one queue writer for a save. Buffered by one, so a
+	// burst of edits collapses into a single write (see queuestate.go).
+	saveQueue chan struct{}
+	// done is closed when the window is. It is what stops the background writer,
+	// so nothing touches the settings directory after the program is finished
+	// with it.
+	done chan struct{}
+
+	// mediaBus is this player's presence on the desktop's media bus, or nil when
+	// there is no session bus to be on. It is installed by Run — a program that
+	// is not running has no business claiming a bus name — and read from the
+	// player's goroutine, hence the atomic. Every method on the value is
+	// nil-safe.
+	mediaBus atomic.Pointer[mpris.Service]
 }
 
 // New wires the UI to a player and the embedded backend.
 func New(win *app.Window, pl *player.Player, be *backend.Backend) *App {
-	a := &App{win: win, th: newTheme(), store: prefs.Default(), pl: pl, be: be, lib: library.New(be.Library())}
+	return newApp(win, pl, be, prefs.Default())
+}
+
+// newApp is New with the settings directory named.
+//
+// The seam exists so a test can point the whole thing at a temporary directory
+// BEFORE anything reads or writes it. Replacing the store afterwards is not the
+// same thing: by then the queue has already been read, and the saver is already
+// running against the real one — which is how a test run comes to overwrite the
+// queue of whoever was listening to music at the time.
+func newApp(win *app.Window, pl *player.Player, be *backend.Backend, store *prefs.Store) *App {
+	a := &App{win: win, th: newTheme(), store: store, pl: pl, be: be, lib: library.New(be.Library())}
 	a.art = newCovers(win.Invalidate)
 	a.list.Axis = layout.Vertical
 	a.queueList.Axis = layout.Vertical
@@ -210,24 +234,14 @@ func New(win *app.Window, pl *player.Player, be *backend.Backend) *App {
 	}
 	a.applyServers()
 
-	// The desktop's media bus: the XF86Audio keys on a keyboard, the media
-	// widget in GNOME's drop-down and KDE's tray, and playerctl. It is optional
-	// by construction — a machine with no session bus is a normal machine, and a
-	// music player that refused to start over one would be absurd — so a failure
-	// is logged once and the program carries on with its own window.
-	if svc, err := mpris.New("madplayer", pl, func() { win.Perform(system.ActionClose) }); err != nil {
-		log.Printf("madplayer: media keys and the desktop's media widget are unavailable: %v", err)
-	} else {
-		a.mpris = svc
-	}
-
 	// The player advances the queue from its own goroutine, so a repaint has to
 	// be asked for rather than assumed. The same signal is what warms the next
 	// track and what keeps the media bus honest: it fires exactly when the queue
 	// moves.
 	pl.OnChange = func() {
 		a.prefetchNext()
-		a.mpris.Update()
+		a.mediaBus.Load().Update()
+		a.markQueueDirty()
 		win.Invalidate()
 	}
 
@@ -245,6 +259,14 @@ func New(win *app.Window, pl *player.Player, be *backend.Backend) *App {
 			a.fetch.SetSwarm(be, a.enrol)
 		}
 	}
+
+	// The queue as it was left. Restored BEFORE the library loads, because it is
+	// self-contained — every row carries the text and the path it needs — so the
+	// player bar is populated the moment the window opens rather than after a
+	// scan.
+	a.saveQueue = make(chan struct{}, 1)
+	a.done = make(chan struct{})
+	a.restoreQueue()
 
 	// Hand over the folders an older, self-scanning madplayer kept in its config,
 	// so an upgrade re-imports the same music instead of looking like it lost it.
@@ -621,7 +643,25 @@ func (a *App) probeDurations() {
 }
 
 // Run is the event loop.
+//
+// The two background services start here rather than in New, and for the same
+// reason: a program that has not been started has no business claiming a bus
+// name or writing to the settings directory. That also keeps a headless layout
+// test — the only way this host can reach a panel — from touching either.
 func (a *App) Run() error {
+	// The desktop's media bus: the XF86Audio keys on a keyboard, the media widget
+	// in GNOME's drop-down and KDE's tray, and playerctl. It is optional by
+	// construction — a machine with no session bus is a normal machine, and a
+	// music player that refused to start over one would be absurd — so a failure
+	// is logged once and the program carries on with its own window.
+	if svc, err := mpris.New("madplayer", a.pl, func() { a.win.Perform(system.ActionClose) }); err != nil {
+		log.Printf("madplayer: media keys and the desktop's media widget are unavailable: %v", err)
+	} else {
+		a.mediaBus.Store(svc)
+		a.mediaBus.Load().Update()
+	}
+	go a.queueSaver()
+
 	var ops op.Ops
 	tick := time.NewTicker(a.pl.Tick())
 	defer tick.Stop()
@@ -629,7 +669,7 @@ func (a *App) Run() error {
 		for range tick.C {
 			// The media bus learns the playhead here and nowhere else: it is the
 			// one property a client polls rather than being told about.
-			a.mpris.Tick()
+			a.mediaBus.Load().Tick()
 			if a.pl.Playing() {
 				a.win.Invalidate()
 			}
@@ -639,8 +679,12 @@ func (a *App) Run() error {
 	for {
 		switch e := a.win.Event().(type) {
 		case app.DestroyEvent:
+			// The writer is stopped BEFORE the last save, so the final state on
+			// disk is this one and not whatever the heartbeat had in flight.
+			close(a.done)
 			a.save()
-			_ = a.mpris.Close()
+			a.writeQueue()
+			_ = a.mediaBus.Load().Close()
 			return e.Err
 		case app.FrameEvent:
 			gtx := app.NewContext(&ops, e)

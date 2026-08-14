@@ -83,6 +83,36 @@ Re-ordering the merged list is the one place this client is allowed to sort — 
 lists that each arrived ordered do not concatenate into an ordered list — and it
 sorts by the server's own keys.
 
+## The queue survives a restart
+
+`docs/ui/player-and-queue.md` §"Persistence & resume" has had this rule since the
+web UI shipped, and the pieces on this side were **built and never wired**:
+`player.Snapshot` and `player.Restore` existed with nothing calling them, so
+closing the window threw the queue away. `internal/ui/queuestate.go` connects
+them.
+
+- Saved: the visible order, the current index, the **original un-shuffled
+  order**, the shuffle state, the repeat mode and the position within the
+  current track. Written on every queue change, every 5 s while playing (the
+  position moves continuously and there is nothing to hook), and at exit.
+- **Restored paused**, pointing at the track. Pressing play resumes mid-track;
+  clicking a row starts that row from the beginning. Both fall out of one rule:
+  the position belongs to a named row (`player.ResumeAt`), is consumed the first
+  time that row loads, and is dropped by every explicit navigation. A bare
+  offset with no owner would seek whatever track happened to load next.
+- It lives in **`queue.json`, not `config.json`**, deliberately: the settings
+  file holds API tokens and is 0600, folding the queue in would rewrite the
+  credential file every five seconds while music plays, and a queue that cannot
+  be parsed must cost you the queue rather than your sign-ins.
+- Clearing the queue **removes** the file. Leaving the last state on disk to be
+  found at the next launch is not what "clear" means.
+
+`ui.newApp` takes the settings directory so a test can point at a temporary one
+*before* anything reads or writes it. Replacing the store afterwards is not the
+same thing — by then the saved queue has been read and the background writer is
+already aimed at the real directory, which is how a test run comes to overwrite
+the queue of whoever was listening to music at the time.
+
 ## On the desktop's media bus
 
 `internal/mpris` exports `org.mpris.MediaPlayer2`, which is how a Linux desktop
@@ -376,8 +406,8 @@ server is never sent back to add a folder.
 State lives in `~/.config/madplayer/` (`app.DataDir()` per platform, which is what
 makes it right on Android): `madshare.db`, `links/` (one symlink per imported
 file), `files/` and `variants/` for what the backend owns, `remote/` for
-downloaded audio, plus `config.json` for this device's own preferences and its
-server credentials. Deleting the directory loses the library index, the
+downloaded audio, `config.json` for this device's own preferences and its
+server credentials, and `queue.json` for what was playing. Deleting the directory loses the library index, the
 imported-folder list and the sign-ins — never any music, since nothing in there
 is a copy.
 

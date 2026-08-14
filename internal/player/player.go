@@ -95,6 +95,17 @@ type Player struct {
 	// track it passed.
 	cancel context.CancelFunc
 
+	// resumeKey and resumeAt are a restored queue's playback position, waiting
+	// for the track it belongs to.
+	//
+	// They are keyed by ROW rather than being a bare number because the queue can
+	// move before anybody presses play: a bare offset would seek whatever track
+	// happened to load next to a position that has nothing to do with it. The key
+	// is consumed on use and dropped by every explicit navigation, so a restored
+	// position resumes exactly once and only where it belongs.
+	resumeKey string
+	resumeAt  float64
+
 	// failed records why a track would not play, keyed by queue.Key. The contract
 	// is that a media error "marks its rows unavailable and advances", so this
 	// has to survive the next track succeeding — a single last-error field would
@@ -207,6 +218,7 @@ func (p *Player) Snapshot() (items, original []*queue.Item, index int, shuffled 
 // clicked view becomes the queue, in the order shown. Reports whether an undo
 // of the previous queue is available, which is the caller's cue to offer it.
 func (p *Player) SetQueue(items []*queue.Item, index int) bool {
+	p.forgetResume()
 	p.qmu.Lock()
 	undo := p.q.Set(items, index)
 	p.qmu.Unlock()
@@ -333,6 +345,34 @@ func (p *Player) Restore(items, original []*queue.Item, index int, shuffled bool
 	p.changed()
 }
 
+// ResumeAt arms a restored playback position for the track that is current now.
+//
+// It does not start anything, which is the whole point: pressing play resumes
+// mid-track, and clicking a row starts that row from the beginning. Both fall
+// out of one rule — the position belongs to a named row, is consumed the first
+// time that row loads, and is dropped by every explicit navigation.
+func (p *Player) ResumeAt(seconds float64) {
+	if seconds <= 0 {
+		return
+	}
+	cur := p.Current()
+	if cur == nil {
+		return
+	}
+	p.mu.Lock()
+	p.resumeKey, p.resumeAt = cur.RowKey(), seconds
+	p.mu.Unlock()
+}
+
+// forgetResume drops an armed position. Every deliberate move through the queue
+// calls it: having navigated away, the saved offset is about a track the person
+// is no longer asking for.
+func (p *Player) forgetResume() {
+	p.mu.Lock()
+	p.resumeKey, p.resumeAt = "", 0
+	p.mu.Unlock()
+}
+
 // --- playback ---------------------------------------------------------------
 
 // Unplayable reports why a track would not play, or nil if it has never failed.
@@ -417,6 +457,7 @@ func (p *Player) Paused() bool {
 // Next and Prev are MANUAL navigation and therefore always wrap, whatever the
 // repeat mode — the mode governs only what happens when a track ends by itself.
 func (p *Player) Next() {
+	p.forgetResume()
 	p.qmu.Lock()
 	ok := p.q.Next()
 	p.qmu.Unlock()
@@ -426,6 +467,7 @@ func (p *Player) Next() {
 }
 
 func (p *Player) Prev() {
+	p.forgetResume()
 	p.qmu.Lock()
 	ok := p.q.Prev()
 	p.qmu.Unlock()
@@ -436,6 +478,7 @@ func (p *Player) Prev() {
 
 // PlayIndex jumps to a position in the current queue.
 func (p *Player) PlayIndex(i int) {
+	p.forgetResume()
 	p.qmu.Lock()
 	ok := i >= 0 && i < p.q.Len()
 	if ok {
@@ -605,6 +648,20 @@ func (p *Player) load(ctx context.Context, gen uint64, item *queue.Item) {
 
 	p.src, p.srcPath = src, path
 	delete(p.failed, item.RowKey()) // it played this time
+
+	// A restored position is applied here and nowhere else: the file has to be
+	// open before there is anything to seek within, which is the same reason the
+	// web UI waits for `loadedmetadata`. It is consumed whether the seek lands or
+	// not, so a track that will not seek does not keep trying.
+	if p.resumeKey != "" && p.resumeKey == item.RowKey() {
+		at := p.resumeAt
+		p.resumeKey, p.resumeAt = "", 0
+		if rate := float64(src.format.SampleRate); rate > 0 {
+			if target := int(at * rate); target > 0 && target < src.streamer.Len() {
+				_ = src.streamer.Seek(target)
+			}
+		}
+	}
 	streamer := beep.Streamer(src.streamer)
 	if src.format.SampleRate != SampleRate {
 		streamer = beep.Resample(resampleQuality, src.format.SampleRate, SampleRate, streamer)

@@ -75,6 +75,23 @@ func (r Repeat) String() string {
 // Next cycles off → all → one → off.
 func (r Repeat) Next() Repeat { return (r + 1) % 3 }
 
+// RepeatFrom turns a stored number back into a mode, refusing anything that is
+// not one of the three.
+//
+// It exists because the saved queue is a file, and a file can be hand-edited, be
+// written by a newer build, or simply be junk. A Repeat outside the enum breaks
+// Next's modulo and leaves a repeat button that cycles through a mode nothing
+// implements; falling back to "off" is the state that surprises nobody.
+func RepeatFrom(n int) Repeat {
+	switch Repeat(n) {
+	case RepeatAll:
+		return RepeatAll
+	case RepeatOne:
+		return RepeatOne
+	}
+	return RepeatOff
+}
+
 type snapshot struct {
 	items    []*Item
 	original []*Item

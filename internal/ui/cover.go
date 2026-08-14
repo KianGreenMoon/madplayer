@@ -12,6 +12,7 @@ import (
 
 	"daemonlord.ygg/madplayer/internal/artwork"
 	"daemonlord.ygg/madplayer/internal/library"
+	"daemonlord.ygg/madplayer/internal/player"
 )
 
 // Cover art on screen.
@@ -127,4 +128,34 @@ func (a *App) nowPlayingCoverPath() string {
 		return cur.Path
 	}
 	return ""
+}
+
+// controls is the player as the desktop's media bus needs it: playback, plus
+// the one thing playback does not know about — where the current cover is.
+//
+// It is an adapter rather than a method on the player because internal/player
+// has no idea what a cover is, and giving it one to satisfy a bus would be the
+// wrong direction entirely.
+type controls struct {
+	*player.Player
+	art *covers
+}
+
+// ArtPath is a file the media widget can fetch, and it is the reason
+// artwork.Cache can spill: a cover embedded in an audio file has no path of its
+// own, and another process cannot read this one's memory.
+func (c controls) ArtPath() string {
+	if c.art == nil {
+		return ""
+	}
+	path := c.Player.CurrentPath()
+	if path == "" {
+		if cur := c.Player.Current(); cur != nil {
+			path = cur.Path
+		}
+	}
+	if path == "" {
+		return ""
+	}
+	return c.art.cache.File(path)
 }

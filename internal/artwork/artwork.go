@@ -17,7 +17,10 @@ package artwork
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"image"
+	"image/png"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,7 +30,6 @@ import (
 	// are: somebody's collection has one, and refusing it buys nothing.
 	_ "image/gif"
 	_ "image/jpeg"
-	_ "image/png"
 
 	"github.com/dhowden/tag"
 	"golang.org/x/image/draw"
@@ -71,6 +73,9 @@ type Cache struct {
 	// handful of covers at a time, so oldest-first is close enough and costs
 	// nothing to maintain.
 	order []string
+	// spill is where embedded art is written out for a consumer that needs a
+	// FILE. Empty unless SpillDir was called.
+	spill string
 	// dirs memoizes the cover file found beside a directory — an album's twelve
 	// tracks must not each list the same folder. An empty string means "looked,
 	// found nothing", which is why presence in the map is the answer and not the
@@ -85,11 +90,95 @@ type Cache struct {
 type entry struct {
 	img  image.Image
 	done bool
+	// file is the image FILE this cover came from, when it came from one. It is
+	// empty for embedded art, which lives inside the audio file and has no path
+	// of its own until [Cache.File] writes one.
+	file string
 }
 
 // New returns an empty cache.
 func New() *Cache {
 	return &Cache{entries: map[string]*entry{}, dirs: map[string]string{}}
+}
+
+// SpillDir names a directory where embedded covers may be written out.
+//
+// It exists for one consumer: the desktop's media bus, whose mpris:artUrl is a
+// URL and therefore needs a FILE. Art that already is a file (the folder cover)
+// is handed over as it is; art that lives inside an audio file is copied out
+// once, on demand. Nothing else in the program needs this, which is why it is
+// opt-in rather than something the cache does on its own.
+func (c *Cache) SpillDir(dir string) {
+	c.mu.Lock()
+	c.spill = dir
+	c.mu.Unlock()
+}
+
+// File returns a path to an image for this audio file, or "".
+//
+// It never blocks on a decode: a cover that has not settled yet has no file yet
+// either, and the caller asks again when it has. Writing the spilled copy is
+// cheap and happens at most once per cover.
+func (c *Cache) File(path string) string {
+	c.mu.Lock()
+	e, known := c.entries[path]
+	spill := c.spill
+	var img image.Image
+	if known && e.done {
+		if e.file != "" {
+			file := e.file
+			c.mu.Unlock()
+			return file
+		}
+		img = e.img
+	}
+	c.mu.Unlock()
+
+	if img == nil || spill == "" {
+		return ""
+	}
+	file, err := writeSpill(spill, path, img)
+	if err != nil {
+		return ""
+	}
+	c.mu.Lock()
+	// Re-check: the entry can have been evicted while the file was written.
+	if e, ok := c.entries[path]; ok {
+		e.file = file
+	}
+	c.mu.Unlock()
+	return file
+}
+
+// writeSpill copies a decoded cover out to a file named after the audio it came
+// from. An existing file is reused rather than rewritten — the cover of a track
+// does not change, and this is called every time the track starts.
+func writeSpill(dir, audioPath string, img image.Image) (string, error) {
+	sum := sha256.Sum256([]byte(audioPath))
+	file := filepath.Join(dir, hex.EncodeToString(sum[:8])+".png")
+	if _, err := os.Stat(file); err == nil {
+		return file, nil
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	// A temporary file and a rename, because a reader can be pointed at this the
+	// moment the name exists, and half a PNG is worse than no cover.
+	tmp := file + ".tmp"
+	f, err := os.Create(tmp)
+	if err != nil {
+		return "", err
+	}
+	if err := png.Encode(f, img); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmp)
+		return "", err
+	}
+	return file, os.Rename(tmp, file)
 }
 
 // Get returns the cover for an audio file.
@@ -125,16 +214,18 @@ func (c *Cache) evictLocked() {
 
 // load reads a cover and stores the answer, including the answer "none".
 func (c *Cache) load(path string) {
-	img := c.find(path)
+	img, file := c.find(path)
 	if img != nil {
 		img = shrink(img)
+	} else {
+		file = ""
 	}
 
 	c.mu.Lock()
 	// The entry can have been evicted while this ran, in which case storing it
 	// would resurrect a key nothing is waiting for.
 	if e, ok := c.entries[path]; ok {
-		e.img, e.done = img, true
+		e.img, e.file, e.done = img, file, true
 	}
 	c.mu.Unlock()
 
@@ -149,16 +240,18 @@ func (c *Cache) load(path string) {
 // compilation in one folder has twelve different covers and one folder.jpg, and
 // the folder image is the fallback for exactly the untagged case where nothing
 // better exists.
-func (c *Cache) find(path string) image.Image {
+// The second result is the FILE the cover came from, when it came from one:
+// the folder image has a path of its own, embedded art does not.
+func (c *Cache) find(path string) (image.Image, string) {
 	if img := embedded(path); img != nil {
-		return img
+		return img, ""
 	}
 	if cover := c.folderCover(filepath.Dir(resolve(path))); cover != "" {
 		if img := decodeFile(cover); img != nil {
-			return img
+			return img, cover
 		}
 	}
-	return nil
+	return nil, ""
 }
 
 // resolve follows the link a scanned track is reached through.

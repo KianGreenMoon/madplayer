@@ -24,6 +24,7 @@ type fake struct {
 	cur                      *queue.Item
 	qlen, qindex             int
 
+	artPath  string
 	seekedTo float64
 	calls    []string
 }
@@ -48,6 +49,7 @@ func (f *fake) SetRepeat(r queue.Repeat)     { f.repeat = r }
 func (f *fake) Current() *queue.Item         { return f.cur }
 func (f *fake) QueueLen() int                { return f.qlen }
 func (f *fake) QueueIndex() int              { return f.qindex }
+func (f *fake) ArtPath() string              { return f.artPath }
 
 func svc(f *fake) *Service { return &Service{c: f} }
 
@@ -139,6 +141,30 @@ func TestTheTrackIDFollowsTheTrack(t *testing.T) {
 	}
 	if !next.IsValid() {
 		t.Errorf("%q is not a valid object path", next)
+	}
+}
+
+// mpris:artUrl is a URL, so a cover with a space in its path has to survive
+// being one — music directories are full of spaces and "#".
+func TestArtUrlIsAFileURL(t *testing.T) {
+	f := &fake{
+		cur:     &queue.Item{Title: "x", Path: "/x.flac"},
+		artPath: "/home/somebody/Music/Some Album #2/cover.png",
+	}
+	got, ok := svc(f).metadata()["mpris:artUrl"]
+	if !ok {
+		t.Fatal("no mpris:artUrl for a track whose cover is on disk")
+	}
+	want := "file:///home/somebody/Music/Some%20Album%20%232/cover.png"
+	if got.Value() != want {
+		t.Errorf("artUrl = %v, want %s", got.Value(), want)
+	}
+
+	// A track with no cover must carry no key at all: a client renders an empty
+	// artUrl as a broken image rather than as no image.
+	f.artPath = ""
+	if _, present := svc(f).metadata()["mpris:artUrl"]; present {
+		t.Error("mpris:artUrl is present for a track with no cover")
 	}
 }
 

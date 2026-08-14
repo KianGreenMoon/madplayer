@@ -190,6 +190,9 @@ func New(win *app.Window, pl *player.Player, be *backend.Backend) *App {
 func newApp(win *app.Window, pl *player.Player, be *backend.Backend, store *prefs.Store) *App {
 	a := &App{win: win, th: newTheme(), store: store, pl: pl, be: be, lib: library.New(be.Library())}
 	a.art = newCovers(win.Invalidate)
+	// Embedded covers are written out here when the media bus asks for one: it
+	// wants a URL, and art that lives inside an audio file has no path of its own.
+	a.art.cache.SpillDir(filepath.Join(be.DataDir(), "covers"))
 	a.list.Axis = layout.Vertical
 	a.queueList.Axis = layout.Vertical
 	a.serverList.Axis = layout.Vertical
@@ -654,7 +657,7 @@ func (a *App) Run() error {
 	// construction — a machine with no session bus is a normal machine, and a
 	// music player that refused to start over one would be absurd — so a failure
 	// is logged once and the program carries on with its own window.
-	if svc, err := mpris.New("madplayer", a.pl, func() { a.win.Perform(system.ActionClose) }); err != nil {
+	if svc, err := mpris.New("madplayer", controls{a.pl, a.art}, func() { a.win.Perform(system.ActionClose) }); err != nil {
 		log.Printf("madplayer: media keys and the desktop's media widget are unavailable: %v", err)
 	} else {
 		a.mediaBus.Store(svc)

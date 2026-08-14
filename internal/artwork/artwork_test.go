@@ -256,3 +256,67 @@ func TestOnLoadFires(t *testing.T) {
 		t.Error("a settled cover never asked for a repaint")
 	}
 }
+
+// The media bus wants a URL, so embedded art — which lives inside an audio file
+// and has no path of its own — is written out on demand.
+func TestEmbeddedArtIsSpilledToAFile(t *testing.T) {
+	dir := t.TempDir()
+	spill := filepath.Join(dir, "covers")
+	song := filepath.Join(dir, "song.mp3")
+	writeFile(t, song, id3WithPicture(t, pngBytes(t, 8, color.RGBA{R: 255, A: 255})))
+
+	c := New()
+	c.SpillDir(spill)
+	waitFor(t, c, song)
+
+	file := c.File(song)
+	if file == "" {
+		t.Fatal("embedded art produced no file")
+	}
+	if fi, err := os.Stat(file); err != nil || fi.Size() == 0 {
+		t.Fatalf("spilled cover is not a file: %v", err)
+	}
+	// Asked twice, written once — this is called every time a track starts.
+	if again := c.File(song); again != file {
+		t.Errorf("second call returned %q, want the same file %q", again, file)
+	}
+}
+
+// A folder cover already IS a file. Copying it would be a second copy of the
+// same bytes with a worse name.
+func TestAFolderCoverIsHandedOverAsItIs(t *testing.T) {
+	dir := t.TempDir()
+	song := filepath.Join(dir, "song.mp3")
+	cover := filepath.Join(dir, "cover.png")
+	writeFile(t, song, []byte("not really audio"))
+	writeFile(t, cover, pngBytes(t, 16, color.RGBA{B: 255, A: 255}))
+
+	c := New()
+	c.SpillDir(filepath.Join(dir, "covers"))
+	waitFor(t, c, song)
+
+	if got := c.File(song); got != cover {
+		t.Errorf("File = %q, want the folder cover %q", got, cover)
+	}
+}
+
+// No art, no file — and no spill directory means no file either, which is the
+// state before anything asks for one.
+func TestNoArtMeansNoFile(t *testing.T) {
+	dir := t.TempDir()
+	song := filepath.Join(dir, "song.mp3")
+	writeFile(t, song, []byte("not really audio"))
+
+	c := New()
+	c.SpillDir(filepath.Join(dir, "covers"))
+	waitFor(t, c, song)
+	if got := c.File(song); got != "" {
+		t.Errorf("File = %q for music with no cover", got)
+	}
+
+	bare := New()
+	waitFor(t, bare, song)
+	if got := bare.File(song); got != "" {
+		t.Errorf("File = %q with no spill directory set", got)
+	}
+}

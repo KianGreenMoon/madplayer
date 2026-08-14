@@ -22,7 +22,9 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/url"
 	"os"
+	"path/filepath"
 	"sync"
 
 	"github.com/godbus/dbus/v5"
@@ -63,6 +65,15 @@ type Controls interface {
 	Current() *queue.Item
 	QueueLen() int
 	QueueIndex() int
+
+	// ArtPath is a file holding the current track's cover, or "".
+	//
+	// A file and not an image, because mpris:artUrl is a URL: the desktop's
+	// media widget fetches it in another process, so bytes in this one's memory
+	// are of no use to it. It is asked for per update rather than held, since a
+	// cover that is still being read has no file yet and gains one a moment
+	// later — the next Update picks it up.
+	ArtPath() string
 }
 
 const (
@@ -291,7 +302,26 @@ func (s *Service) metadata() map[string]dbus.Variant {
 	} else if cur.Duration > 0 {
 		m["mpris:length"] = dbus.MakeVariant(micros(cur.Duration))
 	}
+	if u := fileURL(s.c.ArtPath()); u != "" {
+		m["mpris:artUrl"] = dbus.MakeVariant(u)
+	}
 	return m
+}
+
+// fileURL turns a path into the file:// URL the bus wants, or "" for no path.
+//
+// url.URL rather than "file://"+path, because a cover lives beside the music and
+// music directories are full of spaces, "#" and every other character that has
+// to be escaped before a URL parser will accept it.
+func fileURL(path string) string {
+	if path == "" {
+		return ""
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return ""
+	}
+	return (&url.URL{Scheme: "file", Path: abs}).String()
 }
 
 // trackID is the object path the bus identifies the current track by.

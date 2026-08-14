@@ -118,7 +118,11 @@ func (s *Store) Load() (Config, error) {
 	if err := json.Unmarshal(b, &cfg); err != nil {
 		return cfg, fmt.Errorf("settings: %w", err)
 	}
-	if cfg.Volume <= 0 || cfg.Volume > 1 {
+	// An ABSENT volume is full, which is what the initialiser above says; a
+	// volume of ZERO is muted, and is a setting somebody chose. Treating the two
+	// alike is what made muting the player and closing it come back at full
+	// volume next launch — the one place a saved setting can be startling.
+	if cfg.Volume < 0 || cfg.Volume > 1 {
 		cfg.Volume = 1
 	}
 	return cfg, nil

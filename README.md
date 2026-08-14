@@ -119,8 +119,8 @@ the queue of whoever was listening to music at the time.
 knows what is playing: it is what makes the XF86Audio keys on a keyboard reach
 *this* program, what fills the media widget in GNOME's calendar drop-down and
 KDE's system tray, and what `playerctl` speaks. Verified live with
-`playerctl -p madplayer …` — status, metadata, position, seek, shuffle, loop,
-volume and Quit all work.
+`playerctl -p madplayer …` — status, metadata (cover included), position, seek,
+shuffle, loop, volume and Quit all work.
 
 - **It is optional and never fatal.** A machine with no session bus is a normal
   machine; a failure is one log line and the program carries on with its window.
@@ -144,6 +144,12 @@ volume and Quit all work.
   player that was already playing, which is the classic media-key bug.
 - `player.Paused` exists because *Paused* and *Stopped* are two different states
   on the bus and identical on screen.
+- **`mpris:artUrl` is a URL, so it needs a FILE.** The widget fetches it in
+  another process, where bytes in this one's memory are of no use. A folder
+  cover already is a file and is handed over as it is; embedded art is written
+  out once into `covers/` under the data dir (`artwork.Cache.SpillDir`). The
+  path is escaped through `net/url` rather than concatenated — music
+  directories are full of spaces and `#`.
 
 ## Where a cover comes from
 
@@ -177,6 +183,8 @@ network unplugged, and it cannot disagree with the file.
   out of it, which is what `player.CurrentPath` exists for.
 - Covers are scaled to 320 px and the cache is bounded. An untouched 3000×3000
   booklet scan is 36 MB of pixels for a 40 dp thumbnail.
+- **A cover can also be asked for as a file** (`Cache.File`), which is what the
+  media bus needs; see *On the desktop's media bus*.
 
 ## Remote tracks are downloaded, not streamed
 
@@ -407,7 +415,8 @@ State lives in `~/.config/madplayer/` (`app.DataDir()` per platform, which is wh
 makes it right on Android): `madshare.db`, `links/` (one symlink per imported
 file), `files/` and `variants/` for what the backend owns, `remote/` for
 downloaded audio, `config.json` for this device's own preferences and its
-server credentials, and `queue.json` for what was playing. Deleting the directory loses the library index, the
+server credentials, `queue.json` for what was playing, and `covers/` for cover
+art copied out of audio files so the desktop's media widget can fetch it. Deleting the directory loses the library index, the
 imported-folder list and the sign-ins — never any music, since nothing in there
 is a copy.
 

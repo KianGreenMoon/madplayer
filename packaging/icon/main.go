@@ -1,7 +1,10 @@
-// Command icon writes the launcher icon the Android packagers require.
+// Command icon writes madplayer's launcher icon.
 //
-// It is generated rather than committed so the repo carries no binary blob for
-// a throwaway spike — and so the icon is reviewable as the code that draws it.
+// One generator for both packagers: the Android build needs a launcher icon, and
+// so does the freedesktop entry that puts the program in a menu and gives the
+// desktop's media widget something to draw. It is generated rather than
+// committed so the repo carries no binary blob — and so the icon is reviewable
+// as the code that draws it.
 package main
 
 import (

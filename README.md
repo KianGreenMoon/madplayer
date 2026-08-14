@@ -306,6 +306,7 @@ this file.
 
 ```
 cmd/madplayer/       the program
+packaging/           the desktop entry, the icon generator, the user-level installer
 internal/backend/    madshare, embedded: the data dir, the silent identity, folders
 internal/artwork/    cover art, read out of the music file or the folder beside it
 internal/mpris/      the desktop's media bus: media keys, the system media widget
@@ -395,6 +396,26 @@ before deciding (linux/arm64, unstripped, measured 2026-08-08):
 - **`nofederation` is not**, tempting as the 8 MB is. Leaving the mesh compiled in
   means reaching it at level 2b is wiring rather than a rebuild — and 2b is the
   whole reason for embedding rather than talking HTTP.
+
+## Installing it as a desktop app
+
+```bash
+sh packaging/install-desktop.sh
+```
+
+Binary, icon and menu entry, all under `$HOME` — no root, and nothing the
+package manager owns is touched. Removing the three paths it prints is the
+uninstall.
+
+The `.desktop` file is not only about the menu. MPRIS clients resolve the
+`DesktopEntry` property this program publishes against the freedesktop entries,
+and that is where the desktop's media widget gets the **name and icon** it draws
+beside the transport — so without it the widget can drive the player and has
+nothing to call it. The file therefore has to be `madplayer.desktop`, matching
+the bus name `org.mpris.MediaPlayer2.madplayer`.
+
+The icon is generated rather than committed (`packaging/icon`), and it is the
+same generator the APK build uses, so the two cannot drift.
 
 ## Running
 

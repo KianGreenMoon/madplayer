@@ -41,8 +41,9 @@ export ANDROID_HOME ANDROID_SDK_ROOT="$ANDROID_HOME"
 mkdir -p "$out"
 
 # The packagers require a launcher icon; generate it rather than commit a blob.
+# It is the same generator the desktop entry uses (packaging/).
 icon="$here/icon.png"
-[ -f "$icon" ] || (cd "$root" && go run ./android/icon "$icon")
+[ -f "$icon" ] || (cd "$root" && go run ./packaging/icon "$icon")
 
 echo "==> $out/madplayer.apk"
 (cd "$root" && gogio \

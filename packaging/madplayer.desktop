@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Application
+Name=madplayer
+GenericName=Music Player
+Comment=Play the music on this machine, and on the madshares you sign in to
+Exec=madplayer
+Icon=madplayer
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+Keywords=music;audio;player;madshare;
+StartupNotify=true
+# The bus name this program takes is org.mpris.MediaPlayer2.madplayer, and MPRIS
+# clients resolve the DesktopEntry property against the BASENAME of this file.
+# So the file has to be madplayer.desktop, or the desktop's media widget has a
+# player it can drive and no name or icon to show for it.
+StartupWMClass=madplayer

@@ -34,6 +34,8 @@ there: the human-readable materialize target.
 - **Playback**: MP3, FLAC, WAV and Ogg Vorbis, with a queue, shuffle, three-mode
   repeat, seeking and volume — from the buttons or from the keyboard (Space,
   the arrows, `N`/`P`, `S`, `R`, `/`; the full list is printed in Settings).
+- **Media keys and the desktop's media widget**, over MPRIS. See *On the
+  desktop's media bus* below.
 - **Cover art**, read out of the music itself. See *Where a cover comes from*
   below.
 - **Queue editing**: *Play next* and *Add to queue* on every track row (on
@@ -80,6 +82,38 @@ Four consequences are worth knowing before reading that code:
 Re-ordering the merged list is the one place this client is allowed to sort — N
 lists that each arrived ordered do not concatenate into an ordered list — and it
 sorts by the server's own keys.
+
+## On the desktop's media bus
+
+`internal/mpris` exports `org.mpris.MediaPlayer2`, which is how a Linux desktop
+knows what is playing: it is what makes the XF86Audio keys on a keyboard reach
+*this* program, what fills the media widget in GNOME's calendar drop-down and
+KDE's system tray, and what `playerctl` speaks. Verified live with
+`playerctl -p madplayer …` — status, metadata, position, seek, shuffle, loop,
+volume and Quit all work.
+
+- **It is optional and never fatal.** A machine with no session bus is a normal
+  machine; a failure is one log line and the program carries on with its window.
+  A nil `*mpris.Service` is usable and does nothing, which is the whole of the
+  caller's error handling.
+- **It is a view, not a second player.** Nothing there holds playback state —
+  every property is computed from the player when asked, so the bus and the
+  window cannot disagree.
+- **`Position` is written, not signalled.** The D-Bus properties helper stores
+  values rather than computing them, so a continuously-changing property has to
+  be pushed; it is declared `EmitFalse` and updated on the UI's own 200 ms tick,
+  which is exactly the spec's model (clients poll `Position`, and `Seeked` covers
+  the discontinuities).
+- **The writable properties dispatch their work to a goroutine, and that is a
+  deadlock fix rather than tidiness.** The properties helper holds its lock
+  across the callback; changing the player from inside one reaches the player's
+  change hook → `Update` → a property write → the same non-reentrant lock, and
+  `playerctl shuffle On` hangs until it times out.
+- `player.Play`/`Pause`/`SetShuffle`/`SetRepeat` exist because a remote control
+  sets states rather than flipping them. Answering "Play" with a toggle pauses a
+  player that was already playing, which is the classic media-key bug.
+- `player.Paused` exists because *Paused* and *Stopped* are two different states
+  on the bus and identical on screen.
 
 ## Where a cover comes from
 
@@ -236,6 +270,7 @@ this file.
 cmd/madplayer/       the program
 internal/backend/    madshare, embedded: the data dir, the silent identity, folders
 internal/artwork/    cover art, read out of the music file or the folder beside it
+internal/mpris/      the desktop's media bus: media keys, the system media widget
 internal/library/    the merged browse view — sources, the merge rule, disc headers
 internal/prefs/      the settings that belong to this device (volume, servers, cache)
 internal/queue/      play queue: index arithmetic, shuffle, repeat

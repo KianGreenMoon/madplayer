@@ -6,6 +6,7 @@ require (
 	daemonlord.ygg/madshare v0.8.6
 	gioui.org v0.10.1
 	github.com/dhowden/tag v0.0.0-20240417053706-3d75831295e8
+	github.com/godbus/dbus/v5 v5.1.0
 	github.com/gopxl/beep/v2 v2.1.1
 	golang.org/x/exp/shiny v0.0.0-20250408133849-7e4ce0ab07d0
 	golang.org/x/image v0.26.0

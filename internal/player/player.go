@@ -272,6 +272,23 @@ func (p *Player) ToggleShuffle() {
 	p.changed()
 }
 
+// SetShuffle puts shuffle in a given state rather than flipping it.
+//
+// It exists for a remote control: the desktop's media widget sends "shuffle
+// on", not "shuffle the other way", and a toggle answering that would invert
+// the setting whenever the two disagreed.
+func (p *Player) SetShuffle(on bool) {
+	p.qmu.Lock()
+	change := p.q.Shuffled() != on
+	if change {
+		p.q.ToggleShuffle()
+	}
+	p.qmu.Unlock()
+	if change {
+		p.changed()
+	}
+}
+
 // CycleRepeat steps off → all → one → off.
 func (p *Player) CycleRepeat() {
 	p.qmu.Lock()
@@ -279,6 +296,21 @@ func (p *Player) CycleRepeat() {
 	p.qmu.Unlock()
 	p.changed()
 }
+
+// SetRepeat pins the repeat mode — the same reason SetShuffle exists.
+func (p *Player) SetRepeat(r queue.Repeat) {
+	p.qmu.Lock()
+	change := p.q.Repeat() != r
+	p.q.SetRepeat(r)
+	p.qmu.Unlock()
+	if change {
+		p.changed()
+	}
+}
+
+// Stop ends playback and leaves the queue alone, which is what a remote
+// control's Stop means: Play starts the same track again from the beginning.
+func (p *Player) Stop() { p.stop() }
 
 // Undo restores the queue stashed by the last replacement.
 func (p *Player) Undo() bool {
@@ -344,11 +376,42 @@ func (p *Player) Toggle() {
 	p.changed()
 }
 
+// Play and Pause set the state rather than flipping it.
+//
+// The on-screen button is one control that means "the other one", but a remote
+// control is several: the desktop's media widget has a Play and a Pause, and a
+// headset sends one of them. Answering "Play" with a toggle pauses a player that
+// was already playing, which is the classic media-key bug.
+func (p *Player) Play() {
+	if !p.Playing() {
+		p.Toggle()
+	}
+}
+
+func (p *Player) Pause() {
+	if p.Playing() {
+		p.Toggle()
+	}
+}
+
 // Playing reports whether audio is actually advancing.
 func (p *Player) Playing() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.ctrl != nil && !p.ctrl.Paused
+}
+
+// Paused reports a track that is OPEN and held.
+//
+// It is not simply "not playing": nothing loaded, a download in flight and a
+// stopped player are all not-playing and none of them is paused. The difference
+// is invisible on screen — the button says Play either way — and load-bearing on
+// the media bus, where Paused and Stopped are two different states and Stopped
+// means the playhead went back to the start.
+func (p *Player) Paused() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.ctrl != nil && p.ctrl.Paused
 }
 
 // Next and Prev are MANUAL navigation and therefore always wrap, whatever the

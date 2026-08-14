@@ -13,6 +13,7 @@ import (
 	"image/color"
 
 	"gioui.org/app"
+	"gioui.org/io/system"
 	"gioui.org/layout"
 	"gioui.org/op"
 	"gioui.org/op/clip"
@@ -26,6 +27,7 @@ import (
 	"daemonlord.ygg/madplayer/internal/library"
 	"daemonlord.ygg/madplayer/internal/madshare"
 	"daemonlord.ygg/madplayer/internal/mesh"
+	"daemonlord.ygg/madplayer/internal/mpris"
 	"daemonlord.ygg/madplayer/internal/player"
 	"daemonlord.ygg/madplayer/internal/prefs"
 	"daemonlord.ygg/madplayer/internal/queue"
@@ -75,6 +77,9 @@ type App struct {
 	// art is the cover cache. It reads files on its own goroutines and asks for
 	// a repaint when one lands.
 	art *covers
+	// mpris is this player's presence on the desktop's media bus, or nil when
+	// there is no session bus to be on. Every method on it is nil-safe.
+	mpris *mpris.Service
 	// enrol keeps this device's standing with each home server when the mesh is
 	// running: a vouch, a way onto the underlay, and an advertisement of what it
 	// holds. Nil when the mesh is off, which is the default.
@@ -205,11 +210,24 @@ func New(win *app.Window, pl *player.Player, be *backend.Backend) *App {
 	}
 	a.applyServers()
 
+	// The desktop's media bus: the XF86Audio keys on a keyboard, the media
+	// widget in GNOME's drop-down and KDE's tray, and playerctl. It is optional
+	// by construction — a machine with no session bus is a normal machine, and a
+	// music player that refused to start over one would be absurd — so a failure
+	// is logged once and the program carries on with its own window.
+	if svc, err := mpris.New("madplayer", pl, func() { win.Perform(system.ActionClose) }); err != nil {
+		log.Printf("madplayer: media keys and the desktop's media widget are unavailable: %v", err)
+	} else {
+		a.mpris = svc
+	}
+
 	// The player advances the queue from its own goroutine, so a repaint has to
 	// be asked for rather than assumed. The same signal is what warms the next
-	// track: it fires exactly when the queue moves.
+	// track and what keeps the media bus honest: it fires exactly when the queue
+	// moves.
 	pl.OnChange = func() {
 		a.prefetchNext()
+		a.mpris.Update()
 		win.Invalidate()
 	}
 
@@ -609,6 +627,9 @@ func (a *App) Run() error {
 	defer tick.Stop()
 	go func() {
 		for range tick.C {
+			// The media bus learns the playhead here and nowhere else: it is the
+			// one property a client polls rather than being told about.
+			a.mpris.Tick()
 			if a.pl.Playing() {
 				a.win.Invalidate()
 			}
@@ -619,6 +640,7 @@ func (a *App) Run() error {
 		switch e := a.win.Event().(type) {
 		case app.DestroyEvent:
 			a.save()
+			_ = a.mpris.Close()
 			return e.Err
 		case app.FrameEvent:
 			gtx := app.NewContext(&ops, e)

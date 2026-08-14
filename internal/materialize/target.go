@@ -99,6 +99,36 @@ func DefaultRoot() string {
 	return ""
 }
 
+// Resolve picks the managed folder.
+//
+// The setting wins; failing that it is `<music dir>/madplayer`; failing THAT —
+// a phone, a read-only home, a music directory on a card that is not in — it is
+// a folder inside the app's own data directory.
+//
+// The fallback is never silent, which is why the note comes back with it. On
+// Android the app's data directory is private storage that no file manager can
+// browse, and that breaks the promise this whole design makes: music you pulled
+// off the network should sit next to the music you already had. A fallback that
+// says so is honest; one that quietly hides your music is not.
+func Resolve(setting, dataDir string) (root, note string) {
+	if setting = strings.TrimSpace(setting); setting != "" {
+		if err := Writable(setting); err == nil {
+			return setting, ""
+		}
+		fallback := filepath.Join(dataDir, DirName)
+		return fallback, fmt.Sprintf("%s cannot be written to, so network music is being kept in %s instead — where a file manager will not find it.", setting, fallback)
+	}
+
+	if def := DefaultRoot(); def != "" {
+		if err := Writable(def); err == nil {
+			return def, ""
+		}
+	}
+
+	fallback := filepath.Join(dataDir, DirName)
+	return fallback, fmt.Sprintf("Your music folder cannot be written to, so network music is being kept in %s — where a file manager will not find it. Set a folder in Settings to change that.", fallback)
+}
+
 // Track is the little a name needs to know. It is a plain struct rather than a
 // library row so this package can be tested with no library.
 type Track struct {

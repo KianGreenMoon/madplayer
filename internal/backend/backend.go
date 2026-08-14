@@ -395,3 +395,66 @@ func isDir(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && info.IsDir()
 }
+
+// --- the managed folder -----------------------------------------------------
+//
+// Network music kept on this device lands in a folder madplayer manages
+// (docs/ui/madplayer.md §"Where the bytes live"). These two calls are all
+// internal/materialize needs from the library, and they are deliberately the
+// ORDINARY folder calls: a materialized file is an ordinary links-backed row in
+// an ordinary data source, so there is exactly one kind of library entry.
+
+// EnsureFolder makes a folder a data source, adding it when the library does not
+// have it. The bool reports that it was added — and adding scans, so a caller
+// that gets true has already had its files indexed.
+//
+// This is also how a thrown-away database recovers: the folder comes back as a
+// source, the scan walks it, and music that was on disk the whole time is in the
+// library again.
+func (b *Backend) EnsureFolder(ctx context.Context, root string) (bool, error) {
+	root = filepath.Clean(root)
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return false, err
+	}
+	if _, ok, err := b.folderAt(ctx, root); err != nil {
+		return false, err
+	} else if ok {
+		return false, nil
+	}
+	if _, err := b.AddFolder(ctx, root); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// Register indexes what is new in a folder the library already has.
+//
+// It WAITS for any scan in flight first. The backend scans one folder at a time
+// and answers a second request with an error rather than queueing it, so waiting
+// is what turns "the user happens to be rescanning their library right now" from
+// a failure into a delay.
+func (b *Backend) Register(ctx context.Context, root string) error {
+	id, ok, err := b.folderAt(ctx, filepath.Clean(root))
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("%s is not in your library", root)
+	}
+	b.WaitScan()
+	return b.RescanFolder(ctx, id)
+}
+
+// folderAt finds the data source rooted at a path.
+func (b *Backend) folderAt(ctx context.Context, root string) (id string, ok bool, err error) {
+	folders, err := b.Folders(ctx)
+	if err != nil {
+		return "", false, err
+	}
+	for _, f := range folders {
+		if filepath.Clean(f.Path) == root {
+			return f.ID, true, nil
+		}
+	}
+	return "", false, nil
+}

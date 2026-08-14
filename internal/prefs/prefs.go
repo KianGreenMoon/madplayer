@@ -55,6 +55,19 @@ type Config struct {
 	// discover. Usually empty, and that is the intended state.
 	MeshPeers []string `json:"mesh_peers,omitempty"`
 
+	// KeepDir is where network music is kept when it is saved to this device,
+	// overriding the default `<music dir>/madplayer`. Empty is the normal state
+	// and means the default (materialize.Resolve).
+	KeepDir string `json:"keep_dir,omitempty"`
+	// KeepTechnicalNames writes hash-names instead of Artist/Album/Title.
+	//
+	// It is a PREFERENCE and not an automatic fallback: it exists for a
+	// filesystem that cannot take the human names — FAT on a card, a charset it
+	// will not encode, a path length it will not accept — and a program that
+	// silently changed its own layout halfway through a collection would be
+	// worse than one that asked.
+	KeepTechnicalNames bool `json:"keep_technical_names,omitempty"`
+
 	// Roots is no longer used: music folders are data sources in the backend now.
 	// It is still read so an install that predates the embedded backend can hand
 	// its folders over once (see TakeLegacyRoots) instead of appearing to have

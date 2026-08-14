@@ -234,3 +234,41 @@ func TestWritableProbesRatherThanReasons(t *testing.T) {
 		t.Error("a folder that cannot be created was accepted")
 	}
 }
+
+// The fallback is never silent: on a phone it is the ordinary case, and it
+// breaks the promise the whole design makes — that the music sits where a file
+// manager can see it.
+func TestResolveFallsBackAndSaysSo(t *testing.T) {
+	data := t.TempDir()
+
+	// A setting that works is taken as it is, with nothing to explain.
+	want := filepath.Join(t.TempDir(), "elsewhere")
+	if root, note := Resolve(want, data); root != want || note != "" {
+		t.Errorf("root = %q note = %q, want the setting and no note", root, note)
+	}
+
+	// A setting that cannot be written falls back INTO the data directory, and
+	// the note names both places.
+	readonly := filepath.Join(t.TempDir(), "ro")
+	if err := os.Mkdir(readonly, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	blocked := filepath.Join(readonly, "sub")
+	root, note := Resolve(blocked, data)
+	if want := filepath.Join(data, DirName); root != want {
+		t.Errorf("root = %q, want the fallback %q", root, want)
+	}
+	if note == "" {
+		t.Fatal("the fallback was silent")
+	}
+	for _, mention := range []string{blocked, filepath.Join(data, DirName), "file manager"} {
+		if !strings.Contains(note, mention) {
+			t.Errorf("note %q does not mention %q", note, mention)
+		}
+	}
+
+	// Whitespace is not a setting.
+	if root, _ := Resolve("   ", data); root == "   " {
+		t.Error("a blank setting was taken as a folder")
+	}
+}

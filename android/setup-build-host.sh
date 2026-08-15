@@ -108,19 +108,69 @@ export PATH
 # the step after, so pinning it here ages into nothing worse than one extra
 # download. Google keeps old builds served indefinitely.
 CMDLINE_BUILD=13114758
+CMDLINE_NAME=commandlinetools-linux-${CMDLINE_BUILD}_latest.zip
+CMDLINE_URL=https://dl.google.com/android/repository/$CMDLINE_NAME
 sdkmanager="$sdk/cmdline-tools/latest/bin/sdkmanager"
 if [ ! -x "$sdkmanager" ]; then
-	echo "==> Android command-line tools -> $sdk/cmdline-tools/latest"
+	# Look for a zip somebody already carried here before reaching for the
+	# network — that is the normal path, not the exception. A host behind a
+	# filtering proxy answers this URL with a 404 and then stops resolving
+	# dl.google.com at all, and 157 MB is a thing you fetch once and copy.
+	#
+	# $CMDLINE_ZIP names one explicitly; otherwise any
+	# commandlinetools-linux-*.zip beside this script, in the working
+	# directory or in $HOME is taken. The build number in the name need not
+	# match CMDLINE_BUILD: sdkmanager updates itself in the step after, so
+	# any recent one bootstraps the same SDK.
+	zip=${CMDLINE_ZIP:-}
+	if [ -z "$zip" ]; then
+		for candidate in "$here"/commandlinetools-linux-*.zip \
+			./commandlinetools-linux-*.zip \
+			"${HOME:-/root}"/commandlinetools-linux-*.zip; do
+			if [ -f "$candidate" ]; then
+				zip=$candidate
+				break
+			fi
+		done
+	fi
+
 	tmp=$(mktemp -d)
 	trap 'rm -rf "$tmp"' EXIT INT TERM
-	curl -fL -o "$tmp/cmdline-tools.zip" \
-		"https://dl.google.com/android/repository/commandlinetools-linux-${CMDLINE_BUILD}_latest.zip"
-	unzip -q "$tmp/cmdline-tools.zip" -d "$tmp"
+
+	if [ -n "$zip" ]; then
+		echo "==> command-line tools: using $zip"
+	else
+		echo "==> command-line tools: downloading $CMDLINE_NAME"
+		zip=$tmp/$CMDLINE_NAME
+		if ! curl -fL --progress-bar -o "$zip" "$CMDLINE_URL"; then
+			echo >&2
+			echo "refusing: could not fetch the command-line tools." >&2
+			echo "If this host has no route to dl.google.com, fetch" >&2
+			echo "  $CMDLINE_URL" >&2
+			echo "somewhere that does, copy it to ${HOME:-/root}, and run this" >&2
+			echo "again — it will be found and used." >&2
+			exit 1
+		fi
+	fi
+
+	# A truncated copy and a proxy's HTML error page are both files, and both
+	# unzip into something that fails forty minutes later as "no NDK found".
+	# Check for the one entry that has to be in there.
+	if ! unzip -l "$zip" | grep -q 'cmdline-tools/bin/sdkmanager'; then
+		echo "refusing: $zip is not an Android command-line tools archive" >&2
+		echo "(no cmdline-tools/bin/sdkmanager in it). Re-copy it." >&2
+		exit 1
+	fi
+
+	echo "==> unpacking to $sdk/cmdline-tools/latest"
+	unzip -q "$zip" -d "$tmp/unpacked"
 	mkdir -p "$sdk/cmdline-tools"
 	rm -rf "$sdk/cmdline-tools/latest"
-	mv "$tmp/cmdline-tools" "$sdk/cmdline-tools/latest"
+	mv "$tmp/unpacked/cmdline-tools" "$sdk/cmdline-tools/latest"
 	rm -rf "$tmp"
 	trap - EXIT INT TERM
+else
+	echo "==> command-line tools: already at $sdk/cmdline-tools/latest"
 fi
 
 ANDROID_HOME=$sdk
@@ -137,6 +187,14 @@ yes 2>/dev/null | "$sdkmanager" --licenses >/dev/null || true
 # install exactly one of each and there is nothing for it to choose wrongly.
 #
 # --channel=0 is stable only; without it the newest "version" is a canary.
+#
+# The platform pattern is deliberately [0-9]+ and not [0-9.]+, and it is
+# load-bearing rather than tidiness. sdkmanager offers platforms;android-37.0,
+# android-36.1, android-33-ext4 and android-CANARY on the stable channel, and
+# `sort -V` ranks android-37.0 above android-36 — but gogio's latestPlatform()
+# parses the part after "android-" with strconv.Atoi and SKIPS anything that is
+# not a plain integer (gogio/androidbuild.go). Install one of those and gogio
+# fails with "no platforms found" in an SDK that visibly has one.
 latest() {
 	"$sdkmanager" --list --channel=0 2>/dev/null |
 		tr -d ' ' | cut -d'|' -f1 |

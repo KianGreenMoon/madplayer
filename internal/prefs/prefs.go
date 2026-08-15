@@ -46,10 +46,20 @@ type Config struct {
 	// Mesh joins the madnetwork: this device becomes a node of its own rather
 	// than a client of somebody else's (docs/ui/madplayer.md §"Level 2b").
 	//
-	// Off by default. It costs bandwidth and disk, it needs fpcalc installed,
-	// and the baseline product is a player for music you already have — which
-	// should not start talking to strangers because it was installed.
-	Mesh bool `json:"mesh,omitempty"`
+	// ON by default (owner, 2026-08-15), reversing the original decision. That
+	// decision — "the baseline product is a player for music you already have,
+	// which should not start talking to strangers because it was installed" —
+	// still describes a real cost, and the cost is unchanged: a node listens,
+	// discovers peers on the LAN by multicast, and seeds back what it fetched.
+	// What changed is who is expected to be running this.
+	//
+	// NOTE the missing `omitempty`, which is load-bearing now that the default is
+	// true. With it, turning the madnetwork OFF writes nothing at all, and the
+	// next launch reads an absent key as the default and switches it back on —
+	// the identical bug the volume setting had, where a muted player came back at
+	// full volume. Absent means "never chosen" and takes the default; false is a
+	// decision and is written down.
+	Mesh bool `json:"mesh"`
 	// MeshPeers are underlay peering URIs typed by hand: the fallback for
 	// somebody whose home server publishes none and whose network has none to
 	// discover. Usually empty, and that is the intended state.
@@ -119,8 +129,14 @@ func (s *Store) path() string        { return filepath.Join(s.Dir, "config.json"
 func (s *Store) legacyIndex() string { return filepath.Join(s.Dir, "library.json") }
 
 // Load reads the settings. A missing file is a first run, not an error.
+//
+// The DEFAULTS live here, in the value the file is unmarshalled over, which is
+// what makes "absent" and "explicitly false" two different things. The zero
+// Config is not the same as a loaded one and is not meant to be: a caller
+// building a Config by hand is describing what it wants, not what a first run
+// looks like.
 func (s *Store) Load() (Config, error) {
-	cfg := Config{Volume: 1}
+	cfg := Config{Volume: 1, Mesh: true}
 	b, err := os.ReadFile(s.path())
 	if errors.Is(err, fs.ErrNotExist) {
 		return cfg, nil

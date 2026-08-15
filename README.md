@@ -175,6 +175,12 @@ KDE's system tray, and what `playerctl` speaks. Verified live with
 `playerctl -p madplayer …` — status, metadata (cover included), position, seek,
 shuffle, loop, volume and Quit all work.
 
+- **Quit needs a repaint to take effect** (`ui.closeWindow`). Gio's X11 close
+  sends the window a `WM_DELETE_WINDOW` ClientMessage with `XSendEvent` and never
+  flushes Xlib's output buffer, so on an IDLE window the message sits there and
+  the program refuses to quit. It appeared to work when first built purely
+  because music was playing and the 200 ms tick was drawing frames. The
+  `Invalidate` after `Perform` is what posts it.
 - **It is optional and never fatal.** A machine with no session bus is a normal
   machine; a failure is one log line and the program carries on with its window.
   A nil `*mpris.Service` is usable and does nothing, which is the whole of the
@@ -309,11 +315,22 @@ node on this device, a track named without a content hash, no vouch from that
 server yet, or nobody holding it. Only a swarm fetch that *tried and failed* logs
 a line, because a mesh that quietly never works looks exactly like one that does.
 
-- **The mesh has to be switched on, and it is off by default.** Settings ›
-  *Use the madnetwork*, then restart — whether this device is a node is decided
-  in the config the backend is built from. With it off, every fetch is the relay
-  and the swarm never runs. That is by design; what was NOT by design is that it
-  never ran when switched on either — see below.
+- **The mesh is ON by default** (owner, 2026-08-15, reversing the original
+  decision) and **takes effect at the next restart** — whether this device is a
+  node is decided in the config the backend is built from. Switch it off in
+  Settings › *Use the madnetwork*; with it off, every fetch is the relay and the
+  swarm never runs.
+
+  Turning it off **sticks**, and that took care: `prefs.Mesh` has no
+  `omitempty`, because with one a `false` writes nothing, the next launch reads
+  the absent key as the default, and a player somebody deliberately took off the
+  network quietly rejoins it. Absent means "never chosen" and takes the default;
+  `false` is a decision and is written down. (The volume setting had exactly this
+  bug and it is fixed the same way.)
+
+  A machine with no **fpcalc** degrades rather than fails: the backend refuses to
+  federate without it, `MeshProblem` carries the sentence, and the Settings line
+  says so.
 - **The enrolment used to never learn its servers** (fixed 2026-08-15).
   `applyServers` is the one place that tells every consumer which servers there
   are, and it skipped a nil enrolment silently — while running *before* the mesh

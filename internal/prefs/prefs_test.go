@@ -3,6 +3,7 @@ package prefs
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -64,3 +65,72 @@ func TestSetServerIsKeyedByAddress(t *testing.T) {
 // madshare's own runtime setting, reached through the embedded backend, so the
 // number is the same one a server's settings card writes. Nothing in this
 // package reads or writes one.
+
+// The madnetwork is on by default, and turning it OFF has to stick.
+//
+// This is the volume bug in a second place, and it would have been worse: with
+// `omitempty` on a bool, writing false writes nothing, an absent key reads as
+// the default, and a player somebody deliberately took off the network would
+// quietly rejoin it on the next launch.
+func TestTurningTheMadnetworkOffSticks(t *testing.T) {
+	dir := t.TempDir()
+	s := &Store{Dir: dir}
+
+	// A first run has no file at all: the default applies.
+	first, err := s.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !first.Mesh {
+		t.Error("the madnetwork was off on a first run, want on by default")
+	}
+
+	// Turned off explicitly.
+	off := first
+	off.Mesh = false
+	if err := s.Save(off); err != nil {
+		t.Fatal(err)
+	}
+	if raw, err := os.ReadFile(filepath.Join(dir, "config.json")); err != nil {
+		t.Fatal(err)
+	} else if !strings.Contains(string(raw), "\"mesh\": false") {
+		t.Fatalf("config.json does not record the decision:\n%s", raw)
+	}
+
+	back, err := s.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if back.Mesh {
+		t.Error("the madnetwork switched itself back on — an explicit false was read as absent")
+	}
+
+	// And back on again, which must also survive.
+	on := back
+	on.Mesh = true
+	if err := s.Save(on); err != nil {
+		t.Fatal(err)
+	}
+	if again, err := s.Load(); err != nil || !again.Mesh {
+		t.Errorf("mesh = %v err = %v after turning it on", again.Mesh, err)
+	}
+}
+
+// An install that predates the default has no key, and takes the new default —
+// which is the point of changing it.
+func TestAnOlderConfigWithNoMeshKeyTakesTheDefault(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"volume":0.7}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := (&Store{Dir: dir}).Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Mesh {
+		t.Error("a config written before the default changed did not pick it up")
+	}
+	if cfg.Volume != 0.7 {
+		t.Errorf("volume = %v, want the saved 0.7", cfg.Volume)
+	}
+}

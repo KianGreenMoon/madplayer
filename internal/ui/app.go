@@ -738,7 +738,7 @@ func (a *App) Run() error {
 	// construction — a machine with no session bus is a normal machine, and a
 	// music player that refused to start over one would be absurd — so a failure
 	// is logged once and the program carries on with its own window.
-	if svc, err := mpris.New("madplayer", controls{a.pl, a.art}, func() { a.win.Perform(system.ActionClose) }); err != nil {
+	if svc, err := mpris.New("madplayer", controls{a.pl, a.art}, a.closeWindow); err != nil {
 		log.Printf("madplayer: media keys and the desktop's media widget are unavailable: %v", err)
 	} else {
 		a.mediaBus.Store(svc)
@@ -801,6 +801,23 @@ func (a *App) windowTitle() string {
 		t += " — " + cur.Artist
 	}
 	return t + " · madplayer"
+}
+
+// closeWindow asks the window to close, from wherever.
+//
+// The Invalidate is NOT redundant, and finding that out cost an evening. Gio's
+// X11 close sends the window a WM_DELETE_WINDOW ClientMessage with XSendEvent
+// and never flushes Xlib's output buffer (os_x11.go, x11Window.close). On a
+// window that is drawing — music playing, the 200ms tick invalidating — the next
+// frame flushes it and the window closes. On an IDLE window nothing flushes, the
+// message sits in the buffer, and the program simply refuses to quit.
+//
+// That is why the desktop's Quit appeared to work when it was first built and
+// did not later: the difference was whether something happened to be playing.
+// Asking for a frame is what posts the message.
+func (a *App) closeWindow() {
+	a.win.Perform(system.ActionClose)
+	a.win.Invalidate()
 }
 
 // retitle pushes the title only when it CHANGED. Setting it every frame is sixty

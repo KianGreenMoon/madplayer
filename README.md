@@ -34,6 +34,10 @@ are written into that doc.
 - **Remote servers**: sign in with a username and password, and that server's
   library appears in the same lists as your own. See *One list, several
   libraries* below.
+- **The madnetwork**, in those same lists: the community catalogue your server
+  can see, browsed through it and fetched from whoever holds the bytes — never
+  through the server. *Only local* narrows the list to this device. See *Music
+  the madnetwork holds* below.
 - **Tags, entities, cover art, duration, bitrate and fingerprints** all come from
   the backend's own ingest pipeline, running in-process — the same passes a server
   runs on an upload.
@@ -85,7 +89,9 @@ Four consequences are worth knowing before reading that code:
   falls out — a track whose drive is unplugged still plays from a server.
 - **Ids are per-library.** 41 on one server is not 41 on another, so nothing is
   addressed by an id without its source beside it (`library.Origin`). Drilling
-  asks each library the row came from, with the id it has there.
+  asks each library the row came from, with the id it has there — or, for the
+  madnetwork, with the NAME it has there, because a merged catalogue has no id
+  space at all.
 - **One unreachable server is a footnote, not an error.** It is named above the
   rows; the rest of the music still lists. Only when *every* library fails is
   there a real error, because an empty list would say "you own nothing".
@@ -93,6 +99,57 @@ Four consequences are worth knowing before reading that code:
 Re-ordering the merged list is the one place this client is allowed to sort — N
 lists that each arrived ordered do not concatenate into an ordered list — and it
 sorts by the server's own keys.
+
+**Three kinds of library, not two.** Signing in to a server buys its own library
+*and* the madnetwork it can see — `docs/ui/madplayer.md` §"Federation: madplayer
+is a listener node" said so from the start, and only the first half was built
+until 2026-08-15. So each server contributes two sources, separate because they
+fail separately: an account without `madnetwork.access` gets the library and a
+forbidden network, and that must read as one library answering rather than as
+the server being down.
+
+**"Only local"** is the one narrowing, in the strip above the rows. The default
+is everything this device can reach; the button is for the moment when what is
+actually *here* is the question — before a flight, on a metered connection, or
+just to see the collection rather than the network. It is not an offline mode:
+an unreachable server already drops out on its own, with a note beside the rows.
+Switching it walks back to the top of the list, because the two scopes do not
+hold the same rows and narrowing while standing inside one would leave a
+breadcrumb naming something with nothing under it.
+
+## Music the madnetwork holds
+
+A row from the community catalogue plays like any other, and the bytes never
+touch the server that told you about it.
+
+**The server is a directory.** `/api/madnetwork/{artists,albums,tracks,search}`
+answers the deduplicated union of every friend's catalogue — your server pulls
+and merges those itself, every 15 minutes — and each track row carries a content
+hash, a size, a codec and who holds it. That is the whole of what this client
+takes from it. The audio comes from the holders, over the mesh, through the swarm
+path that was already here (`internal/remote`), with the holder list asked for
+again at play time so the plan is fresh rather than as old as the screen.
+
+**There is deliberately no relay behind it.** `GET /api/madnetwork/stream/{hash}`
+would serve the same bytes and is the right answer for a browser, which cannot
+join a swarm — but it is a *cache-through* relay: the server fetches somebody
+else's audio and keeps a copy. Using it would fill that machine's disk with the
+community's catalogue as a side effect of somebody browsing it here. So for
+network content the swarm is not the preferred path, it is the only one, and its
+failure is the track's failure — said out loud, with the reason (nobody
+reachable has it, no vouch from this server yet, the mesh was busy, it did not
+answer in time), because there is nothing underneath to hide behind.
+
+Every other kind of track keeps its relay. That fallback is level 1, it works
+with no mesh at all, and nothing about it changed.
+
+**Why this device cannot browse the network by itself**, since it is a node too:
+catalogues are pulled between *friends*, and a listener node has none — it
+publishes nothing and appears in nobody's list, which is exactly what makes it
+safe to run on a phone. Its standing on the mesh is a capability token from its
+home server, and that buys the right to fetch bytes from strangers, not the right
+to be handed their catalogues. So the merged view comes from the node that
+legitimately has one, and the bytes come from whoever has them.
 
 ## Keeping network music
 

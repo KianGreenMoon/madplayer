@@ -21,6 +21,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"path/filepath"
+	"strings"
 	"sync"
 
 	"daemonlord.ygg/madshare/app"
@@ -137,6 +139,44 @@ type Copy struct {
 	// servers is stored once.
 	Hash string
 	MIME string
+
+	// Size is the rendition's byte length, and Codec the container it is in
+	// ("mp3", "flac"). Both are filled in only by the madnetwork, and both are
+	// needed there for the same reason: a copy nobody named a file for has no
+	// name to take a length or an extension from.
+	Size  int64
+	Codec string
+
+	// Network marks a copy that exists on the mesh and NOWHERE this client can
+	// address with a URL. Playing it means fetching the hash from whoever holds
+	// it, through the server named by Origin.Source — which supplies the holder
+	// list and no bytes.
+	//
+	// The three kinds of copy are exhaustive and each names its own way to the
+	// audio: a Path is opened, a URL is downloaded, a Network hash is swarmed.
+	Network bool
+}
+
+// Playable reports whether this copy names audio that can be reached at all.
+func (c Copy) Playable() bool { return c.Path != "" || c.URL != "" || (c.Network && c.Hash != "") }
+
+// Ext is the file extension for these bytes, with the dot.
+//
+// It matters more than a file name usually does, because the decoders pick by it
+// and nothing else: a cached download written without one is audio this program
+// cannot open. A madnetwork copy has no filename anywhere — the catalogue names
+// a hash, a size and a codec — so the codec is where its extension comes from.
+func (c Copy) Ext() string {
+	if c.Path != "" {
+		return filepath.Ext(c.Path)
+	}
+	if e := filepath.Ext(FileName(c.URL)); e != "" {
+		return e
+	}
+	if c.Codec != "" {
+		return "." + strings.TrimPrefix(strings.ToLower(c.Codec), ".")
+	}
+	return ""
 }
 
 // Track is one logical track: the same recording may be held by several
@@ -157,12 +197,15 @@ type Track struct {
 	Copies []Copy
 }
 
-// Best is the copy to play: this device's bytes when it has them, and otherwise
-// the first library that does.
+// Best is the copy to play: this device's bytes when it has them, then a server
+// that can hand them over directly, and only then the mesh.
 //
 // Preferring local is not an optimisation, it is the offline case working — a
 // track this machine holds must play with the network unplugged, whichever
-// server also happens to have it.
+// server also happens to have it. The madnetwork comes last for the neighbouring
+// reason: a copy a signed-in server holds is one HTTP request, while a copy only
+// the mesh has costs a holder lookup and a swarm. When the same audio is both,
+// it is the same bytes either way, so the cheap route wins.
 func (t *Track) Best() (Copy, bool) {
 	for _, c := range t.Copies {
 		if c.Path != "" {
@@ -171,6 +214,11 @@ func (t *Track) Best() (Copy, bool) {
 	}
 	for _, c := range t.Copies {
 		if c.URL != "" {
+			return c, true
+		}
+	}
+	for _, c := range t.Copies {
+		if c.Network && c.Hash != "" {
 			return c, true
 		}
 	}
@@ -207,12 +255,35 @@ func (r SearchResults) Empty() bool {
 	return len(r.Artists) == 0 && len(r.Albums) == 0 && len(r.Tracks) == 0
 }
 
+// Scope is how much of what this device can reach is being browsed.
+//
+// The default is everything, and that is the posture: one list holding this
+// machine's music, each signed-in server's library, and the madnetwork those
+// servers can see, merged by the server's own identity rule. A row's origin
+// badge says where it came from; the list does not ask you to choose first.
+//
+// ScopeDevice is the one deliberate narrowing, for the moment when "what is
+// actually HERE" is the question — before a flight, on a metered connection, or
+// simply to see the collection rather than the network. It is not the offline
+// mode: an unreachable server already drops out of ScopeAll on its own, with a
+// note beside the rows rather than instead of them.
+type Scope int
+
+const (
+	// ScopeAll is this device, the servers, and the madnetwork through them.
+	ScopeAll Scope = iota
+	// ScopeDevice is only what this machine holds.
+	ScopeDevice
+)
+
 // Library is the merged browse view. The device library is always source zero,
 // so it is the first to answer and the first whose values win a tie.
 type Library struct {
 	mu      sync.RWMutex
 	device  Source
 	remotes []Source
+	network []Source
+	scope   Scope
 }
 
 // New wraps the embedded backend's browse surface. Servers are added afterwards
@@ -230,25 +301,63 @@ type Server struct {
 
 // SetServers replaces the remote libraries. Passing none leaves the device
 // library alone, which is the offline player it always was.
+//
+// Each server contributes TWO sources: its own library, and the madnetwork it
+// can see. They are separate because they fail separately — an account without
+// `madnetwork.access` gets the library and a forbidden network, and that must
+// read as one library answering rather than as the server being down.
 func (l *Library) SetServers(servers []Server) {
 	remotes := make([]Source, 0, len(servers))
+	network := make([]Source, 0, len(servers))
 	for _, s := range servers {
 		remotes = append(remotes, remoteSource{base: s.Base, label: s.Label, cl: s.Client})
+		network = append(network, madnetworkSource{base: s.Base, label: madnetworkLabel(s.Label), cl: s.Client})
 	}
 	l.mu.Lock()
-	l.remotes = remotes
+	l.remotes, l.network = remotes, network
 	l.mu.Unlock()
 }
 
-// sources is the fan-out order: this device, then the servers as configured.
+// madnetworkLabel is what a row from the community catalogue says it came from.
+//
+// It names the network rather than the server, because that is what is true: the
+// bytes come from whoever holds them, and the server only knew where to look.
+// Saying the server's name would credit it with content it does not have.
+const madnetworkName = "madnetwork"
+
+func madnetworkLabel(string) string { return madnetworkName }
+
+// SetScope narrows or widens what is browsed. It takes effect on the next fetch,
+// which is what the caller does after changing it.
+func (l *Library) SetScope(s Scope) {
+	l.mu.Lock()
+	l.scope = s
+	l.mu.Unlock()
+}
+
+// Scope reports what is being browsed.
+func (l *Library) Scope() Scope {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.scope
+}
+
+// sources is the fan-out order: this device, then the servers as configured,
+// then the madnetwork through each of them. Device-first is what makes a local
+// value win a tie in the merge; the network is last for the same reason in
+// reverse — it is the least specific claim about a row.
 func (l *Library) sources() []Source {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
-	out := make([]Source, 0, 1+len(l.remotes))
+	out := make([]Source, 0, 1+len(l.remotes)+len(l.network))
 	if l.device != nil {
 		out = append(out, l.device)
 	}
-	return append(out, l.remotes...)
+	if l.scope == ScopeDevice {
+		return out
+	}
+	out = append(out, l.remotes...)
+	return append(out, l.network...)
 }
 
 // Remote reports whether any server is configured — the switch between "a music

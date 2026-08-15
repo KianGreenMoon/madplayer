@@ -167,6 +167,7 @@ type App struct {
 	btnPrev, btnPlay, btnNext             widget.Clickable
 	btnShuffle, btnRepeat, btnClearQueue  widget.Clickable
 	btnAddFolder, btnRescan, btnUndo      widget.Clickable
+	btnLocalOnly                          widget.Clickable
 	btnPlayAlbum, btnAlbumNext            widget.Clickable
 	btnAlbumAdd, btnAlbumKeep             widget.Clickable
 	btnKeepDirSave                        widget.Clickable
@@ -882,20 +883,30 @@ func (a *App) update(gtx C) {
 	if a.btnQueue.Clicked(gtx) {
 		a.view = toggleView(a.view, viewQueue)
 	}
+	if a.btnLocalOnly.Clicked(gtx) {
+		a.toggleScope(gtx)
+	}
 	if a.btnClearQueue.Clicked(gtx) {
 		a.pl.ClearQueue()
 	}
 
 	a.handleKeys(gtx)
 
+	// Both walk the drill back, and both do it under the lock for the same
+	// reason drillArtist does: a reload from the previous move can still be
+	// reading the level and the row it is about.
 	if a.crumbHome.Clicked(gtx) {
+		a.mu.Lock()
 		a.artist, a.album = nil, nil
 		a.setLevel(levelArtists)
+		a.mu.Unlock()
 		go a.reload()
 	}
 	if a.crumbArt.Clicked(gtx) {
+		a.mu.Lock()
 		a.album = nil
 		a.setLevel(levelAlbums)
+		a.mu.Unlock()
 		go a.reload()
 	}
 
@@ -992,6 +1003,44 @@ func toggleView(cur, want view) view {
 	}
 	return want
 }
+
+// toggleScope switches between everything this device can reach and only what it
+// holds.
+//
+// It walks back to the artist list rather than staying where it was, and that is
+// not tidiness: the drill can be standing inside a row the other scope does not
+// have — an artist only the madnetwork knows, an album only a server holds — and
+// narrowing underneath it would leave the breadcrumb naming something with no
+// tracks under it. Going to the top is the one destination both scopes share.
+func (a *App) toggleScope(gtx C) {
+	to := library.ScopeDevice
+	if a.lib.Scope() == library.ScopeDevice {
+		to = library.ScopeAll
+	}
+	a.lib.SetScope(to)
+
+	// Under the lock, like every other move through the drill: a reload started
+	// by the PREVIOUS move may still be reading these (drillArtist set the
+	// convention; the breadcrumb handlers had quietly skipped it).
+	a.mu.Lock()
+	a.artist, a.album, a.albums, a.tracks = nil, nil, nil, nil
+	a.setLevel(levelArtists)
+	a.mu.Unlock()
+
+	if a.view == viewSearch {
+		// A search's results belong to the scope that ran it, so it is re-run
+		// rather than left showing rows from the other one.
+		go a.doSearch(a.search.Text())
+		return
+	}
+	a.view = viewBrowse
+	go a.reload()
+}
+
+// scopeLabel names what the button will do, not what is showing. "Only local" is
+// the narrowing on offer while everything is listed, and stays lit as the state
+// once it has been taken.
+func (a *App) scopeLabel() string { return "Only local" }
 
 func (a *App) drillUp() bool {
 	switch a.level {
@@ -1128,10 +1177,33 @@ func (a *App) itemsFromTracks(tracks []*library.Track) []*queue.Item {
 		}
 		if c, ok := t.Best(); ok {
 			it.Path, it.URL, it.Hash, it.Origin = c.Path, c.URL, c.Hash, c.Origin.Label
+			// A madnetwork copy carries no address but its content, so the queue
+			// carries what a fetch needs to turn that into audio: which server can
+			// name the holders, and what container the bytes are in.
+			if c.Network {
+				it.Network, it.Base, it.Size, it.Codec = true, madnetworkBase(c.Origin), c.Size, c.Codec
+			}
 		}
 		out[i] = it
 	}
 	return out
+}
+
+// networkHash is a copy's content hash when that is its ADDRESS — a madnetwork
+// row, which has no path and no URL. A server track's hash is a cache key and
+// must not become its row identity, or the same audio on two servers would be
+// one row.
+func networkHash(c library.Copy) string {
+	if c.Network {
+		return c.Hash
+	}
+	return ""
+}
+
+// madnetworkBase is the server behind a madnetwork origin: its source id with
+// the marker taken off, which is the base URL a fetch asks for holders.
+func madnetworkBase(o library.Origin) string {
+	return strings.TrimSuffix(o.Source, library.MadnetworkMark)
 }
 
 // rowKey is how a browse row is matched against what is playing. It reads the
@@ -1141,7 +1213,7 @@ func rowKey(t *library.Track) string {
 	if !ok {
 		return ""
 	}
-	return queue.Key(c.Path, c.URL)
+	return queue.KeyOf(c.Path, c.URL, networkHash(c))
 }
 
 // setNotice writes the one-line notice and starts its clock. Every write goes

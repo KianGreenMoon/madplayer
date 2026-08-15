@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"path/filepath"
 	"strings"
 
 	"daemonlord.ygg/madplayer/internal/library"
@@ -106,7 +105,7 @@ func (a *App) keepTrack(t *library.Track, albumArtist string) (materialize.Track
 		Title:  t.Title,
 		Number: t.TrackNumber,
 		Hash:   best.Hash,
-		Ext:    filepath.Ext(library.FileName(best.URL)),
+		Ext:    best.Ext(),
 	}
 	items := a.itemsFromTracks([]*library.Track{t})
 	return tr, items[0], nil

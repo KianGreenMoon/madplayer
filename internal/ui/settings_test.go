@@ -15,6 +15,8 @@ import (
 	"github.com/gopxl/beep/v2"
 
 	"daemonlord.ygg/madplayer/internal/backend"
+	"daemonlord.ygg/madplayer/internal/library"
+	"daemonlord.ygg/madplayer/internal/madshare"
 	"daemonlord.ygg/madplayer/internal/player"
 	"daemonlord.ygg/madplayer/internal/prefs"
 )
@@ -203,5 +205,48 @@ func TestTheServerListSurvivesHavingNoMeshToTellYet(t *testing.T) {
 	defer a.mu.Unlock()
 	if len(a.homes) != 0 {
 		t.Errorf("kept %d home server(s) after signing out of every one", len(a.homes))
+	}
+}
+
+// The scope switch: one list by default, and "Only local" for the moment when
+// what is actually HERE is the question.
+//
+// The drill has to be let go of, and that is the part worth pinning. Scopes do
+// not hold the same rows — an artist only the madnetwork knows, an album only a
+// server has — so narrowing while standing inside one would leave a breadcrumb
+// naming something with nothing under it.
+func TestOnlyLocalGoesBackToTheTopOfTheList(t *testing.T) {
+	a := testApp(t)
+	a.lib.SetServers([]library.Server{{Base: "https://one.example", Label: "one", Client: madshare.New("https://one.example", "tok")}})
+	a.artist = &library.Artist{Name: "Kain Vinosec"}
+	a.album = &library.Album{Title: "Other"}
+	a.setLevel(levelTracks)
+
+	a.toggleScope(headless())
+
+	if a.lib.Scope() != library.ScopeDevice {
+		t.Fatal("the switch did not narrow the browse to this device")
+	}
+	if a.artist != nil || a.album != nil || a.level != levelArtists {
+		t.Errorf("left standing at level %v inside %v — the row may not exist in this scope",
+			a.level, a.artist)
+	}
+
+	a.toggleScope(headless())
+	if a.lib.Scope() != library.ScopeAll {
+		t.Error("the switch does not go back")
+	}
+}
+
+// The strip that carries it appears when there is something to show, and not
+// before: no trail to walk back and no scope to narrow is an empty strip.
+func TestTheBrowseStripAppearsOnlyWhenItHasSomethingToSay(t *testing.T) {
+	a := testApp(t)
+	if d := a.browseBar(headless()); d.Size.Y != 0 {
+		t.Error("an offline player at the top of its list drew a strip with nothing in it")
+	}
+	a.lib.SetServers([]library.Server{{Base: "https://one.example", Label: "one", Client: madshare.New("https://one.example", "tok")}})
+	if d := a.browseBar(headless()); d.Size.Y == 0 {
+		t.Error("with a server signed in there is a scope to narrow, and nowhere to do it")
 	}
 }

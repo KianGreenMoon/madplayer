@@ -40,7 +40,7 @@ func (a *App) ensureRows(n int) {
 
 func (a *App) browse(gtx C) D {
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-		layout.Rigid(a.breadcrumb),
+		layout.Rigid(a.browseBar),
 		layout.Flexed(1, func(gtx C) D {
 			switch a.level {
 			case levelAlbums:
@@ -54,37 +54,65 @@ func (a *App) browse(gtx C) D {
 	)
 }
 
-// breadcrumb is hidden at the artist level — there is nothing to step back to,
-// and an empty strip is worse than no strip.
+// browseBar is the strip above the rows: where you are, and how much is being
+// listed.
+//
+// It is drawn only when it has something to say. At the artist level with
+// nothing but this device's music there is neither a trail to walk back nor a
+// scope to narrow, and an empty strip is worse than no strip.
+func (a *App) browseBar(gtx C) D {
+	crumbs, scope := a.level != levelArtists, a.lib.Remote()
+	if !crumbs && !scope {
+		return D{}
+	}
+	return layout.Inset{Top: 10, Bottom: 10, Left: 20, Right: 20}.Layout(gtx, func(gtx C) D {
+		return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+			layout.Flexed(1, func(gtx C) D {
+				if !crumbs {
+					return D{}
+				}
+				return a.breadcrumb(gtx)
+			}),
+			layout.Rigid(func(gtx C) D {
+				if !scope {
+					return D{}
+				}
+				return a.smallButton(gtx, &a.btnLocalOnly, a.scopeLabel(),
+					a.lib.Scope() == library.ScopeDevice)
+			}),
+		)
+	})
+}
+
+// breadcrumb is the trail back up the drill. It is laid out by browseBar, which
+// decides whether there is anything to show at all.
 func (a *App) breadcrumb(gtx C) D {
 	if a.level == levelArtists {
 		return D{}
 	}
-	return layout.Inset{Top: 10, Bottom: 10, Left: 20, Right: 20}.Layout(gtx, func(gtx C) D {
-		children := []layout.FlexChild{
-			layout.Rigid(func(gtx C) D { return a.crumb(gtx, &a.crumbHome, "Library", true) }),
-		}
-		if a.artist != nil {
-			children = append(children,
-				layout.Rigid(func(gtx C) D { return a.crumbSep(gtx) }),
-				layout.Rigid(func(gtx C) D {
-					return a.crumb(gtx, &a.crumbArt, a.artist.Name, a.level != levelAlbums)
-				}),
-			)
-		}
-		if a.album != nil {
-			children = append(children,
-				layout.Rigid(func(gtx C) D { return a.crumbSep(gtx) }),
-				layout.Rigid(func(gtx C) D {
-					l := material.Body2(a.th, a.album.Title)
-					l.Color = colFg
-					l.MaxLines = 1
-					return l.Layout(gtx)
-				}),
-			)
-		}
-		return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx, children...)
-	})
+	children := []layout.FlexChild{
+		layout.Rigid(func(gtx C) D { return a.crumb(gtx, &a.crumbHome, "Library", true) }),
+	}
+	if a.artist != nil {
+		children = append(children,
+			layout.Rigid(func(gtx C) D { return a.crumbSep(gtx) }),
+			layout.Rigid(func(gtx C) D {
+				return a.crumb(gtx, &a.crumbArt, a.artist.Name, a.level != levelAlbums)
+			}),
+		)
+	}
+	if a.album != nil {
+		children = append(children,
+			layout.Rigid(func(gtx C) D { return a.crumbSep(gtx) }),
+			layout.Rigid(func(gtx C) D {
+				l := material.Body2(a.th, a.album.Title)
+				l.Color = colFg
+				l.MaxLines = 1
+				return l.Layout(gtx)
+			}),
+		)
+	}
+	return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx, children...)
 }
 
 func (a *App) crumb(gtx C, click *widget.Clickable, txt string, link bool) D {
@@ -488,11 +516,13 @@ func decodableCopy(c library.Copy) bool {
 	if c.Path != "" {
 		return player.Decodable(c.Path)
 	}
-	name := library.FileName(c.URL)
-	if name == "" || !strings.Contains(name, ".") {
+	// A madnetwork copy has no name to read, and does not need one: the
+	// catalogue states the codec, which is the fact the question is really about.
+	ext := c.Ext()
+	if ext == "" {
 		return true // nothing to judge by; let playing it be the answer
 	}
-	return player.Decodable(name)
+	return player.Decodable("audio" + ext)
 }
 
 // originBadge says which library a row came from.

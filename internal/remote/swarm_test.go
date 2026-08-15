@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -37,6 +38,9 @@ type meshServer struct {
 	// real server sends: freshest first, with nodes that have been gone for days
 	// still on it.
 	lastSeen map[string]int64
+	// lastRange is the Range header the relay last saw, so a resume can be
+	// asserted as a resume rather than as a second full download.
+	lastRange atomic.Pointer[string]
 }
 
 func newMeshServer(t *testing.T, body string, keys ...string) *meshServer {
@@ -63,6 +67,19 @@ func newMeshServer(t *testing.T, body string, keys ...string) *meshServer {
 			})
 		case strings.HasPrefix(r.URL.Path, "/files/"):
 			ms.relay.Add(1)
+			// Range support, because the real /files/* is http.ServeFile and a
+			// resume depends on it. The header is recorded so a test can assert
+			// the client asked for the REST rather than the whole thing again.
+			if rng := r.Header.Get("Range"); rng != "" {
+				ms.lastRange.Store(&rng)
+				var off int64
+				if _, err := fmt.Sscanf(rng, "bytes=%d-", &off); err == nil && off >= 0 && off <= int64(len(body)) {
+					w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", off, len(body)-1, len(body)))
+					w.WriteHeader(http.StatusPartialContent)
+					_, _ = w.Write([]byte(body[off:]))
+					return
+				}
+			}
 			_, _ = w.Write([]byte(body))
 		default:
 			http.NotFound(w, r)
@@ -345,21 +362,35 @@ func TestMeshFetchesRunOneAtATime(t *testing.T) {
 	}
 }
 
-func TestAPartlyWrittenSwarmFetchIsNotRetriedOverTheRelay(t *testing.T) {
-	// Falling back after bytes have already landed would append a second source's
-	// copy to the first's, and the result would decode as noise rather than fail.
-	ms := newMeshServer(t, "RELAY bytes", "aa11")
+func TestAPartlyWrittenSwarmFetchResumesOverTheRelay(t *testing.T) {
+	// This used to assert the opposite — that a half-written fetch failed the
+	// track — on the grounds that falling back would append a second source's
+	// copy to the first's and decode as noise. That is true of starting OVER.
+	// It is not true of resuming: the swarm verifies each chunk before it is
+	// readable, so what landed is a correct prefix, and a blob is addressed by
+	// its content hash, so the relay's copy is the same bytes. The two halves
+	// are halves of one file.
+	const whole = "SWARM half + the rest of it"
+	ms := newMeshServer(t, whole, "aa11")
 	sw := &fakeSwarm{stream: io.MultiReader(
-		strings.NewReader("SWARM half"),
+		strings.NewReader(whole[:10]),
 		errReader{errors.New("the holder went away")},
 	)}
 	f := meshFetcher(t, ms, sw, &fakeVouch{ok: true})
 
-	if _, err := f.Local(context.Background(), ms.track(hashA)); err == nil {
-		t.Fatal("a half-written fetch reported success")
+	path, err := f.Local(context.Background(), ms.track(hashA))
+	if err != nil {
+		t.Fatalf("a half-written fetch was not recovered: %v", err)
 	}
-	if n := ms.relay.Load(); n != 0 {
-		t.Fatalf("relay hit %d time(s) after the swarm had already written", n)
+	if got := read(t, path); got != whole {
+		t.Fatalf("played %q, want %q — the halves did not splice into one file", got, whole)
+	}
+	if n := ms.relay.Load(); n != 1 {
+		t.Fatalf("relay hit %d time(s), want once", n)
+	}
+	// A resume, not a second full download: the difference is the whole point.
+	if rng := ms.lastRange.Load(); rng == nil || *rng != "bytes=10-" {
+		t.Fatalf("relay was asked for %v, want bytes=10-", rng)
 	}
 }
 

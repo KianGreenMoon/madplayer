@@ -299,12 +299,32 @@ func (c *Client) Search(ctx context.Context, q string) (SearchResults, error) {
 // header before it will report a length), so the bytes go to the cache first
 // and the decoder opens that — see internal/blobcache.
 func (c *Client) Open(ctx context.Context, rel string) (io.ReadCloser, int64, error) {
+	return c.OpenFrom(ctx, rel, 0)
+}
+
+// OpenFrom is Open resuming at a byte offset.
+//
+// It exists to make a failed swarm recoverable. Bytes the swarm delivered are
+// per-chunk verified before they are readable, so a transfer that dies half way
+// leaves a CORRECT PREFIX on disk — and since a blob is addressed by its content
+// hash, the relay's copy of it is byte-identical. Asking for the rest is
+// therefore sound, where asking for the whole thing again and appending it would
+// be the noise this is avoiding.
+//
+// A server that ignores the Range header answers 200 with the WHOLE body, and
+// that is REFUSED rather than used: appending a second copy of the prefix to the
+// first is exactly the failure the resume exists to prevent. /files/* is served
+// by http.ServeFile, which handles Range natively, so 206 is the expected answer.
+func (c *Client) OpenFrom(ctx context.Context, rel string, offset int64) (io.ReadCloser, int64, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.Resolve(rel), nil)
 	if err != nil {
 		return nil, 0, err
 	}
 	if c.Token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.Token)
+	}
+	if offset > 0 {
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
 	}
 	res, err := c.HTTP.Do(req)
 	if err != nil {
@@ -320,6 +340,11 @@ func (c *Client) Open(ctx context.Context, rel string) (io.ReadCloser, int64, er
 			Body:           string(raw),
 			PasswordChange: res.Header.Get("X-Password-Change-Required") != "",
 		}
+	}
+	if offset > 0 && res.StatusCode != http.StatusPartialContent {
+		res.Body.Close()
+		return nil, 0, fmt.Errorf("%s ignored a range request for byte %d and answered %d with the whole file",
+			rel, offset, res.StatusCode)
 	}
 	return res.Body, res.ContentLength, nil
 }

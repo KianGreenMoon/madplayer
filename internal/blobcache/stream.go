@@ -190,16 +190,8 @@ func (c *Cache) Stream(ctx context.Context, key, ext string, fetch Fetch) (io.Re
 	prog := newProgress()
 	prog.watch(fctx)
 
-	part := c.path(key, ext) + ".part"
-	if err := c.startFetch(fctx, key, ext, fetch, cl, prog); err != nil {
-		return nil, err
-	}
-
-	// The reader opens the SAME file the fetch is writing. It is opened after the
-	// writer created it, which is why startFetch does that part synchronously.
-	f, err := os.Open(part)
+	f, err := c.startFetch(fctx, key, ext, fetch, cl, prog)
 	if err != nil {
-		cl.cancel()
 		return nil, err
 	}
 	return &streamed{tail: tail{f: f, p: prog}, cache: c, key: key, cl: cl}, nil
@@ -229,22 +221,36 @@ func (s *streamed) Close() error {
 	return s.tail.Close()
 }
 
-// startFetch creates the part file and runs the fetch into it, metered.
+// startFetch creates the part file, opens it for reading, and runs the fetch
+// into it, metered. It returns the READ handle.
 //
-// Creating the file happens on THIS goroutine so the caller can open it the
-// moment this returns; a reader racing a writer for a file that does not exist
-// yet is the one ordering bug this design could have.
-func (c *Cache) startFetch(ctx context.Context, key, ext string, fetch Fetch, cl *call, prog *progress) error {
-	final := c.path(key, ext)
-	part := final + ".part"
-	f, err := os.OpenFile(part, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
-	if err != nil {
+// Both opens happen on THIS goroutine, before the fetch can run, and that
+// ordering is the whole of it. A fetch that fails immediately removes the part
+// file, so opening the reader afterwards is a race the reader loses — and loses
+// confusingly, reporting "no such file" instead of why the fetch failed. Holding
+// the handle first also means the bytes survive the name being removed, which is
+// what lets a failed fetch's error reach the reader rather than a truncated file.
+func (c *Cache) startFetch(ctx context.Context, key, ext string, fetch Fetch, cl *call, prog *progress) (*os.File, error) {
+	abandon := func(err error) (*os.File, error) {
 		c.mu.Lock()
 		delete(c.inflight, key)
 		c.mu.Unlock()
 		cl.cancel()
 		close(cl.done)
-		return err
+		return nil, err
+	}
+
+	final := c.path(key, ext)
+	part := final + ".part"
+	f, err := os.OpenFile(part, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		return abandon(err)
+	}
+	rd, err := os.Open(part)
+	if err != nil {
+		f.Close()
+		os.Remove(part)
+		return abandon(err)
 	}
 
 	go func() {
@@ -281,5 +287,5 @@ func (c *Cache) startFetch(ctx context.Context, key, ext string, fetch Fetch, cl
 		prog.finish(nil)
 		c.evict(filepath.Base(final))
 	}()
-	return nil
+	return rd, nil
 }

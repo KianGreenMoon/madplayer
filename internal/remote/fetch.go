@@ -185,13 +185,22 @@ func (f *Fetcher) fill(srv library.Server, item *queue.Item) blobcache.Fetch {
 	return func(ctx context.Context, w io.Writer) error {
 		wrote, err := f.fromSwarm(ctx, srv, item, w)
 		switch {
-		case wrote && err == nil:
+		case err == nil && wrote > 0:
 			return nil
-		case wrote:
-			// Bytes are already in the file. Retrying over the relay would append a
-			// second source's copy to the first's and produce something that decodes
-			// as noise, so this attempt is the only one.
-			return err
+		case wrote > 0:
+			// The swarm died PART WAY, and the bytes it managed are already in the
+			// file. Starting the relay over from zero would append a second copy of
+			// the prefix to the first and decode as noise, so it is asked for the
+			// REST instead.
+			//
+			// That is sound because of two facts that hold together: the swarm
+			// verifies each chunk before it is readable, so what landed is a correct
+			// prefix, and a blob is addressed by its content hash, so the relay's
+			// copy is byte-identical to the one the swarm was delivering. Resuming
+			// splices two halves of the same file.
+			f.log.Printf("madplayer: swarm fetch stopped after %d byte(s), resuming from %s: %v",
+				wrote, srv.Label, err)
+			return f.fromRelayAt(ctx, srv.Client, item, w, wrote)
 		case err != nil:
 			// Worth a line even though the relay below will probably succeed: a
 			// swarm that quietly never works looks exactly like one that is working,
@@ -211,12 +220,12 @@ func (f *Fetcher) fill(srv library.Server, item *queue.Item) blobcache.Fetch {
 // Declining is ordinary and silent — no mesh on this device, a track named
 // without a content hash, no enrolment with this server yet, nobody holding it.
 // Each of those is answered by the relay, and none of them is news.
-func (f *Fetcher) fromSwarm(ctx context.Context, srv library.Server, item *queue.Item, w io.Writer) (bool, error) {
+func (f *Fetcher) fromSwarm(ctx context.Context, srv library.Server, item *queue.Item, w io.Writer) (int64, error) {
 	f.mu.RLock()
 	swarm, vouch := f.swarm, f.vouch
 	f.mu.RUnlock()
 	if swarm == nil || item.Hash == "" {
-		return false, nil
+		return 0, nil
 	}
 
 	// One fetch at a time, with the token installed inside the lock.
@@ -236,10 +245,10 @@ func (f *Fetcher) fromSwarm(ctx context.Context, srv library.Server, item *queue
 	f.smu.Lock()
 	defer f.smu.Unlock()
 	if err := ctx.Err(); err != nil {
-		return false, err
+		return 0, err
 	}
 	if vouch != nil && !vouch.Present(srv.Base) {
-		return false, nil
+		return 0, nil
 	}
 
 	// The budget bounds the FIRST BYTE, not the whole transfer.
@@ -275,30 +284,43 @@ func (f *Fetcher) fromSwarm(ctx context.Context, srv library.Server, item *queue
 	defer cancel()
 	plan, err := srv.Client.Holders(hctx, item.Hash)
 	if err != nil {
-		return false, fmt.Errorf("asking %s who holds this track: %w", srv.Label, err)
+		return 0, fmt.Errorf("asking %s who holds this track: %w", srv.Label, err)
 	}
 	keys := plan.Keys()
 	if len(keys) == 0 {
-		return false, nil
+		return 0, nil
 	}
 
 	body, err := swarm.StreamBlob(ctx, item.Hash, plan.Size, keys, f.budget())
 	if err != nil {
-		return false, fmt.Errorf("fetching from %d holder(s) of %s: %w", len(keys), item.Hash, err)
+		return 0, fmt.Errorf("fetching from %d holder(s) of %s: %w", len(keys), item.Hash, err)
 	}
 	defer body.Close()
 
-	// Past this point there is no falling back, and streaming makes that matter
-	// more than it did: bytes reach the caller's file as they arrive rather than
-	// only after the whole transfer verified, so a swarm that dies mid-track
-	// cannot be rescued by the relay. Appending a second source's bytes to the
-	// first's produces something that decodes as noise, which is worse than a
-	// track that failed. madshare verifies each chunk as it lands, so what is
-	// copied here is checked bytes — the same ones its own streaming relay
-	// serves — and a whole-file mismatch fails the transfer rather than passing
-	// silently.
+	// The count is what makes a mid-track failure recoverable: the caller resumes
+	// the relay from exactly here (see fill). madshare verifies each chunk before
+	// it is readable, so whatever io.Copy managed is a correct prefix rather than
+	// an unknown amount of possibly-garbage.
 	n, err := io.Copy(w, body)
-	return n > 0, err
+	return n, err
+}
+
+// fromRelayAt downloads the REST of a track over the relay, picking up where
+// something else stopped.
+//
+// The offset is a byte count of verified content, and the relay's copy of a
+// content-addressed blob is the same bytes, so this splices two halves of one
+// file rather than two files. A server that will not honour the range says so
+// (madshare.OpenFrom refuses a 200) rather than quietly handing back the whole
+// thing to be appended.
+func (f *Fetcher) fromRelayAt(ctx context.Context, cl *madshare.Client, item *queue.Item, w io.Writer, offset int64) error {
+	body, _, err := cl.OpenFrom(ctx, item.URL, offset)
+	if err != nil {
+		return describe(err, item)
+	}
+	defer body.Close()
+	_, err = io.Copy(w, body)
+	return err
 }
 
 // fromRelay downloads from the one server that named the track: level 1's

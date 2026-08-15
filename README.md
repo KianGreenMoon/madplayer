@@ -355,11 +355,20 @@ a line, because a mesh that quietly never works looks exactly like one that does
   `/api/madnetwork/stream/{hash}` relay uses, so these are per-chunk-verified
   bytes it already considers safe to serve. No madshare change was needed.
 
-  **The cost, paid deliberately:** once swarm bytes reach the cache there is no
-  falling back, so a swarm that dies *mid-track* fails that play instead of
-  being rescued by the relay. Appending a second source's bytes to the first's
-  decodes as noise, which is worse than a track that failed. A swarm that never
-  *starts* is still an ordinary decline, and the relay still takes it.
+  **A swarm that dies mid-track RESUMES over the relay** rather than failing the
+  play. Starting the relay over from zero really would append a second copy of
+  the prefix and decode as noise — but resuming does not, and two facts hold it
+  up together: the swarm verifies each chunk before it is readable, so what
+  landed is a correct prefix, and a blob is addressed by its **content hash**, so
+  the relay's copy is byte-identical. The two halves are halves of one file.
+
+  `madshare.OpenFrom` sends `Range: bytes=N-` and **refuses a 200** — a server
+  that ignores the header would hand back the whole file to be appended, which
+  is the exact failure the resume exists to prevent. `/files/*` is
+  `http.ServeFile`, so 206 is what it actually answers.
+
+  A swarm that never *starts* is still an ordinary decline, and the relay takes
+  it from the beginning.
 - **`FetchBlob` still blocks** and is now used only for keeping a track on this
   device, where a half-copied file would be worse than a wait.
 - **The swarm gets a budget, not the caller's whole deadline**

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -217,5 +218,73 @@ func TestErrorMessageNamesTheRequest(t *testing.T) {
 	e := &Error{Status: 403, Method: "POST", Path: "/api/auth/tokens", Body: "  nope\n"}
 	if got := e.Error(); !strings.Contains(got, "403") || !strings.Contains(got, "nope") {
 		t.Errorf("Error() = %q", got)
+	}
+}
+
+// A resume must be a resume. A server that ignores the Range header answers 200
+// with the WHOLE file, and appending that to what is already on disk is exactly
+// the noise the resume exists to prevent — so it is refused, loudly, rather than
+// used.
+func TestOpenFromRefusesAServerThatIgnoresTheRange(t *testing.T) {
+	var sawRange string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawRange = r.Header.Get("Range")
+		_, _ = w.Write([]byte("the whole file")) // 200, range ignored
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "tok")
+	body, _, err := c.OpenFrom(context.Background(), "/files/abc/song.flac", 5)
+	if err == nil {
+		body.Close()
+		t.Fatal("a whole-file answer to a range request was accepted")
+	}
+	if sawRange != "bytes=5-" {
+		t.Errorf("sent Range %q, want bytes=5-", sawRange)
+	}
+	if !strings.Contains(err.Error(), "range") {
+		t.Errorf("err = %v, want it to name the problem", err)
+	}
+}
+
+// The ordinary partial answer is used as it is, and offset 0 is a plain GET with
+// no Range header at all.
+func TestOpenFromResumesAndOpenDoesNot(t *testing.T) {
+	const whole = "0123456789abcdef"
+	var sawRange string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawRange = r.Header.Get("Range")
+		if sawRange == "" {
+			_, _ = w.Write([]byte(whole))
+			return
+		}
+		w.Header().Set("Content-Range", "bytes 10-15/16")
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write([]byte(whole[10:]))
+	}))
+	defer srv.Close()
+	c := New(srv.URL, "tok")
+
+	body, _, err := c.OpenFrom(context.Background(), "/files/abc/song.flac", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := io.ReadAll(body)
+	body.Close()
+	if string(got) != whole[10:] {
+		t.Errorf("resumed body = %q, want %q", got, whole[10:])
+	}
+
+	body, _, err = c.Open(context.Background(), "/files/abc/song.flac")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ = io.ReadAll(body)
+	body.Close()
+	if sawRange != "" {
+		t.Errorf("Open sent a Range header (%q); it must be a plain GET", sawRange)
+	}
+	if string(got) != whole {
+		t.Errorf("body = %q, want the whole file", got)
 	}
 }

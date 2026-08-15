@@ -74,16 +74,17 @@ func (s *stubTransfer) WaitFor(ctx context.Context, offset int64) error {
 // stubNet hands out one prepared transfer.
 type stubNet struct{ t *stubTransfer }
 
-func (n stubNet) Key() string                                  { return "" }
-func (n stubNet) Address() string                              { return "" }
-func (n stubNet) SetToken(string)                              {}
+func (n stubNet) Key() string                                           { return "" }
+func (n stubNet) Address() string                                       { return "" }
+func (n stubNet) SetToken(string)                                       {}
 func (n stubNet) AddHome(context.Context, string, string, string) error { return nil }
-func (n stubNet) RemoveHome(context.Context, string) error     { return nil }
+func (n stubNet) RemoveHome(context.Context, string) error              { return nil }
 func (n stubNet) Homes(context.Context) ([]federation.ExternalNode, error) {
 	return nil, nil
 }
-func (n stubNet) Holdings() []string                 { return nil }
-func (n stubNet) AddPeer(string) error               { return nil }
+func (n stubNet) Holdings() []string                   { return nil }
+func (n stubNet) EvictCached(string) error             { return nil }
+func (n stubNet) AddPeer(string) error                 { return nil }
 func (n stubNet) PublishNothing(context.Context) error { return nil }
 func (n stubNet) Fetch(context.Context, string, int64, []string) (federation.Transfer, error) {
 	return n.t, nil

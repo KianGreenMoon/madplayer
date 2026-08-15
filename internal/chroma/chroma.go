@@ -75,6 +75,7 @@ type Fingerprinter struct {
 	spectrum []float64
 	pending  []float64 // samples not yet forming a whole frame
 	scratch  []float64 // resampler output, reused
+	mono     []float64 // one block downmixed, reused
 
 	features [numBands]float64
 	history  [8][numBands]float64 // the 5-tap filter's ring, sized as Chromaprint sizes it
@@ -151,11 +152,16 @@ func (f *Fingerprinter) Write(samples [][2]float64) {
 	if f.Done() || len(samples) == 0 {
 		return
 	}
-	mono := make([]float64, len(samples))
-	for i, s := range samples {
-		mono[i] = (s[0] + s[1]) / 2
+	// Reused, not allocated per block: a track is hundreds of blocks and this
+	// runs while somebody waits for their library.
+	if cap(f.mono) < len(samples) {
+		f.mono = make([]float64, len(samples))
 	}
-	f.scratch = f.resampler.write(mono, f.scratch[:0])
+	f.mono = f.mono[:len(samples)]
+	for i, s := range samples {
+		f.mono[i] = (s[0] + s[1]) / 2
+	}
+	f.scratch = f.resampler.write(f.mono, f.scratch[:0])
 	f.consume(f.scratch)
 }
 

@@ -152,10 +152,7 @@ func (f *Fetcher) Local(ctx context.Context, item *queue.Item) (string, error) {
 	if item.Path != "" {
 		return item.Path, nil
 	}
-	if item.URL == "" {
-		return "", errors.New("this track has no audio to play")
-	}
-	srv, err := f.serverFor(item.URL)
+	srv, err := f.sourceFor(item)
 	if err != nil {
 		return "", err
 	}
@@ -176,16 +173,32 @@ func (f *Fetcher) Stream(ctx context.Context, item *queue.Item) (io.ReadCloser, 
 		rc, err := os.Open(item.Path)
 		return rc, filepath.Ext(item.Path), err
 	}
-	if item.URL == "" {
-		return nil, "", errors.New("this track has no audio to play")
-	}
-	srv, err := f.serverFor(item.URL)
+	srv, err := f.sourceFor(item)
 	if err != nil {
 		return nil, "", err
 	}
 	key, ext := cacheKey(item)
 	rc, err := f.cache.Stream(ctx, key, ext, f.fill(srv, item))
 	return rc, ext, err
+}
+
+// sourceFor is the server that can supply this item's bytes, or say who can.
+//
+// The two roles are different and the difference is the whole point of browsing
+// the madnetwork from a player: for a library track the server IS the source and
+// hands over the file; for a madnetwork track it is a directory that names
+// holders, and the bytes come from them over the mesh.
+func (f *Fetcher) sourceFor(item *queue.Item) (library.Server, error) {
+	if item.Network {
+		if item.Hash == "" || item.Base == "" {
+			return library.Server{}, errors.New("this track has no audio to play")
+		}
+		return f.serverFor(item.Base)
+	}
+	if item.URL == "" {
+		return library.Server{}, errors.New("this track has no audio to play")
+	}
+	return f.serverFor(item.URL)
 }
 
 // fill is the one fetch body both Local and Stream run, so the choice between
@@ -203,7 +216,39 @@ func (f *Fetcher) fill(srv library.Server, item *queue.Item) blobcache.Fetch {
 		// a playback fetch for the very track being prefetched joins that fetch
 		// in the cache and never gets here.
 		f.preemptPrefetch(key)
-		wrote, err := f.fromSwarm(ctx, srv, item, w)
+		wrote, declined, err := f.fromSwarm(ctx, srv, item, w)
+
+		// A madnetwork track has no relay behind it, on purpose.
+		//
+		// There IS an endpoint that would serve one — /api/madnetwork/stream/
+		// {hash} — and it is a cache-through relay: the server fetches somebody
+		// else's audio, keeps a copy, and streams it on. That is the right shape
+		// for a browser, which cannot join a swarm, and the wrong one here. This
+		// device can fetch the bytes itself, and asking the home server to do it
+		// instead would fill that machine's disk with the community's catalogue
+		// as a side effect of somebody browsing it (owner's call, 2026-08-15:
+		// the swarm supersedes the relay for network content).
+		//
+		// So the swarm is not preferred here, it is the whole path, and its
+		// failure is the track's failure — said out loud rather than papered
+		// over with a download the person did not ask anybody to make.
+		if item.Network {
+			switch {
+			case err != nil:
+				// Logged as well as reported: with no fallback underneath, this
+				// line is the only account of why a track did not play.
+				f.log.Printf("madplayer: madnetwork fetch of %s failed: %v", item.Hash, err)
+				return fmt.Errorf("the madnetwork could not send this track: %w", err)
+			case wrote == 0:
+				f.log.Printf("madplayer: madnetwork fetch of %s declined: %s", item.Hash, declined)
+				if declined == "" {
+					declined = "nobody on the madnetwork sent anything"
+				}
+				return errors.New(declined)
+			}
+			return nil
+		}
+
 		switch {
 		case err == nil && wrote > 0:
 			return nil
@@ -240,19 +285,26 @@ func (f *Fetcher) fill(srv library.Server, item *queue.Item) blobcache.Fetch {
 
 // fromSwarm fetches from whoever holds the blob.
 //
-// The bool reports whether anything reached w, and it is not the same question
+// The count reports whether anything reached w, and it is not the same question
 // as the error: once a byte is written the relay must not be tried, whatever
 // went wrong afterwards.
 //
 // Declining is ordinary and silent — no mesh on this device, a track named
 // without a content hash, no enrolment with this server yet, nobody holding it.
-// Each of those is answered by the relay, and none of them is news.
-func (f *Fetcher) fromSwarm(ctx context.Context, srv library.Server, item *queue.Item, w io.Writer) (int64, error) {
+// Each of those is answered by the relay, and none of them is news, which is why
+// a decline is a nil error rather than a failure.
+//
+// It is news to ONE caller. A madnetwork track has no relay behind it, so a
+// decline is the end of the road and the person is owed a reason — hence the
+// middle return: a sentence naming which decline this was, empty whenever bytes
+// moved or a real error is being reported. The relay path ignores it, which is
+// the point: the reason exists for the path that cannot fall back.
+func (f *Fetcher) fromSwarm(ctx context.Context, srv library.Server, item *queue.Item, w io.Writer) (int64, string, error) {
 	f.mu.RLock()
 	swarm, vouch := f.swarm, f.vouch
 	f.mu.RUnlock()
 	if swarm == nil || item.Hash == "" {
-		return 0, nil
+		return 0, "this device is not on the madnetwork", nil
 	}
 
 	// ONE deadline covers everything before bytes flow: taking the fetch slot,
@@ -278,16 +330,16 @@ func (f *Fetcher) fromSwarm(ctx context.Context, srv library.Server, item *queue
 	select {
 	case f.slot <- struct{}{}:
 	case <-ctx.Done():
-		return 0, ctx.Err()
+		return 0, "", ctx.Err()
 	case <-time.After(time.Until(deadline)):
-		return 0, nil
+		return 0, "the madnetwork was busy with another track", nil
 	}
 	defer func() { <-f.slot }()
 	if err := ctx.Err(); err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	if vouch != nil && !vouch.Present(srv.Base) {
-		return 0, nil
+		return 0, "this device has no vouch from " + srv.Label + " yet", nil
 	}
 
 	// The budget bounds the FIRST BYTE, not the whole transfer.
@@ -311,11 +363,15 @@ func (f *Fetcher) fromSwarm(ctx context.Context, srv library.Server, item *queue
 
 	// Who holds it is asked of the home server, every time.
 	//
-	// docs/ui/madplayer.md offers a browse row's own versions[].holders[] as the
-	// cheaper source, and this client never has one: those rows belong to the
-	// /madnetwork page, which browses OTHER nodes' catalogs, while madplayer
-	// merges each server's ordinary library — and an ordinary track row carries no
-	// holders. So the endpoint is the only source here, not the fallback.
+	// Since madplayer browses the madnetwork too (2026-08-15), some rows DO
+	// arrive carrying versions[].holders[] — docs/ui/madplayer.md offers those as
+	// a cheaper source, and they are still not used. Two reasons, and the second
+	// is the load-bearing one: an ordinary library row has no holders at all, so
+	// the endpoint would be needed anyway; and a browse row is as old as the
+	// screen it is on, while the endpoint applies the stale-holder window that
+	// makes a fetch plan worth having (federation.md §"Availability & node
+	// health"). A dead holder in a plan is the most expensive thing that can
+	// happen to a fetch, so freshness beats a saved round trip.
 	// The holder lookup shares the deadline: it is part of "the swarm
 	// answered", and a server that will not say who holds a track is a swarm
 	// that never starts.
@@ -323,22 +379,22 @@ func (f *Fetcher) fromSwarm(ctx context.Context, srv library.Server, item *queue
 	defer cancel()
 	plan, err := srv.Client.Holders(hctx, item.Hash)
 	if err != nil {
-		return 0, fmt.Errorf("asking %s who holds this track: %w", srv.Label, err)
+		return 0, "", fmt.Errorf("asking %s who holds this track: %w", srv.Label, err)
 	}
 	keys := plan.Keys()
 	if len(keys) == 0 {
-		return 0, nil
+		return 0, "nobody reachable has this track right now", nil
 	}
 
 	// Whatever the earlier stages left is the first-byte allowance. Nothing
 	// left is a decline like any other — no byte was written.
 	firstByte := time.Until(deadline)
 	if firstByte <= 0 {
-		return 0, nil
+		return 0, "the madnetwork did not answer in time", nil
 	}
 	body, err := swarm.StreamBlob(ctx, item.Hash, plan.Size, keys, firstByte)
 	if err != nil {
-		return 0, fmt.Errorf("fetching from %d holder(s) of %s: %w", len(keys), item.Hash, err)
+		return 0, "", fmt.Errorf("fetching from %d holder(s) of %s: %w", len(keys), item.Hash, err)
 	}
 	defer body.Close()
 
@@ -347,7 +403,7 @@ func (f *Fetcher) fromSwarm(ctx context.Context, srv library.Server, item *queue
 	// it is readable, so whatever io.Copy managed is a correct prefix rather than
 	// an unknown amount of possibly-garbage.
 	n, err := io.Copy(w, body)
-	return n, err
+	return n, "", err
 }
 
 // fromRelayAt downloads the REST of a track over the relay, picking up where
@@ -433,7 +489,7 @@ func (f *Fetcher) Cached(item *queue.Item) bool {
 	if item.Path != "" {
 		return true
 	}
-	if item.URL == "" {
+	if !item.Playable() {
 		return false
 	}
 	key, ext := cacheKey(item)
@@ -555,6 +611,13 @@ func (f *Fetcher) serverFor(u string) (library.Server, error) {
 // everything already downloaded from it.
 func cacheKey(item *queue.Item) (key, ext string) {
 	ext = filepath.Ext(library.FileName(item.URL))
+	if ext == "" && item.Codec != "" {
+		// A madnetwork copy has no filename anywhere — the catalogue names a
+		// content hash, a size and a codec. The extension is not decoration: the
+		// decoders pick by it, so a cache file written without one is audio
+		// nothing in this program can open.
+		ext = "." + strings.TrimPrefix(strings.ToLower(item.Codec), ".")
+	}
 	if item.Hash != "" {
 		return blobcache.Key(item.Hash), ext
 	}

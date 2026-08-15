@@ -942,7 +942,10 @@ func (p *Player) openItem(ctx context.Context, item *queue.Item) (*source, strin
 		src, err := open(item.Path)
 		return src, item.Path, err
 	}
-	if item.URL == "" {
+	// Not "has a URL": a madnetwork track has none, and is fetched by content
+	// hash from whoever holds it. The item itself is what knows whether it names
+	// audio at all.
+	if !item.Playable() {
 		return nil, "", errors.New("this track has no audio to play")
 	}
 	p.mu.Lock()

@@ -4,18 +4,30 @@ package queue
 //
 // A queue mixes libraries on purpose: a track on this device and a track on a
 // server can sit next to each other, because a play queue is about listening
-// order and not about where bytes live. Which is why an item carries BOTH ways
-// of reaching its audio — Path when this machine holds it, URL when only a
-// server does — and the player decides which to use.
+// order and not about where bytes live. Which is why an item carries EVERY way
+// of reaching its audio and the player decides which to use — Path when this
+// machine holds it, URL when a server will hand it over, and a content hash on
+// the mesh when the only copies are on other people's nodes.
 type Item struct {
 	Path string `json:"path"`
 	URL  string `json:"url,omitempty"`
 	// Hash is the content hash, when the source knew one. It is the cache key,
-	// which is what makes the same audio fetched from two servers one file.
+	// which is what makes the same audio fetched from two servers one file — and
+	// for a madnetwork item it is the ADDRESS as well, the only one there is.
 	Hash string `json:"hash,omitempty"`
 	// Origin is the library this came from, for the badge on the row. Display
 	// only — nothing is addressed by it.
 	Origin string `json:"origin,omitempty"`
+
+	// Network marks an item whose bytes come from the mesh: no URL to download,
+	// only a hash and the server that can say who holds it. Base names that
+	// server (its base URL — the addressable half of Origin, which is a label),
+	// Size is the blob's length and Codec its container, because a copy nobody
+	// gave a filename has neither a length nor an extension to read one from.
+	Network bool   `json:"network,omitempty"`
+	Base    string `json:"base,omitempty"`
+	Size    int64  `json:"size,omitempty"`
+	Codec   string `json:"codec,omitempty"`
 
 	Title    string  `json:"title"`
 	Artist   string  `json:"artist"`
@@ -28,29 +40,54 @@ type Item struct {
 // falls back to `url:<url>`. A file on this device has neither, and its path is
 // what the decoder opens anyway.
 //
+// A madnetwork row has none of the three, because it is not an appearance in any
+// library this client can name — so it is identified by the content itself, the
+// same way the web UI keys a remote favourite (`POST /api/favorites/remote/
+// {hash}`). Two nodes offering the same bytes are one row, which is exactly what
+// the merged catalogue already decided.
+//
 // Exported because the browse list computes it for a row it has not yet turned
 // into an Item, and two spellings of "is this the row that is playing?" would
 // drift.
-func Key(path, url string) string {
+func Key(path, url string) string { return KeyOf(path, url, "") }
+
+// KeyOf is Key with the content hash a madnetwork row falls back to.
+func KeyOf(path, url, hash string) string {
 	if path != "" {
 		return "path:" + path
 	}
 	if url != "" {
 		return "url:" + url
 	}
+	if hash != "" {
+		return "blob:" + hash
+	}
 	return ""
 }
 
 // RowKey answers "is this the row I am looking at?" — it decides which row is
 // highlighted and whether clicking it toggles pause or restarts.
-func (i *Item) RowKey() string { return Key(i.Path, i.URL) }
+func (i *Item) RowKey() string { return KeyOf(i.Path, i.URL, i.networkHash()) }
+
+// networkHash is the hash when it is an ADDRESS rather than a cache key. A
+// server track carries a hash too, and keying it by content would give the same
+// audio on two servers one row identity — which is wrong for a queue, where the
+// same track added from two libraries is two entries a person can see.
+func (i *Item) networkHash() string {
+	if i.Network {
+		return i.Hash
+	}
+	return ""
+}
 
 // Remote reports that playing this costs a download: nothing on this machine
 // holds the bytes.
-func (i *Item) Remote() bool { return i.Path == "" && i.URL != "" }
+func (i *Item) Remote() bool { return i.Path == "" && (i.URL != "" || i.Network) }
 
 // Playable reports whether the item names audio at all.
-func (i *Item) Playable() bool { return i.Path != "" || i.URL != "" }
+func (i *Item) Playable() bool {
+	return i.Path != "" || i.URL != "" || (i.Network && i.Hash != "" && i.Base != "")
+}
 
 // Repeat is the three-state repeat mode. It affects only what happens when a
 // track ENDS; manual Next/Prev always wrap regardless.

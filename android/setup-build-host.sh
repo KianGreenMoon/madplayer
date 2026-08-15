@@ -246,6 +246,34 @@ done
 echo "==> $buildtools, $platform, $ndk (the NDK is the slow one)"
 "$sdkmanager" --install "platform-tools" "$buildtools" "$platform" "$ndk"
 
+# Installing the right NDK does NOT displace a wrong one. gogio globs
+# $ANDROID_HOME/ndk/* and takes the highest version it finds (findNDK ->
+# latestVersionPath, gogio/androidbuild.go), so an NDK 30 left lying beside a
+# freshly installed 28 is still the one that builds, and still the one that
+# fails. Anyone hitting the oboe redefinition errors and re-running this would
+# otherwise get the identical failure and no clue why.
+stale=
+for d in "$sdk"/ndk/*; do
+	[ -d "$d" ] || continue
+	v=$(basename "$d")
+	major=${v%%.*}
+	case $major in
+	'' | *[!0-9]*) continue ;;
+	esac
+	if [ "$major" -gt "$NDK_SERIES" ]; then
+		stale="$stale $v"
+	fi
+done
+if [ -n "$stale" ]; then
+	echo
+	echo "WARNING: a newer NDK is installed and gogio will use it INSTEAD:$stale"
+	echo "It picks the highest \$ANDROID_HOME/ndk/*, so $ndk is inert until"
+	echo "the newer one is gone. Remove it before building:"
+	for v in $stale; do
+		echo "  rm -rf $sdk/ndk/$v"
+	done
+fi
+
 # gogio is the packager itself; the version tracks gioui.org's own cmd module,
 # which is released in step with the gioui.org the app builds against.
 #

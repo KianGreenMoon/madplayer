@@ -151,8 +151,21 @@ func (e *Enrolment) SetServers(ctx context.Context, servers []Server) {
 		}
 	}
 	e.servers = next
+	// Signing out of the server whose token is on the wire takes the token off
+	// the wire too. It would expire on its own within the hour and every fetch
+	// presents its own server's token first, so this is hygiene rather than
+	// security — but a credential from a server this device left has no
+	// business being the standing default.
+	clearToken := false
+	if _, kept := next[e.presented]; e.presented != "" && !kept {
+		e.presented = ""
+		clearToken = true
+	}
 	e.mu.Unlock()
 
+	if clearToken {
+		e.node.SetToken("")
+	}
 	for _, d := range dropped {
 		if d.status.Key == "" {
 			continue

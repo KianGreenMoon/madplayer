@@ -1,8 +1,12 @@
 package ui
 
 import (
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"daemonlord.ygg/madplayer/internal/library"
 	"daemonlord.ygg/madplayer/internal/queue"
@@ -116,4 +120,64 @@ func titles(items []*queue.Item) []string {
 		out[i] = it.Title
 	}
 	return out
+}
+
+// A notice is news, and news goes stale.
+//
+// Nothing ever cleared it before 2026-08-15 — the only assignment of "" was the
+// Undo button — so "6 tracks added to the queue" sat above the now-playing line
+// for the rest of the session, costing a line of the player bar to describe
+// something that had happened an hour ago.
+func TestANoticeLeavesOnItsOwn(t *testing.T) {
+	a := testApp(t)
+
+	a.enqueue([]*library.Track{localTrack("one")}, false)
+	if a.notice == "" {
+		t.Fatal("queueing a track said nothing")
+	}
+	if d := a.noticeLine(headless()); d.Size.Y == 0 {
+		t.Fatal("a fresh notice was not drawn")
+	}
+
+	a.noticeAt = time.Now().Add(-noticeLife - time.Second)
+	if d := a.noticeLine(headless()); d.Size.Y != 0 {
+		t.Error("a stale notice is still taking up the line")
+	}
+	if a.notice != "" {
+		t.Errorf("notice = %q, want it forgotten once it expired", a.notice)
+	}
+}
+
+// assignsNotice matches an assignment to the field, and not a comparison with it.
+var assignsNotice = regexp.MustCompile(`a\.notice\b[^=]*=[^=]`)
+
+// Every path that has something to say has to start the clock, or it is the one
+// message that stays forever. The compiler cannot check that, so this walks the
+// package for assignments to the field instead: only setNotice may write it.
+func TestOnlySetNoticeWritesTheNoticeField(t *testing.T) {
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		src, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, line := range strings.Split(string(src), "\n") {
+			trimmed := strings.TrimSpace(line)
+			if !assignsNotice.MatchString(trimmed) {
+				continue
+			}
+			// The two legitimate writers: setNotice itself, and the clear.
+			if strings.HasPrefix(trimmed, "a.notice, a.noticeAt =") || trimmed == `a.notice = ""` {
+				continue
+			}
+			t.Errorf(`%s:%d writes a.notice directly — use setNotice, or the message never expires:
+	%s`, f, i+1, trimmed)
+		}
+	}
 }

@@ -3,8 +3,10 @@ package ui
 import (
 	"fmt"
 	"image"
+	"time"
 
 	"gioui.org/layout"
+	"gioui.org/op"
 	"gioui.org/op/clip"
 	"gioui.org/op/paint"
 	"gioui.org/text"
@@ -62,12 +64,30 @@ func (a *App) playerBar(gtx C) D {
 	)
 }
 
+// noticeLife is how long a one-off message is worth the line it costs.
+//
+// Long enough to read a sentence and reach the Undo beside it, short enough that
+// the player bar is not still explaining a queue edit from ten minutes ago —
+// which is what it did until 2026-08-15, because nothing ever cleared it.
+const noticeLife = 10 * time.Second
+
 // noticeLine carries the one-off messages: a failed track, or the undo offer
 // after a hand-edited queue was replaced.
+//
+// It expires itself. The frame that retires it is asked for up front
+// (InvalidateCmd), because an idle player draws nothing on its own and a message
+// that only vanishes when something else happens to repaint is a message that
+// stays until the next click.
 func (a *App) noticeLine(gtx C) D {
 	if a.notice == "" {
 		return D{}
 	}
+	left := noticeLife - time.Since(a.noticeAt)
+	if left <= 0 {
+		a.notice = ""
+		return D{}
+	}
+	gtx.Execute(op.InvalidateCmd{At: gtx.Now.Add(left)})
 	return layout.Inset{Bottom: 8}.Layout(gtx, func(gtx C) D {
 		return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
 			layout.Flexed(1, func(gtx C) D {

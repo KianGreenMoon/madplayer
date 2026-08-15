@@ -344,7 +344,7 @@ func (a *App) albumHeader(gtx C, tracks []*library.Track) D {
 func (a *App) playFrom(tracks []*library.Track, index int) {
 	want := tracks[index]
 	if !want.Available() {
-		a.notice = want.Title + " is not on this device right now"
+		a.setNotice(want.Title + " is not on this device right now")
 		return
 	}
 	cur := a.pl.Current()
@@ -353,7 +353,7 @@ func (a *App) playFrom(tracks []*library.Track, index int) {
 		return
 	}
 	if a.pl.SetQueue(a.itemsFromTracks(tracks), index) {
-		a.notice = "Queue replaced — Undo to restore it"
+		a.setNotice("Queue replaced — Undo to restore it")
 	}
 }
 
@@ -374,7 +374,7 @@ func (a *App) enqueue(tracks []*library.Track, next bool) {
 		}
 	}
 	if len(playable) == 0 {
-		a.notice = "Nothing there to queue — those tracks are not on this device right now"
+		a.setNotice("Nothing there to queue — those tracks are not on this device right now")
 		return
 	}
 
@@ -384,7 +384,7 @@ func (a *App) enqueue(tracks []*library.Track, next bool) {
 	} else {
 		a.pl.Append(items...)
 	}
-	a.notice = enqueueNotice(len(playable), len(tracks), next)
+	a.setNotice(enqueueNotice(len(playable), len(tracks), next))
 }
 
 // enqueueNotice says what was added and — when they differ — how many were left

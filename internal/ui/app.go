@@ -117,10 +117,14 @@ type App struct {
 	// the music on this device.
 	probs []library.Problem
 
-	scanning  bool
-	loading   bool
-	status    string
+	scanning bool
+	loading  bool
+	status   string
+	// notice is the one-line transient message above the player bar, and
+	// noticeAt is when it was set — a message about something that happened is
+	// only worth the line it costs for as long as it is news (see noticeLine).
 	notice    string
+	noticeAt  time.Time
 	srvBusy   bool
 	srvMsg    string
 	cacheUsed int64
@@ -948,7 +952,7 @@ func (a *App) update(gtx C) {
 	}
 
 	if err := a.pl.TakeError(); err != nil {
-		a.notice = err.Error()
+		a.setNotice(err.Error())
 	}
 }
 
@@ -1140,6 +1144,12 @@ func rowKey(t *library.Track) string {
 	return queue.Key(c.Path, c.URL)
 }
 
+// setNotice writes the one-line notice and starts its clock. Every write goes
+// through here so that none can be the one that never expires.
+func (a *App) setNotice(msg string) {
+	a.notice, a.noticeAt = msg, time.Now()
+}
+
 // setNoticeAsync writes the one-line notice from a background goroutine.
 //
 // The notice is otherwise set during update(), on the UI's own goroutine, so the
@@ -1147,7 +1157,7 @@ func rowKey(t *library.Track) string {
 // operation that has something to say while it runs.
 func (a *App) setNoticeAsync(msg string) {
 	a.mu.Lock()
-	a.notice = msg
+	a.setNotice(msg)
 	a.mu.Unlock()
 	a.win.Invalidate()
 }

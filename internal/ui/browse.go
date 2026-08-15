@@ -283,7 +283,7 @@ func (a *App) albumHeader(gtx C, tracks []*library.Track) D {
 	for _, t := range tracks {
 		total += t.Duration
 	}
-	meta := fmt.Sprintf("%d tracks", len(tracks))
+	meta := plural(len(tracks), "track")
 	if total > 0 {
 		meta += "  ·  " + clock(total)
 	}
@@ -395,10 +395,7 @@ func enqueueNotice(added, asked int, next bool) string {
 	if next {
 		where = "playing next"
 	}
-	what := fmt.Sprintf("%d tracks", added)
-	if added == 1 {
-		what = "1 track"
-	}
+	what := plural(added, "track")
 	if skipped := asked - added; skipped > 0 {
 		return fmt.Sprintf("%s %s — %d not on this device right now", what, where, skipped)
 	}
@@ -544,7 +541,7 @@ func countText(n int, approx bool) string {
 	if approx {
 		return fmt.Sprintf("%d+ tracks", n)
 	}
-	return fmt.Sprintf("%d tracks", n)
+	return plural(n, "track")
 }
 
 func (a *App) discHeader(gtx C, txt string) D {
@@ -674,7 +671,7 @@ func (a *App) searchResults(gtx C) D {
 				return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
 					layout.Flexed(1, func(gtx C) D { return a.rowTitle(gtx, it.artist.Name, false) }),
 					layout.Rigid(func(gtx C) D {
-						return a.rowMeta(gtx, fmt.Sprintf("%d tracks", it.artist.TrackCount))
+						return a.rowMeta(gtx, plural(it.artist.TrackCount, "track"))
 					}),
 					layout.Rigid(func(gtx C) D { return a.chevron(gtx) }),
 				)

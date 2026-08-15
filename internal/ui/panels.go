@@ -318,7 +318,7 @@ func describeFolder(f backend.Folder) string {
 	case f.Status == "error":
 		return "Could not be read"
 	}
-	s := fmt.Sprintf("%d tracks", f.Tracks)
+	s := plural(f.Tracks, "track")
 	if f.Failed > 0 {
 		s += fmt.Sprintf(" · %d unreadable", f.Failed)
 	}
@@ -461,12 +461,8 @@ func keepBlurb(root string, kept int) string {
 	s := "Tracks you keep from a server or the madnetwork are saved into " + root +
 		" as Artist/Album/Track, and added to your library like any other folder. " +
 		"This folder is madplayer's — put your own music in a folder you add above."
-	switch kept {
-	case 0:
-	case 1:
-		s += " 1 track kept so far."
-	default:
-		s += fmt.Sprintf(" %d tracks kept so far.", kept)
+	if kept > 0 {
+		s += " " + plural(kept, "track") + " kept so far."
 	}
 	return s
 }

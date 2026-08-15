@@ -635,12 +635,12 @@ func describeFolders(folders []backend.Folder) string {
 			missing++
 		}
 	}
-	s := fmt.Sprintf("%d tracks in %d folder(s)", tracks, len(folders))
+	s := fmt.Sprintf("%s in %s", plural(tracks, "track"), plural(len(folders), "folder"))
 	if failed > 0 {
 		s += fmt.Sprintf(" · %d unreadable", failed)
 	}
 	if missing > 0 {
-		s += fmt.Sprintf(" · %d folder(s) not connected", missing)
+		s += " · " + plural(missing, "folder") + " not connected"
 	}
 	return s
 }

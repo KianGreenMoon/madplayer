@@ -195,7 +195,7 @@ func keptSentence(saved, already int, failed []string, root string) string {
 		if n == 1 {
 			parts = append(parts, "could not keep "+failed[0])
 		} else {
-			parts = append(parts, fmt.Sprintf("could not keep %d tracks", n))
+			parts = append(parts, "could not keep "+plural(n, "track"))
 		}
 	}
 	if len(parts) == 0 {

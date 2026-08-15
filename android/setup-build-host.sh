@@ -203,10 +203,41 @@ latest() {
 
 buildtools=$(latest 'build-tools;[0-9.]+')
 platform=$(latest 'platforms;android-[0-9]+')
-ndk=$(latest 'ndk;[0-9.]+')
-for pkg in "$buildtools" "$platform" "$ndk"; do
+
+# The NDK is the one package where newest is WRONG, and it is not a matter of
+# taste. oto vendors Oboe, whose AAudio compat shim declares the types the
+# sysroot does not have yet, guarded by NDK version — and one of those guards
+# is off by one:
+#
+#   // TODO: find the first NDK version containing the following values
+#   #if OBOE_USING_NDK && __NDK_MAJOR__ <= 30
+#   typedef enum AAudio_FallbackMode : int32_t { ...
+#
+# (oto/v3@v3.4.0/internal/oboe/oboe_aaudio_AAudioLoader_android.h). NDK 30's
+# sysroot DOES define AAudio_FallbackMode, AAudio_StretchMode and
+# AAudioPlaybackParameters, so on NDK 30 every one of them is a redefinition
+# and the cgo build of internal/oboe fails outright. The TODO says plainly
+# that nobody checked which NDK first shipped them; the guess was one too
+# high. AAudio_DeviceType right above it uses `< 30` and additionally trips a
+# static_assert on 30.
+#
+# Those symbols arrived with Android B / API 36 (the header defines
+# __ANDROID_API_B__ as 36). NDK 29 is the API 36 NDK, so it is suspect for the
+# same reason even though the guard nominally covers it. 28 tops out at API 35,
+# which predates all of them — hence the default. NDK_SERIES overrides it, for
+# the day oto fixes the guard and the newest NDK is the right answer again.
+NDK_SERIES=${NDK_SERIES:-28}
+ndk=$(latest "ndk;${NDK_SERIES}\\.[0-9.]+")
+if [ -z "$ndk" ]; then
+	echo "refusing: sdkmanager offers no ndk;${NDK_SERIES}.* — is NDK_SERIES right?" >&2
+	echo "Available: $("$sdkmanager" --list --channel=0 2>/dev/null | tr -d ' ' |
+		cut -d'|' -f1 | grep -E '^ndk;[0-9.]+$' | cut -d';' -f2 | cut -d. -f1 |
+		sort -un | tr '\n' ' ')" >&2
+	exit 1
+fi
+for pkg in "$buildtools" "$platform"; do
 	if [ -z "$pkg" ]; then
-		echo "refusing: sdkmanager listed no build-tools, platform or NDK." >&2
+		echo "refusing: sdkmanager listed no build-tools or platform." >&2
 		echo "Usually a proxy eating https://dl.google.com — try '$sdkmanager --list'." >&2
 		exit 1
 	fi

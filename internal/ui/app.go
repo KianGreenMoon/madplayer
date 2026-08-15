@@ -23,6 +23,7 @@ import (
 	"gioui.org/widget"
 	"gioui.org/widget/material"
 
+	"daemonlord.ygg/madplayer/internal/about"
 	"daemonlord.ygg/madplayer/internal/backend"
 	"daemonlord.ygg/madplayer/internal/blobcache"
 	"daemonlord.ygg/madplayer/internal/library"
@@ -147,6 +148,11 @@ type App struct {
 	// a changed track from sixty identical frames.
 	title string
 
+	// build is what this binary IS — commit, toolchain, embedded engine — read
+	// once at start because it cannot change while the program runs. The About
+	// section needs it, and so does the licence it satisfies (internal/about).
+	build about.Build
+
 	view  view
 	level level
 
@@ -181,6 +187,7 @@ type App struct {
 	btnCache                             widget.Clickable
 	btnClearPlayed                       widget.Clickable
 	btnClearSeeded, btnClearAll          widget.Clickable
+	btnCopySource, btnCopyBuild          widget.Clickable
 	cacheList                            widget.List
 	btnPlayAlbum, btnAlbumNext           widget.Clickable
 	btnAlbumAdd, btnAlbumKeep            widget.Clickable
@@ -232,6 +239,7 @@ func New(win *app.Window, pl *player.Player, be *backend.Backend) *App {
 // queue of whoever was listening to music at the time.
 func newApp(win *app.Window, pl *player.Player, be *backend.Backend, store *prefs.Store) *App {
 	a := &App{win: win, th: newTheme(), store: store, pl: pl, be: be, lib: library.New(be.Library())}
+	a.build = about.Current()
 	a.art = newCovers(win.Invalidate)
 	// Embedded covers are written out here when the media bus asks for one: it
 	// wants a URL, and art that lives inside an audio file has no path of its own.

@@ -224,6 +224,7 @@ func (a *App) settings(gtx C) D {
 		a.meshControls,
 		a.keepControls,
 		a.shortcutHelp,
+		a.aboutControls,
 	)
 
 	return layout.Inset{Top: 16, Bottom: 16, Left: 20, Right: 20}.Layout(gtx, func(gtx C) D {

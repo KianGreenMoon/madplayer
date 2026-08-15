@@ -50,6 +50,8 @@ are written into that doc.
   below.
 - **Keeping network music**: a track from a server or the madnetwork can be
   saved onto this device as an ordinary file. See *Keeping network music* below.
+- **An About section** in Settings: the build's own commit, the licence, and
+  where its source is — see *The licence, and the source offer* below.
 - **A Cache page**: what this device is keeping — what it plays from and what it
   seeds back — with a Clear on each and one button for both. See *What this
   device is keeping* below.
@@ -749,6 +751,39 @@ line, or rounding that offset.
 There is no fix on this side that is not a fork of Gio or a reimplementation of
 `widget.Label`, so it is written down rather than worked around. See
 `.issues/open-issues.md` §"The polish pass".
+
+## The licence, and the source offer in Settings
+
+madplayer links madshare, which is **AGPL-3.0-or-later**, so this program is too;
+`LICENSE.md` carries the text. The About section at the foot of Settings is what
+the licence asks for on screen: whose copyright it is, the licence and its
+warranty disclaimer, what this build IS, and how to get its source.
+
+The build line is not decoration. Source that does not correspond to the binary
+is not *Corresponding Source*, so the offer is only worth something because the
+commit is printed beside it — and all of it comes from what the Go toolchain
+already stamps in (`debug.ReadBuildInfo`: `vcs.revision`, `vcs.time`,
+`vcs.modified`, the dependency versions). No ldflags, no build script, nothing
+that can be forgotten in one of the three ways this is built. A binary built from
+a dirty tree says **"with uncommitted changes"** and stops claiming to match a
+published commit; one built outside a repository says it has no revision at all.
+
+**The source is offered, not shipped.** Carrying a copy of the tree inside the
+binary would satisfy the licence and cost tens of megabytes on the one device
+where that matters most — a phone. §6d allows the offer to be access from a
+network server instead, which is what the address is for. The repository is **not
+public yet**, so what stands right now is §6b's other option, a written offer:
+the panel says plainly that it is not up, names who to ask, and shows the commit
+to ask for. `about.Published` flips with the repository, in the same commit —
+pointing somebody at a 404 and calling it compliance would be worse than saying
+so.
+
+One thing this does not close, recorded in `.issues/open-issues.md`: §13 is about
+users interacting with a program **remotely over a network**, and a madnetwork
+node serves blobs to other people's devices. None of them can see a settings
+panel. That is inert for the author, who owes himself nothing, and matters the
+day somebody else runs a modified build and seeds from it — and the fix would be
+madshare's, not this client's.
 
 ## Build prerequisites (Linux)
 

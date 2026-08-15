@@ -47,11 +47,28 @@ mkdir -p "$out"
 icon="$here/icon.png"
 [ -f "$icon" ] || (cd "$root" && go run ./packaging/icon "$icon")
 
+# -checklinkname=0 is required, and only on Android. github.com/wlynxg/anet —
+# pulled in by yggdrasil-go, so it arrives through madshare's mesh and is not
+# ours to drop — reaches into the standard library with
+#
+#   //go:linkname zoneCache net.zoneCache
+#
+# (anet@v0.0.5/interface_android.go:164). It is how the library reads IPv6 zone
+# identifiers on a platform where Go's own interface enumeration does not work.
+# Go 1.23 made the linker reject pull-linknames into std that std has not
+# blessed, so the link fails with "invalid reference to net.zoneCache". v0.0.5
+# is anet's newest release, so there is no upgrade to take.
+#
+# The cost is honest and worth stating: the check is disabled for the WHOLE
+# binary, not merely for anet. Only the Android build carries this — the
+# desktop build in the Makefile does not, because only interface_android.go
+# does it.
 echo "==> $out/madplayer.apk"
 (cd "$root" && gogio \
 	-target android \
 	-appid ygg.daemonlord.madplayer \
 	-icon "$icon" \
+	-ldflags=-checklinkname=0 \
 	-o "$out/madplayer.apk" \
 	./cmd/madplayer)
 

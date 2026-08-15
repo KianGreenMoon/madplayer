@@ -58,7 +58,10 @@ are written into that doc.
 M4A/AAC/Opus files **are indexed but cannot be played**: they need cgo bindings
 or ffmpeg, which is listed under the native client's own burdens in the design
 doc. Showing such a track and saying it cannot be played is honest; hiding it
-would look like the file is missing.
+would look like the file is missing. They still get their tech columns — see
+*Analysis without ffmpeg* — because reading a container's header and decoding
+its audio are different problems, and the row can say what the file is even
+where it cannot play it.
 
 ## One list, several libraries
 
@@ -347,9 +350,12 @@ a line, because a mesh that quietly never works looks exactly like one that does
   `false` is a decision and is written down. (The volume setting had exactly this
   bug and it is fixed the same way.)
 
-  A machine with no **fpcalc** degrades rather than fails: the backend refuses to
-  federate without it, `MeshProblem` carries the sentence, and the Settings line
-  says so.
+  **fpcalc is no longer something to install** (2026-08-15). It used to be: the
+  backend refused to federate without it, `MeshProblem` carried the sentence,
+  and on Android — where it is not a package one installs — the mesh could not
+  come up at all. madplayer computes the fingerprint itself now. See *Analysis
+  without ffmpeg* below; the requirement that made fpcalc necessary is met, not
+  waived.
 - **The enrolment used to never learn its servers** (fixed 2026-08-15).
   `applyServers` is the one place that tells every consumer which servers there
   are, and it skipped a nil enrolment silently — while running *before* the mesh
@@ -489,6 +495,9 @@ this file.
 cmd/madplayer/       the program
 packaging/           the desktop entry, the icon generator, the user-level installer
 internal/backend/    madshare, embedded: the data dir, the silent identity, folders
+internal/analyze/    ingest analysis without ffmpeg: the join to our own decoders
+internal/chroma/     Chromaprint, in this process — what fpcalc would have computed
+internal/probe/      tech columns read out of the container — what ffprobe would say
 internal/artwork/    cover art, read out of the music file or the folder beside it
 internal/materialize/ where network music is kept, what it is named, and what is ours
 internal/mpris/      the desktop's media bus: media keys, the system media widget
@@ -518,6 +527,61 @@ Three layering rules are worth keeping:
   it as a `player.Fetcher` returning a path, so every playback decision is
   tested with a fake that touches no network, and the HTTP half stays in
   `internal/remote`.
+
+## Analysis without ffmpeg
+
+madshare's ingest analysis is two child processes: `ffprobe` fills the codec,
+bitrate, sample-rate, channel and bit-depth columns, and `fpcalc` computes the
+Chromaprint fingerprint that decides which files are the same recording.
+
+Neither can run on a phone, and not for want of trying. There is no PATH to
+install onto; Android refuses to execute anything the app writes to its own
+data directory; and the app is not a process that could re-exec itself, it is a
+library loaded into somebody else's. So an Android build got no tech columns, no
+fingerprints, no duplicate detection — and **no mesh**, because madshare will
+not federate a node that cannot re-fingerprint what it downloads.
+
+Three packages do that work here instead, and madshare takes them through
+`app.WithMediaTools` (`internal/backend/analysis.go` is the whole adapter; the
+three know nothing about madshare):
+
+- **`internal/chroma`** — Chromaprint's `CHROMAPRINT_ALGORITHM_TEST2`, the
+  algorithm fpcalc emits by default, reimplemented from its MIT-licensed
+  sources.
+- **`internal/probe`** — the container readers: MP3, FLAC, WAV, Ogg
+  Vorbis/Opus, MP4/M4A. Headers only, because a scan runs one per file while
+  somebody waits for their library to appear.
+- **`internal/analyze`** — the join to the player's own decoders.
+
+**The bar is agreement, not correctness.** These fingerprints are compared
+across machines — a phone's against the server's — and madshare judges two the
+same recording below a bit error rate of 0.10. Above it, a node does not merely
+fail to match: it files a contradiction report about the other. So both halves
+are tested against the real binaries as oracles, which skip when absent and are
+never dependencies:
+
+| | vs. the real tool |
+|---|---|
+| Chromaprint, synthesised PCM | **bit-identical** to fpcalc 1.5.1 |
+| Chromaprint, 13 real MP3s | BER **0.00000–0.00063**, frame counts exact |
+| Tech columns, 13 real MP3s | duration to the millisecond, bitrate to the bit |
+
+**The decoder was the hard part, not the algorithm.** With the algorithm exact,
+real MP3s still came out at BER 0.045–0.067 — passing, while eating two thirds
+of the budget. The cause is that ffmpeg's demuxer drops two things the pure-Go
+decoder emits: the Xing/Info header frame, which is 1152 samples of silence, and
+the encoder's priming samples named in the LAME tag (plus the 529 the decoder's
+own pipeline owes). Together about 2257 samples — 51 ms, enough to shift every
+analysis window against the one fpcalc used. `internal/probe` reads the number
+off the tag and `internal/analyze` drops it, which is the whole of the 100×
+improvement in the table.
+
+Two things this does **not** change. Playback still cannot decode M4A/AAC/Opus —
+probing a container and decoding it are different problems, and a row that
+cannot be played now at least says what it is. And the federation gate is
+untouched: `allow_missing_fingerprinting` is never set, and a test pins that,
+because waiving the check is the other way to make the mesh work on Android and
+it is the wrong one.
 
 ## Browse rows are fetched, not queried per frame
 

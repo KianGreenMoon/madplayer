@@ -771,12 +771,24 @@ published commit; one built outside a repository says it has no revision at all.
 **The source is offered, not shipped.** Carrying a copy of the tree inside the
 binary would satisfy the licence and cost tens of megabytes on the one device
 where that matters most — a phone. §6d allows the offer to be access from a
-network server instead, which is what the address is for. The repository is **not
-public yet**, so what stands right now is §6b's other option, a written offer:
-the panel says plainly that it is not up, names who to ask, and shows the commit
-to ask for. `about.Published` flips with the repository, in the same commit —
-pointing somebody at a 404 and calling it compliance would be worse than saying
-so.
+network server instead, which is what the addresses are for. There are **two**,
+and they are in different states:
+
+| | |
+|---|---|
+| This player | <https://github.com/KianGreenMoon/madplayer> — **not published yet** |
+| madshare, its engine | <https://github.com/KianGreenMoon/madshare> — public |
+
+The split is worth stating rather than glossing: madshare is not a library this
+program happens to use, it is most of what the binary *is* — the library engine,
+the database, the federation, all running in this process — and its source is up,
+as is every third-party library in `go.mod`. What is not yet published is this
+client's own layer. So the panel makes §6b's other offer for that half (ask the
+author, and the commit above is what to ask for) while naming the half that is
+already there. `about.Published` flips with the repository, in the same commit;
+until then the unpublished address is shown in the warning colour and marked, in
+the panel and in the copied notice alike — pointing somebody at a 404 and calling
+it compliance would be worse than saying so.
 
 One thing this does not close, recorded in `.issues/open-issues.md`: §13 is about
 users interacting with a program **remotely over a network**, and a madnetwork

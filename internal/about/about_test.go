@@ -107,8 +107,39 @@ func TestTheSourceOfferMatchesWhatIsActuallyOnOffer(t *testing.T) {
 		}
 		return
 	}
-	if !strings.Contains(offer, "not public yet") || !strings.Contains(offer, Author) {
-		t.Errorf("offer = %q, want it to admit the repository is not up and say who to ask", offer)
+	if !strings.Contains(offer, "not up yet") || !strings.Contains(offer, Author) {
+		t.Errorf("offer = %q, want it to admit this client's repository is not up and say who to ask", offer)
+	}
+	// And it must not leave the impression that NOTHING is available: most of
+	// what this binary is made of is published, and saying so is both true and
+	// the more useful half of the answer.
+	if !strings.Contains(offer, "madshare") {
+		t.Errorf("offer = %q, want it to name the engine whose source IS public", offer)
+	}
+}
+
+// The two addresses are in different states, and the notice a person pastes into
+// a bug report has to carry that difference — otherwise it reads as a promise
+// that both answer.
+func TestTheNoticeMarksTheAddressThatDoesNotAnswerYet(t *testing.T) {
+	n := fromInfo(info()).Notice()
+	if !strings.Contains(n, EngineURL) {
+		t.Errorf("the notice does not carry the engine's address:\n%s", n)
+	}
+	if Published {
+		if strings.Contains(n, "not published yet") {
+			t.Error("the notice still marks a published address as unpublished")
+		}
+		return
+	}
+	line := ""
+	for _, l := range strings.Split(n, "\n") {
+		if strings.Contains(l, SourceURL) {
+			line = l
+		}
+	}
+	if !strings.Contains(line, "not published yet") {
+		t.Errorf("the unpublished address is not marked as such: %q", line)
 	}
 }
 
@@ -117,7 +148,7 @@ func TestTheSourceOfferMatchesWhatIsActuallyOnOffer(t *testing.T) {
 func TestTheNoticeCarriesEverythingItClaims(t *testing.T) {
 	b := fromInfo(info(debug.BuildSetting{Key: "vcs.revision", Value: "e243d64cd80e394af5f05919c8ab6d32f9bf79e9"}))
 	n := b.Notice()
-	for _, want := range []string{"madplayer", "e243d64", Author, "Affero", SourceURL} {
+	for _, want := range []string{"madplayer", "e243d64", Author, "Affero", SourceURL, EngineURL} {
 		if !strings.Contains(n, want) {
 			t.Errorf("the notice does not carry %q:\n%s", want, n)
 		}

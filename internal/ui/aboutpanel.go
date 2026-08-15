@@ -6,6 +6,7 @@ import (
 
 	"gioui.org/io/clipboard"
 	"gioui.org/layout"
+	"gioui.org/widget/material"
 
 	"daemonlord.ygg/madplayer/internal/about"
 )
@@ -33,9 +34,9 @@ func (a *App) aboutControls(gtx C) D {
 	if a.btnCopySource.Clicked(gtx) {
 		gtx.Execute(clipboard.WriteCmd{
 			Type: "application/text",
-			Data: io.NopCloser(strings.NewReader(about.SourceURL)),
+			Data: io.NopCloser(strings.NewReader(about.SourceURL + "\n" + about.EngineURL)),
 		})
-		a.setNotice("Address copied — " + about.SourceURL)
+		a.setNotice("Both addresses copied")
 	}
 	if a.btnCopyBuild.Clicked(gtx) {
 		gtx.Execute(clipboard.WriteCmd{
@@ -74,14 +75,15 @@ func (a *App) aboutControls(gtx C) D {
 			layout.Rigid(layout.Spacer{Height: 6}.Layout),
 			layout.Rigid(func(gtx C) D { return a.sectionTitle(gtx, "Source code") }),
 			layout.Rigid(func(gtx C) D { return a.sectionHint(gtx, b.SourceOffer()) }),
-			layout.Rigid(func(gtx C) D {
-				return a.sectionHint(gtx, about.SourceURL)
-			}),
+			// Both halves, labelled, because they are in different states and a
+			// person reading this needs to know which address answers today.
+			layout.Rigid(func(gtx C) D { return a.sourceLine(gtx, "This player", about.SourceURL, about.Published) }),
+			layout.Rigid(func(gtx C) D { return a.sourceLine(gtx, "madshare, its engine", about.EngineURL, true) }),
 			layout.Rigid(func(gtx C) D {
 				return layout.Inset{Top: 8}.Layout(gtx, func(gtx C) D {
 					return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
 						layout.Rigid(func(gtx C) D {
-							return a.smallButton(gtx, &a.btnCopySource, "Copy address", false)
+							return a.smallButton(gtx, &a.btnCopySource, "Copy addresses", false)
 						}),
 						layout.Rigid(layout.Spacer{Width: 8}.Layout),
 						// Copying the whole notice is what somebody actually needs
@@ -94,5 +96,23 @@ func (a *App) aboutControls(gtx C) D {
 				})
 			}),
 		)
+	})
+}
+
+// sourceLine is one address and whether it answers yet. An address that does not
+// is still worth showing — it is where to look tomorrow — but it must never be
+// mistaken for one that does.
+func (a *App) sourceLine(gtx C, what, url string, live bool) D {
+	text := what + ":  " + url
+	if !live {
+		text += "   (not published yet)"
+	}
+	return layout.Inset{Top: 2}.Layout(gtx, func(gtx C) D {
+		l := material.Caption(a.th, text)
+		l.Color = colDim
+		if !live {
+			l.Color = colWarn
+		}
+		return l.Layout(gtx)
 	})
 }

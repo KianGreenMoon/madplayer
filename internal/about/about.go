@@ -26,20 +26,22 @@ import (
 	"time"
 )
 
-// Author is whose copyright this is, for the notice the licence requires.
-const Author = "Kian Seibel"
+// Author is whose copyright this is, for the notice the licence requires. The
+// full name, matching LICENSE.md — a notice that names somebody differently from
+// the licence beside it is a notice somebody has to reconcile.
+const Author = "Kian Eugen Seibel"
 
 // License is the licence in the words the AGPL's own "how to apply" section
 // suggests: name it, offer the option of a later version, and disclaim warranty.
 const License = "GNU Affero General Public License, version 3 or later"
 
-// SourceURL is where the Corresponding Source will live.
+// SourceURL is where this client's own source will live, confirmed by the author
+// as the address he will publish it at (2026-08-16).
 //
-// PLACEHOLDER — the repository is not public yet (2026-08-16). It is a constant
-// rather than a string in the panel so that publishing is one edit, and it is
-// shown to the person either way: an address that does not answer yet is still
-// the honest answer to "where is the source", and the panel says which of the
-// two it is (see Published).
+// It is a constant rather than a string in the panel so that publishing is one
+// edit, and it is shown either way: an address that does not answer yet is still
+// the honest answer to "where is the source", as long as the panel says which of
+// the two it is (see Published).
 const SourceURL = "https://github.com/KianGreenMoon/madplayer"
 
 // Published reports whether SourceURL actually serves the source yet. Flip it
@@ -49,6 +51,17 @@ const SourceURL = "https://github.com/KianGreenMoon/madplayer"
 // author — because pointing somebody at a 404 and calling it compliance would be
 // worse than saying plainly that it is not up yet.
 const Published = false
+
+// EngineURL is madshare, which is not a dependency this program happens to use
+// but the thing it is mostly made of: the library engine, the database, the
+// federation, all of it, running in this process. Its source is public, and so
+// is that of every third-party library in go.mod, which leaves this client's own
+// layer as the only part of the Corresponding Source not yet on a server.
+//
+// Reachable as of 2026-08-16 (checked, 200). Note that madshare declares its
+// module path as daemonlord.ygg/madshare — a Yggdrasil-only name — so this
+// address is for reading and cloning rather than for `go get`.
+const EngineURL = "https://github.com/KianGreenMoon/madshare"
 
 // Build is what a person needs to identify this binary, and what somebody
 // auditing the source needs to match it.
@@ -167,9 +180,10 @@ func (b Build) BuildLine() string {
 func (b Build) SourceOffer() string {
 	switch {
 	case !Published:
-		return "The repository is not public yet. Until it is, ask " + Author +
-			" for the source of this build — the licence entitles you to it either way, " +
-			"and the commit above is what to ask for."
+		return "madshare — the engine this program is mostly made of — is public, and so is " +
+			"every library it uses. This client's own source is not up yet: until it is, ask " +
+			Author + " for it. The licence entitles you to it either way, and the commit " +
+			"above is what to ask for."
 	case !b.Identified():
 		return "This binary was built from a tree that is not published as it stands, so the " +
 			"repository below is where the program lives rather than where this exact build " +
@@ -188,8 +202,19 @@ const Warranty = "It comes with absolutely no warranty."
 func (b Build) Notice() string {
 	return strings.Join([]string{
 		"madplayer — " + b.BuildLine(),
+		"Embeds madshare " + b.Madshare,
 		"Copyright (C) 2026 " + Author,
 		"Free software under the " + License + ". " + Warranty,
-		SourceURL,
+		"This client:  " + SourceURL + published(Published),
+		"The engine:   " + EngineURL,
 	}, "\n")
+}
+
+// published marks an address that does not answer yet, so a notice pasted into a
+// bug report cannot be read as a promise the world does not keep.
+func published(ok bool) string {
+	if ok {
+		return ""
+	}
+	return "  (not published yet)"
 }

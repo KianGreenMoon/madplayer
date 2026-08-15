@@ -797,6 +797,34 @@ panel. That is inert for the author, who owes himself nothing, and matters the
 day somebody else runs a modified build and seeds from it — and the fix would be
 madshare's, not this client's.
 
+## Building it
+
+There is a `Makefile`, and it exists for the two incantations that are easy to
+get wrong by hand rather than to save typing:
+
+```
+make build      the binary, here
+make run        build and start it
+make test       everything, with the race detector
+make android    the APK — x86_64 hosts only
+make release    a stripped binary and a tarball in dist/
+make install    binary + icon + menu entry, under $HOME
+```
+
+`make release` **refuses to build from a tree with uncommitted changes**, and
+that is the feature. The binary names the commit it came from so that its
+Corresponding Source can be found (*The licence, and the source offer* above), so
+a build from a dirty tree honestly reports that no published commit matches it —
+and handing that to somebody is handing them a licence problem. `DIRTY=1`
+overrides it for a build nobody else gets.
+
+It strips with `-trimpath -ldflags "-s -w"`: 43 MB down to 31 MB, and the build
+info survives all three, which was checked rather than assumed — the About
+section's whole offer of source rests on the commit still being in the binary.
+
+Note that `make build --android` is not something make can parse (a leading `--`
+is a make option, not a target); the Android build is `make android`.
+
 ## Build prerequisites (Linux)
 
 ```bash

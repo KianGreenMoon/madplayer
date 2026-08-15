@@ -4,6 +4,9 @@ android/icon.png
 # APK output.
 android/out/
 
+# Release output — `make release` assembles a tarball and its checksum here.
+/dist/
+
 # Compiled binaries. `go build ./...` drops one per main package in the working
 # directory — /main from android/icon, /madplayer from cmd/madplayer,
 # /meshcheck from cmd/meshcheck.

@@ -156,6 +156,13 @@ them.
   the position belongs to a named row (`player.ResumeAt`), is consumed the first
   time that row loads, and is dropped by every explicit navigation. A bare
   offset with no owner would seek whatever track happened to load next.
+- **The bar shows all of that before a byte is read.** `player.Position` answers
+  from the queue item when nothing is open — its duration, and the armed offset
+  as the playhead — so a resumed session comes back reading `2:31 / 5:04` at the
+  point it stopped. It used to read `0:00 / 0:00` for a five-minute song, which
+  made a restored queue look like an empty player. `Seekable` still says no:
+  there is a length to read and nothing yet to scrub, so the slider is drawn and
+  cannot be dragged.
 - It lives in **`queue.json`, not `config.json`**, deliberately: the settings
   file holds API tokens and is 0600, folding the queue in would rewrite the
   credential file every five seconds while music plays, and a queue that cannot
@@ -608,6 +615,34 @@ The entity rules this package used to carry (`EffectiveArtist`, album keys, the
 Unknown/Other buckets) are **gone**: the embedded backend decides them now, which
 is the whole point of embedding it. `docs/ui/madplayer.md` §"What the server
 already computes" is the list of things not to re-derive.
+
+## Why long text is drawn in two tones
+
+Look at any sentence in this program longer than about thirty characters and it
+changes shade partway through a word — *"Scanned in place. Nothing is cop|ied,
+moved or written…"*. It is not a highlight, a truncation, a gradient or a theme
+bug, and it is **not this program's**: it is Gio's, at v0.10.1, in every Gio
+application on this machine.
+
+`widget/label.go` buffers glyphs in a 32-slot array and emits one filled path
+per **32 glyphs**, each under `op.Affine(Offset(lineOff))` where `lineOff.X` is
+the *fractional* X of that batch's first glyph. `text.Shaper.Shape` builds each
+batch's path relative to its own first glyph, so that offset positions the whole
+batch — and the first batch inherits the label's origin, which is pixel-aligned,
+while every batch after it is not. Subpixel-shifted text rasterizes softer;
+measured on the real window, peak glyph coverage is ~100 in the first batch
+against ~77 in the rest, over a background of 30.
+
+The evidence that it is upstream: a forty-line Gio program with two
+`material.Label`s and none of this code reproduces it exactly, rendered through
+`gpu/headless` — no window, no compositor, no window system. It is identical
+under Vulkan and under `-tags novulkan`, so it is not the driver. Two one-line
+patches to a local Gio each remove it completely: a buffer big enough to hold a
+line, or rounding that offset.
+
+There is no fix on this side that is not a fork of Gio or a reimplementation of
+`widget.Label`, so it is written down rather than worked around. See
+`.issues/open-issues.md` §"The polish pass".
 
 ## Build prerequisites (Linux)
 

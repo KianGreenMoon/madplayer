@@ -218,10 +218,9 @@ func (a *App) settings(gtx C) D {
 	}
 
 	rows = append(rows,
-		// The download limit sits under the folders because both answer the same
-		// question — what this device keeps on disk. Signing in to a server is a
-		// different question, and lives on its own panel.
-		a.cacheControls,
+		// What this device keeps on disk moved to its own page in 2026-08-15:
+		// there are two caches with different answers, and one paragraph here
+		// kept describing only the one it could clear.
 		a.meshControls,
 		a.keepControls,
 		a.shortcutHelp,

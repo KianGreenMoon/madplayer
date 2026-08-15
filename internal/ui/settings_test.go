@@ -5,7 +5,9 @@ import (
 	"image"
 	"io"
 	"log"
+	"strings"
 	"testing"
+	"time"
 
 	"gioui.org/app"
 	"gioui.org/layout"
@@ -248,5 +250,66 @@ func TestTheBrowseStripAppearsOnlyWhenItHasSomethingToSay(t *testing.T) {
 	a.lib.SetServers([]library.Server{{Base: "https://one.example", Label: "one", Client: madshare.New("https://one.example", "tok")}})
 	if d := a.browseBar(headless()); d.Size.Y == 0 {
 		t.Error("with a server signed in there is a scope to narrow, and nowhere to do it")
+	}
+}
+
+// The cache page lays out on a device with neither a mesh nor a keeper — which
+// is the install where two of its four sections have nothing behind them, and
+// therefore where a nil is most likely to be dereferenced by the section that
+// describes it.
+func TestTheCachePageLaysOut(t *testing.T) {
+	a := testApp(t)
+	if _, up := a.be.Mesh(); up {
+		t.Fatal("a mesh-off backend produced a node — this test is no longer the empty case")
+	}
+	for i := 0; i < 2; i++ {
+		if d := a.cachePanel(headless()); d.Size.X == 0 && d.Size.Y == 0 {
+			t.Fatal("the cache page laid out to nothing")
+		}
+	}
+}
+
+// Two clears at once would each measure the disk the other is changing, and the
+// second would report a number that was never true.
+func TestOnlyOneClearRunsAtATime(t *testing.T) {
+	a := testApp(t)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	go a.withClearing(func() string {
+		close(started)
+		<-release
+		return "first"
+	})
+	<-started
+
+	ran := false
+	a.withClearing(func() string { ran = true; return "second" })
+	if ran {
+		t.Error("a second clear started while the first was still running")
+	}
+	close(release)
+}
+
+// The page says what the clear did, and it says it on the page — not in the
+// player bar, where a person watching a number go down is not looking.
+func TestAClearReportsWhatItFreed(t *testing.T) {
+	a := testApp(t)
+	a.clearAllCaches()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		a.mu.Lock()
+		msg, busy := a.cacheMsg, a.clearing
+		a.mu.Unlock()
+		if !busy && msg != "" {
+			if !strings.Contains(msg, "freed") {
+				t.Errorf("message = %q, want it to name what it freed", msg)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no message after the clear finished (busy=%v, msg=%q)", busy, msg)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

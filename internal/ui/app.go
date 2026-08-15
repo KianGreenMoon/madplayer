@@ -50,6 +50,7 @@ const (
 	viewSettings
 	viewServers
 	viewQueue
+	viewCache
 )
 
 // level is the browse drill depth. Three levels, each addressed by a stable
@@ -128,6 +129,15 @@ type App struct {
 	srvBusy   bool
 	srvMsg    string
 	cacheUsed int64
+	// seedCount and seedUsed are the OTHER cache: what this device seeds back to
+	// the household, measured when the cache page is opened (see refreshSeedUsage).
+	seedCount int
+	seedUsed  int64
+	// clearing is a clear in flight, and cacheMsg what the last one did. Both
+	// belong to the cache page rather than to the player bar's notice line: a
+	// person watching a number go down is looking at the page.
+	clearing bool
+	cacheMsg string
 	// ceiling is the download limit in its three parts. The FIELD shows the
 	// override — empty when there is none — while the hint names what the
 	// default resolves to, so "empty" is never a value nobody can read.
@@ -150,34 +160,38 @@ type App struct {
 	listPos [3]layout.Position
 	// folderList is the Settings panel's own scroll state. It used to share the
 	// queue panel's, which meant opening one scrolled the other.
-	folderList                            widget.List
-	queueList                             widget.List
-	serverList                            widget.List
-	search                                widget.Editor
-	folderEd                              widget.Editor
-	srvAddr, srvUser, srvPass             widget.Editor
-	cacheEd                               widget.Editor
-	seek                                  widget.Float
-	vol                                   widget.Float
-	seeking                               bool
-	rows                                  []widget.Clickable
-	crumbHome                             widget.Clickable
-	crumbArt                              widget.Clickable
-	btnSettings, btnServers, btnQueue     widget.Clickable
-	btnPrev, btnPlay, btnNext             widget.Clickable
-	btnShuffle, btnRepeat, btnClearQueue  widget.Clickable
-	btnAddFolder, btnRescan, btnUndo      widget.Clickable
-	btnLocalOnly                          widget.Clickable
-	btnPlayAlbum, btnAlbumNext            widget.Clickable
-	btnAlbumAdd, btnAlbumKeep             widget.Clickable
-	btnKeepDirSave                        widget.Clickable
-	keepDirEd                             widget.Editor
-	keepTechnical                         widget.Bool
-	btnSignIn, btnCacheSave, btnCacheDrop widget.Clickable
-	meshOn                                widget.Bool
-	rmFolder                              []widget.Clickable
-	rmServer                              []widget.Clickable
-	rmQueue                               []widget.Clickable
+	folderList                           widget.List
+	queueList                            widget.List
+	serverList                           widget.List
+	search                               widget.Editor
+	folderEd                             widget.Editor
+	srvAddr, srvUser, srvPass            widget.Editor
+	cacheEd                              widget.Editor
+	seek                                 widget.Float
+	vol                                  widget.Float
+	seeking                              bool
+	rows                                 []widget.Clickable
+	crumbHome                            widget.Clickable
+	crumbArt                             widget.Clickable
+	btnSettings, btnServers, btnQueue    widget.Clickable
+	btnPrev, btnPlay, btnNext            widget.Clickable
+	btnShuffle, btnRepeat, btnClearQueue widget.Clickable
+	btnAddFolder, btnRescan, btnUndo     widget.Clickable
+	btnLocalOnly                         widget.Clickable
+	btnCache                             widget.Clickable
+	btnClearPlayed                       widget.Clickable
+	btnClearSeeded, btnClearAll          widget.Clickable
+	cacheList                            widget.List
+	btnPlayAlbum, btnAlbumNext           widget.Clickable
+	btnAlbumAdd, btnAlbumKeep            widget.Clickable
+	btnKeepDirSave                       widget.Clickable
+	keepDirEd                            widget.Editor
+	keepTechnical                        widget.Bool
+	btnSignIn, btnCacheSave              widget.Clickable
+	meshOn                               widget.Bool
+	rmFolder                             []widget.Clickable
+	rmServer                             []widget.Clickable
+	rmQueue                              []widget.Clickable
 	// rowNext and rowAdd are the per-row queue buttons, indexed exactly like
 	// rows — see ensureRows, which grows all three together.
 	rowNext []widget.Clickable
@@ -223,6 +237,7 @@ func newApp(win *app.Window, pl *player.Player, be *backend.Backend, store *pref
 	// wants a URL, and art that lives inside an audio file has no path of its own.
 	a.art.cache.SpillDir(filepath.Join(be.DataDir(), "covers"))
 	a.list.Axis = layout.Vertical
+	a.cacheList.Axis = layout.Vertical
 	a.queueList.Axis = layout.Vertical
 	a.folderList.Axis = layout.Vertical
 	a.serverList.Axis = layout.Vertical
@@ -871,10 +886,20 @@ func (a *App) problemBanner(gtx C) D {
 func (a *App) update(gtx C) {
 	if a.btnSettings.Clicked(gtx) {
 		a.view = toggleView(a.view, viewSettings)
-		if a.view == viewSettings {
-			// Measuring the cache walks the disk, so it happens when the panel
-			// that shows the number is opened, not every frame.
-			go a.refreshCacheSize()
+	}
+	if a.btnCache.Clicked(gtx) {
+		a.view = toggleView(a.view, viewCache)
+		if a.view == viewCache {
+			// Both numbers are directory walks, so they are measured when the
+			// page that shows them is opened rather than every frame — and the
+			// ceiling is re-read with them, so the page opens showing what is in
+			// force rather than what this process last remembered.
+			go func() {
+				a.refreshCacheSize()
+				a.refreshSeedUsage()
+				a.reloadCeiling()
+				a.win.Invalidate()
+			}()
 		}
 	}
 	if a.btnServers.Clicked(gtx) {
@@ -1079,6 +1104,10 @@ func (a *App) header(gtx C) D {
 				}),
 				layout.Rigid(layout.Spacer{Width: 8}.Layout),
 				layout.Rigid(func(gtx C) D {
+					return a.smallButton(gtx, &a.btnCache, "Cache", a.view == viewCache)
+				}),
+				layout.Rigid(layout.Spacer{Width: 8}.Layout),
+				layout.Rigid(func(gtx C) D {
 					return a.smallButton(gtx, &a.btnSettings, "Settings", a.view == viewSettings)
 				}),
 				layout.Rigid(layout.Spacer{Width: 8}.Layout),
@@ -1098,6 +1127,8 @@ func (a *App) body(gtx C) D {
 		return a.serversPanel(gtx)
 	case viewQueue:
 		return a.queuePanel(gtx)
+	case viewCache:
+		return a.cachePanel(gtx)
 	case viewSearch:
 		return a.searchResults(gtx)
 	default:

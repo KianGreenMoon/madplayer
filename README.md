@@ -50,6 +50,9 @@ are written into that doc.
   below.
 - **Keeping network music**: a track from a server or the madnetwork can be
   saved onto this device as an ordinary file. See *Keeping network music* below.
+- **A Cache page**: what this device is keeping — what it plays from and what it
+  seeds back — with a Clear on each and one button for both. See *What this
+  device is keeping* below.
 - **Queue editing**: *Play next* and *Add to queue* on every track row (on
   hover) and on an album header, and ↑/↓/× in the queue panel. Clicking a row
   still replaces the queue with the view you clicked in — that is the contract
@@ -311,6 +314,41 @@ network unplugged, and it cannot disagree with the file.
   booklet scan is 36 MB of pixels for a 40 dp thumbnail.
 - **A cover can also be asked for as a file** (`Cache.File`), which is what the
   media bus needs; see *On the desktop's media bus*.
+
+## What this device is keeping — the Cache page
+
+Two caches, one page, one button that empties both.
+
+Every blob a swarm fetch brings down is stored **twice**, and the copies are not
+redundant. madshare's `cache/madnetwork/` is hash-named and extensionless, and is
+the only directory this device SEEDS from — the only one `Holdings()` advertises,
+which is what makes the device useful to the household. This client's `remote/`
+carries a file extension, because the decoders pick by one, and it is what
+playback reads. Each is swept by its own enforcer under the same ceiling, so the
+worst case on disk is **twice** the number in the box; the page says so rather
+than leaving somebody to measure their own disk and conclude the setting is
+broken.
+
+That shape is why it is a page and not the paragraph it used to be in Settings.
+The paragraph had one "Empty now" and it emptied `remote/` — on the developer's
+own machine, 778 MiB cleared and **128 MiB of seeded blobs stayed**, unreachable
+from the program that fetched them, and growing with everything the mesh sends.
+Clearing the seeded half needs `Network.EvictCached`, added to madshare's
+embedder facade for this: it wraps the node's own `EvictCachedBlob`, which is
+safe to call while something is reading the file and leaves the `.part` of an
+in-flight transfer alone — so emptying the cache cannot break the track that is
+playing.
+
+Each section says what clearing it costs, because the two costs differ: the
+playback cache costs a download next time, and the seeded cache costs the
+household a holder. Neither loses anything — a cache is by definition
+re-fetchable, and everything in the seeded half came from somebody who still has
+it.
+
+**Music kept on purpose is not on this page**, beyond a line saying where it is
+and that nothing here touches it. Those are files a person asked for, in a folder
+they chose (*Keeping network music* above); sweeping them up with the caches
+would be the worst bug this program could have, and a test pins that it does not.
 
 ## Remote tracks are streamed, and cached as they arrive
 

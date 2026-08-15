@@ -127,58 +127,6 @@ func (a *App) serverRow(gtx C, s prefs.Server, rm *widget.Clickable) D {
 	})
 }
 
-// cacheControls is the one resource decision this client asks a person to make.
-// It lives on the Settings panel and is handled there — the buttons are read in
-// one place so a panel that is not showing cannot act on a click.
-func (a *App) cacheControls(gtx C) D {
-	a.mu.Lock()
-	used, ceiling := a.cacheUsed, a.ceiling
-	a.mu.Unlock()
-
-	if a.btnCacheSave.Clicked(gtx) {
-		a.saveCacheLimit(a.cacheEd.Text())
-	}
-	if a.btnCacheDrop.Clicked(gtx) {
-		a.clearCache()
-	}
-
-	return layout.Inset{Top: 16}.Layout(gtx, func(gtx C) D {
-		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-			layout.Rigid(func(gtx C) D { return a.sectionTitle(gtx, "Downloaded music") }),
-			layout.Rigid(func(gtx C) D {
-				return a.sectionHint(gtx, fmt.Sprintf(
-					"Tracks played from a server are kept here so playing them again needs no network. "+
-						"Using %s of %s; the oldest go first when the limit is reached. "+
-						"Leave the box empty for the default (%s), or type 0 for no limit.",
-					human(used), ceilingText(ceiling.Effective), ceilingText(ceiling.Default)))
-			}),
-			layout.Rigid(func(gtx C) D {
-				return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
-					layout.Rigid(func(gtx C) D {
-						gtx.Constraints.Max.X = gtx.Dp(120)
-						// The hint text names the state an empty box means, since
-						// an empty box otherwise reads as "unset and therefore
-						// broken" rather than "using the default".
-						e := material.Editor(a.th, &a.cacheEd, "Default")
-						e.Color, e.HintColor = colFg, colDim
-						return filled(gtx, colSel, e.Layout)
-					}),
-					layout.Rigid(layout.Spacer{Width: 8}.Layout),
-					layout.Rigid(func(gtx C) D {
-						l := material.Caption(a.th, "MiB  (empty = default, 0 = no limit)")
-						l.Color = colDim
-						return l.Layout(gtx)
-					}),
-					layout.Rigid(layout.Spacer{Width: 12}.Layout),
-					layout.Rigid(func(gtx C) D { return a.smallButton(gtx, &a.btnCacheSave, "Save", false) }),
-					layout.Rigid(layout.Spacer{Width: 8}.Layout),
-					layout.Rigid(func(gtx C) D { return a.smallButton(gtx, &a.btnCacheDrop, "Empty now", false) }),
-				)
-			}),
-		)
-	})
-}
-
 // meshControls is the madnetwork switch and what it is currently doing.
 //
 // It exists because the switch was otherwise unreachable: prefs.Mesh and

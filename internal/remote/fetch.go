@@ -187,6 +187,13 @@ func (f *Fetcher) fill(srv library.Server, item *queue.Item) blobcache.Fetch {
 		switch {
 		case err == nil && wrote > 0:
 			return nil
+		case wrote > 0 && ctx.Err() != nil:
+			// Not a failure — an ABANDONMENT. Nobody is waiting for this track any
+			// more (the queue moved on, and the last reader left), so there is
+			// nothing to resume for. Saying "resuming" here would be a line about
+			// work that is not happening, and the relay call would fail on the same
+			// dead context anyway.
+			return err
 		case wrote > 0:
 			// The swarm died PART WAY, and the bytes it managed are already in the
 			// file. Starting the relay over from zero would append a second copy of

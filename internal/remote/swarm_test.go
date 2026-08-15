@@ -544,3 +544,26 @@ func (r *slowReader) Read(p []byte) (int, error) {
 	r.pos += n
 	return n, nil
 }
+
+// A swarm fetch that is CANCELLED is an abandonment, not a failure, and must not
+// send the relay after the rest of a track nobody is waiting for. Skipping
+// through an album cancels a prefetch on every skip, so this is the common case
+// rather than an edge one.
+func TestAnAbandonedSwarmFetchDoesNotResume(t *testing.T) {
+	ms := newMeshServer(t, "SWARM half + the rest", "aa11")
+	sw := &fakeSwarm{stream: io.MultiReader(
+		strings.NewReader("SWARM half"),
+		errReader{context.Canceled},
+	)}
+	f := meshFetcher(t, ms, sw, &fakeVouch{ok: true})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // the queue already moved on
+
+	if _, err := f.Local(ctx, ms.track(hashA)); err == nil {
+		t.Fatal("an abandoned fetch reported success")
+	}
+	if n := ms.relay.Load(); n != 0 {
+		t.Errorf("relay hit %d time(s) for a track nobody is waiting for", n)
+	}
+}

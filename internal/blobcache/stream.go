@@ -39,6 +39,10 @@ type tail struct {
 	f  *os.File
 	p  *progress
 	rd int64
+	// ctx is THIS reader's caller, not the fetch's. They are different lifetimes
+	// now that several readers can share one fetch: a reader giving up must stop
+	// that reader, and the fetch carries on for whoever else is listening.
+	ctx context.Context
 }
 
 // progress is the writer's side: how much has been written, and whether it is
@@ -79,16 +83,20 @@ func (p *progress) finish(err error) {
 // caller wrote — it is this process deciding it no longer wants the track.
 var errAbandoned = errors.New("the download was stopped")
 
-// watch wakes every reader when ctx ends, so a cancelled fetch does not leave
-// one parked forever on a condition nobody will ever signal.
+// watch wakes every reader when ctx ends, so nobody is left parked on a
+// condition that will never be signalled. A context that can never be cancelled
+// is not watched at all, or the goroutine would outlive the process's interest
+// in it.
+//
+// It only WAKES them; whether the fetch is finished is the fetch's own business
+// (finish). One reader giving up must not tell the others the download ended —
+// they may still be reading it, and it may still be running for them.
 func (p *progress) watch(ctx context.Context) {
+	if ctx.Done() == nil {
+		return
+	}
 	go func() {
 		<-ctx.Done()
-		p.mu.Lock()
-		if !p.done {
-			p.done, p.err = true, errAbandoned
-		}
-		p.mu.Unlock()
 		p.cond.Broadcast()
 	}()
 }
@@ -115,13 +123,19 @@ func (m meter) Write(b []byte) (int, error) {
 // file has to answer no.
 func (t *tail) Read(b []byte) (int, error) {
 	for {
+		if err := t.ctx.Err(); err != nil {
+			return 0, err
+		}
 		t.p.mu.Lock()
-		for t.rd >= t.p.n && !t.p.done {
+		for t.rd >= t.p.n && !t.p.done && t.ctx.Err() == nil {
 			t.p.cond.Wait()
 		}
 		avail, done, err := t.p.n-t.rd, t.p.done, t.p.err
 		t.p.mu.Unlock()
 
+		if err := t.ctx.Err(); err != nil {
+			return 0, err
+		}
 		if avail <= 0 {
 			if err != nil {
 				return 0, err
@@ -164,44 +178,87 @@ func (c *Cache) Stream(ctx context.Context, key, ext string, fetch Fetch) (io.Re
 		return os.Open(path)
 	}
 
-	c.mu.Lock()
-	if _, running := c.inflight[key]; running {
-		// Somebody is already fetching this — the prefetch of the track that just
-		// became current, usually. Wait for it rather than starting a second copy
-		// of the same download.
-		c.mu.Unlock()
-		path, err := c.Get(ctx, key, ext, fetch)
-		if err != nil {
-			return nil, err
-		}
-		return os.Open(path)
-	}
-
-	// Derived from the CALLER's context, unlike Get's. Get detaches because a
-	// fetch there is shared and outlives any one waiter; a stream has exactly one
-	// reader, so its caller giving up is the end of it — and without that link a
-	// decoder blocked on the first bytes of a track the person already skipped
-	// would wait for a fetch nobody wants, forever.
-	fctx, cancel := context.WithCancel(ctx)
-	cl := &call{done: make(chan struct{}), cancel: cancel, waiters: 1}
-	c.inflight[key] = cl
-	c.mu.Unlock()
-
-	prog := newProgress()
-	prog.watch(fctx)
-
-	f, err := c.startFetch(fctx, key, ext, fetch, cl, prog)
+	cl, err := c.begin(ctx, key, ext, fetch)
 	if err != nil {
 		return nil, err
 	}
-	return &streamed{tail: tail{f: f, p: prog}, cache: c, key: key, cl: cl}, nil
+	f, err := os.Open(cl.part)
+	if err != nil {
+		c.drop(cl)
+		return nil, err
+	}
+	// This reader's OWN cancellation has to wake it out of the shared condition;
+	// the fetch's does not speak for it, and another reader's certainly does not.
+	cl.prog.watch(ctx)
+	return &streamed{tail: tail{f: f, p: cl.prog, ctx: ctx}, cache: c, cl: cl}, nil
+}
+
+// begin starts the fetch for key, or JOINS the one already running, counting
+// the caller as a waiter either way. Every caller must drop when finished.
+//
+// One path for both Get and Stream is the point rather than tidiness. Get is
+// what a prefetch uses (it wants the whole file) and Stream is what playback
+// uses, so on an album the prefetch of track 2 is running when the player asks
+// for track 2 — and a fetch nobody can tail means the player waits out the whole
+// download. Measured before this: 403ms of a 403ms download, for every track
+// after the first.
+func (c *Cache) begin(ctx context.Context, key, ext string, fetch Fetch) (*call, error) {
+	c.mu.Lock()
+	if cl, running := c.inflight[key]; running {
+		cl.waiters++
+		c.mu.Unlock()
+		return cl, nil
+	}
+
+	// DETACHED from any one caller and reference-counted: the fetch is shared, so
+	// the first caller giving up must not cancel a download the second is
+	// listening to. What stops it is the last waiter leaving.
+	fctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	prog := newProgress()
+	cl := &call{
+		done:    make(chan struct{}),
+		cancel:  cancel,
+		waiters: 1,
+		prog:    prog,
+		part:    c.path(key, ext) + ".part",
+	}
+	c.inflight[key] = cl
+	c.mu.Unlock()
+
+	prog.watch(fctx)
+	if err := c.startFetch(fctx, key, ext, fetch, cl, prog); err != nil {
+		return nil, err
+	}
+	return cl, nil
+}
+
+// drop releases one caller's interest, stopping the fetch when that was the
+// last — and only then removing what a failed fetch left behind, since a reader
+// still holding on has an error to be told about first.
+func (c *Cache) drop(cl *call) {
+	c.mu.Lock()
+	cl.waiters--
+	last := cl.waiters == 0
+	c.mu.Unlock()
+	if !last {
+		return
+	}
+	cl.cancel()
+	select {
+	case <-cl.done:
+		if cl.err != nil {
+			// A half-written file must never be presented as a track: it would
+			// decode into silence or noise and look like a corrupt original.
+			_ = os.Remove(cl.part)
+		}
+	default:
+	}
 }
 
 // streamed is a tail read plus the bookkeeping that says somebody is listening.
 type streamed struct {
 	tail
 	cache *Cache
-	key   string
 	cl    *call
 	once  sync.Once
 }
@@ -209,47 +266,32 @@ type streamed struct {
 // Close stops the fetch when this was the last reader of it. A person skipping
 // through ten tracks should not be downloading ten.
 func (s *streamed) Close() error {
-	s.once.Do(func() {
-		s.cache.mu.Lock()
-		s.cl.waiters--
-		abandoned := s.cl.waiters == 0
-		s.cache.mu.Unlock()
-		if abandoned {
-			s.cl.cancel()
-		}
-	})
+	s.once.Do(func() { s.cache.drop(s.cl) })
 	return s.tail.Close()
 }
 
-// startFetch creates the part file, opens it for reading, and runs the fetch
-// into it, metered. It returns the READ handle.
+// startFetch creates the part file and runs the fetch into it, metered.
 //
-// Both opens happen on THIS goroutine, before the fetch can run, and that
-// ordering is the whole of it. A fetch that fails immediately removes the part
-// file, so opening the reader afterwards is a race the reader loses — and loses
-// confusingly, reporting "no such file" instead of why the fetch failed. Holding
-// the handle first also means the bytes survive the name being removed, which is
-// what lets a failed fetch's error reach the reader rather than a truncated file.
-func (c *Cache) startFetch(ctx context.Context, key, ext string, fetch Fetch, cl *call, prog *progress) (*os.File, error) {
-	abandon := func(err error) (*os.File, error) {
+// The file is created on THIS goroutine, before the fetch can run, so a caller
+// can open it for reading the moment begin returns. What a failed fetch leaves
+// behind is NOT removed here: a reader that is still attached has an error to be
+// told about first, and the removal happens when the last waiter leaves (drop).
+// Removing it here was a race the reader lost, and lost confusingly — reporting
+// "no such file" instead of why the fetch failed.
+func (c *Cache) startFetch(ctx context.Context, key, ext string, fetch Fetch, cl *call, prog *progress) error {
+	abandon := func(err error) error {
 		c.mu.Lock()
 		delete(c.inflight, key)
 		c.mu.Unlock()
 		cl.cancel()
 		close(cl.done)
-		return nil, err
+		return err
 	}
 
 	final := c.path(key, ext)
 	part := final + ".part"
 	f, err := os.OpenFile(part, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
-		return abandon(err)
-	}
-	rd, err := os.Open(part)
-	if err != nil {
-		f.Close()
-		os.Remove(part)
 		return abandon(err)
 	}
 
@@ -268,17 +310,13 @@ func (c *Cache) startFetch(ctx context.Context, key, ext string, fetch Fetch, cl
 			err = closeErr
 		}
 		if err != nil {
-			// A half-written file must never be presented as a track: it would
-			// decode into silence or noise and look like a corrupt original. The
-			// reader still holds it open, so removing the name is enough — its
-			// bytes go when that handle closes.
-			_ = os.Remove(part)
+			// The half-written file stays until the last waiter goes (drop): the
+			// readers attached to it need the error, not a vanished file.
 			cl.err = err
 			prog.finish(err)
 			return
 		}
 		if err := os.Rename(part, final); err != nil {
-			_ = os.Remove(part)
 			cl.err = err
 			prog.finish(err)
 			return
@@ -287,5 +325,5 @@ func (c *Cache) startFetch(ctx context.Context, key, ext string, fetch Fetch, cl
 		prog.finish(nil)
 		c.evict(filepath.Base(final))
 	}()
-	return rd, nil
+	return nil
 }

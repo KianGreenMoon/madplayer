@@ -368,7 +368,25 @@ a line, because a mesh that quietly never works looks exactly like one that does
   `http.ServeFile`, so 206 is what it actually answers.
 
   A swarm that never *starts* is still an ordinary decline, and the relay takes
-  it from the beginning.
+  it from the beginning. A fetch that is **cancelled** is neither: nobody is
+  waiting for that track any more, so there is nothing to resume for.
+
+- **A second caller JOINS a fetch already running** rather than waiting it out,
+  and this is the one that made streaming worth anything on an album. The
+  prefetch of track 2 goes through `Get` (it wants the whole file) and playback
+  arrives through `Stream`; before, the second found an inflight fetch it could
+  not tail and blocked on the whole download — measured at 403 ms of a 403 ms
+  download, **for every track after the first**. Both now run through one
+  `begin`, so every inflight fetch carries a progress anyone can read as it
+  lands. Skipping onto a track being prefetched: **0.45 s to audio**, live, on a
+  77 MiB FLAC.
+
+  The fetch is therefore detached and reference-counted (the first caller giving
+  up must not cancel a download the second is listening to), while each *reader*
+  keeps its own context, so one giving up wakes only itself. What a failed fetch
+  leaves behind is removed when the **last** waiter goes, not when the fetch
+  fails, because a reader still attached needs the error rather than a vanished
+  file.
 - **`FetchBlob` still blocks** and is now used only for keeping a track on this
   device, where a half-copied file would be worse than a wait.
 - **The swarm gets a budget, not the caller's whole deadline**

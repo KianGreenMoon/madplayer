@@ -50,6 +50,15 @@ type call struct {
 	waiters int
 	path    string
 	err     error
+
+	// prog and part let a LATER caller join a fetch that is already running and
+	// read it as it lands, rather than waiting for it to finish. That is the
+	// ordinary case on an album: track 1 is playing, track 2 is being prefetched,
+	// track 1 ends — and without this the player waits out track 2's whole
+	// download, which is streaming buying nothing for every track after the
+	// first. See stream.go.
+	prog *progress
+	part string
 }
 
 // Open prepares dir as a cache. limit is a ceiling in bytes; 0 means none.
@@ -137,28 +146,13 @@ func (c *Cache) Get(ctx context.Context, key, ext string, fetch Fetch) (string, 
 		return path, nil
 	}
 
-	c.mu.Lock()
-	cl, running := c.inflight[key]
-	if !running {
-		fctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
-		cl = &call{done: make(chan struct{}), cancel: cancel}
-		c.inflight[key] = cl
-		go c.run(fctx, key, ext, fetch, cl)
+	cl, err := c.begin(ctx, key, ext, fetch)
+	if err != nil {
+		return "", err
 	}
-	cl.waiters++
-	c.mu.Unlock()
-
-	defer func() {
-		c.mu.Lock()
-		cl.waiters--
-		abandoned := cl.waiters == 0
-		c.mu.Unlock()
-		if abandoned {
-			// Nobody is listening any more. Stopping is the point: a person
-			// skipping through ten tracks should not be downloading ten.
-			cl.cancel()
-		}
-	}()
+	// Leaving is what says nobody is listening any more. Stopping then is the
+	// point: a person skipping through ten tracks should not be downloading ten.
+	defer c.drop(cl)
 
 	select {
 	case <-ctx.Done():
@@ -166,48 +160,6 @@ func (c *Cache) Get(ctx context.Context, key, ext string, fetch Fetch) (string, 
 	case <-cl.done:
 		return cl.path, cl.err
 	}
-}
-
-// run performs one fetch and publishes its result.
-func (c *Cache) run(ctx context.Context, key, ext string, fetch Fetch, cl *call) {
-	defer func() {
-		c.mu.Lock()
-		delete(c.inflight, key)
-		c.mu.Unlock()
-		cl.cancel()
-		close(cl.done)
-	}()
-
-	final := c.path(key, ext)
-	part := final + ".part"
-	f, err := os.OpenFile(part, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
-	if err != nil {
-		cl.err = err
-		return
-	}
-
-	err = fetch(ctx, f)
-	closeErr := f.Close()
-	if err == nil {
-		err = closeErr
-	}
-	if err != nil {
-		// A half-written file must never be presented as a track: it would
-		// decode into silence or noise and look like a corrupt original.
-		_ = os.Remove(part)
-		cl.err = err
-		return
-	}
-	if err := os.Rename(part, final); err != nil {
-		_ = os.Remove(part)
-		cl.err = err
-		return
-	}
-	cl.path = final
-
-	// Evict AFTER the rename and never the file just fetched: making room by
-	// deleting what was asked for is a cache that never hits.
-	c.evict(filepath.Base(final))
 }
 
 // Size is what the cache currently occupies, in bytes.

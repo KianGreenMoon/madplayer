@@ -56,12 +56,22 @@ func TestAgreesWithFfprobe(t *testing.T) {
 			if got.BitDepth != want.BitDepth {
 				t.Errorf("BitDepth = %d, ffprobe %d", got.BitDepth, want.BitDepth)
 			}
-			// A millisecond of slack, and a tenth of a percent on the rate: both
-			// sides round, and neither number is used for anything finer.
+			// A millisecond of slack on the duration: both sides round, and
+			// nothing uses the number more finely than that.
 			if math.Abs(got.DurationSeconds-want.DurationSeconds) > 0.001 {
 				t.Errorf("Duration = %v, ffprobe %v", got.DurationSeconds, want.DurationSeconds)
 			}
-			if want.Bitrate > 0 && math.Abs(float64(got.Bitrate-want.Bitrate)) > float64(want.Bitrate)/1000 {
+			// An MP3's bitrate is EXACT, because ffmpeg's own formula is
+			// reproduced rather than approximated — and slack here hid a real
+			// mistake once, a rate divided by the padded duration instead of the
+			// unpadded one, which came to 37 bps and passed a 0.1% tolerance.
+			// Everything else is derived from the file's size, where ffprobe may
+			// be counting something slightly different.
+			tolerance := float64(want.Bitrate) / 1000
+			if strings.EqualFold(filepath.Ext(path), ".mp3") {
+				tolerance = 0
+			}
+			if want.Bitrate > 0 && math.Abs(float64(got.Bitrate-want.Bitrate)) > tolerance {
 				t.Errorf("Bitrate = %d, ffprobe %d", got.Bitrate, want.Bitrate)
 			}
 			t.Logf("%s %gs %dbps %dHz %dch depth=%d", got.Codec, got.DurationSeconds,

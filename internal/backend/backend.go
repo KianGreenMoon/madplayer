@@ -24,7 +24,6 @@ import (
 	"daemonlord.ygg/madshare/app"
 	"daemonlord.ygg/madshare/auth"
 	"daemonlord.ygg/madshare/config"
-	"daemonlord.ygg/madshare/media"
 	"daemonlord.ygg/madshare/sources"
 )
 
@@ -82,8 +81,7 @@ func Open(ctx context.Context, dataDir string, lg *log.Logger, opts Options) (*B
 	if dataDir == "" {
 		return nil, errors.New("backend: no data directory")
 	}
-	cfg, why := playerConfig(dataDir, opts)
-	cfg, err := cfg.Prepare()
+	cfg, err := playerConfig(dataDir, opts).Prepare()
 	if err != nil {
 		return nil, err
 	}
@@ -94,14 +92,14 @@ func Open(ctx context.Context, dataDir string, lg *log.Logger, opts Options) (*B
 			return nil, err
 		}
 	}
-	inst, err := app.Start(ctx, cfg, app.WithLogger(lg))
+	inst, err := app.Start(ctx, cfg, app.WithLogger(lg), app.WithMediaTools(tools{}))
 	if err != nil && !fresh && errors.Is(err, auth.ErrNoAdminCredential) {
 		// A database exists but holds no users: a first run that died between
 		// creating the file and provisioning. Provision now.
 		if cfg.Auth.InitialAdminPassword, err = app.GenerateSecret(); err != nil {
 			return nil, err
 		}
-		inst, err = app.Start(ctx, cfg, app.WithLogger(lg))
+		inst, err = app.Start(ctx, cfg, app.WithLogger(lg), app.WithMediaTools(tools{}))
 	}
 	if err != nil {
 		return nil, err
@@ -112,7 +110,7 @@ func Open(ctx context.Context, dataDir string, lg *log.Logger, opts Options) (*B
 		inst.Stop(context.Background())
 		return nil, fmt.Errorf("backend: resolve owner: %w", err)
 	}
-	b := &Backend{inst: inst, dir: dataDir, log: lg, meshWhy: why}
+	b := &Backend{inst: inst, dir: dataDir, log: lg}
 	if ok {
 		// Not fatal when absent: an install provisioned under a different name
 		// still browses and plays, it just cannot attribute what it imports.
@@ -140,19 +138,22 @@ func (b *Backend) Mesh() (app.Network, bool) { return b.net, b.net != nil }
 // MeshProblem says why the madnetwork is not running, or "" when it is (or was
 // never asked for).
 //
-// It exists because the answer is usually not "you turned it off": the mesh
-// needs fpcalc, which is a thing a person installs rather than a thing a player
-// ships, and a switch that silently does nothing is the worst possible way to
-// tell them that.
+// It exists because a switch that silently does nothing is the worst possible
+// way to tell somebody their mesh is off. Its original reason — no fpcalc on
+// this host — is gone as of 2026-08-15, since the fingerprinting is this
+// program's own now; what is left is the case that cannot be known before the
+// node starts, a device that could not be pinned to publishing nothing.
 func (b *Backend) MeshProblem() string { return b.meshWhy }
 
 // playerConfig is the config a player runs on: one directory, no listener, and no
 // allow-list on the folders its owner may add.
 //
-// The second return is why the mesh is off, empty when it is on or was not asked
-// for. Returned rather than logged because it is a sentence for the person who
-// flipped the switch, not for a log nobody opens.
-func playerConfig(dataDir string, opts Options) (config.Config, string) {
+// It used to hand back a second value — why the mesh could not be honoured —
+// which until 2026-08-15 was always the same answer: no fpcalc on this host.
+// Nothing this function decides can refuse the mesh any more, so it says
+// nothing. MeshProblem survives for the one reason that can still arise, and
+// that one is only knowable after the node has started.
+func playerConfig(dataDir string, opts Options) config.Config {
 	cfg := config.Default()
 	cfg.DataDir = dataDir
 	// No [[listen]]: nothing is served, ever (docs/ui/madplayer.md).
@@ -168,19 +169,18 @@ func playerConfig(dataDir string, opts Options) (config.Config, string) {
 	// number here rather than "no limit".
 	cfg.Federation.CacheMaxMB = DefaultCacheMB
 	if !opts.Mesh {
-		return cfg, ""
+		return cfg
 	}
-	// fpcalc is required of a federated node, on a player exactly as on a server
-	// (decided 2026-08-09): a device that seeds is redistributing audio, and
-	// without fpcalc it cannot check what it fetched against what it claims to
-	// be. madshare enforces that as a STARTUP gate, which is the right shape for
-	// a server and the wrong one here — a music player must not refuse to open
-	// because a tool for a feature is missing. So the switch is honoured only
-	// when it can be, and the reason is handed back to be shown.
-	if _, fpcalc := media.ToolStatus(); !fpcalc {
-		return cfg, "the madnetwork needs fpcalc (Chromaprint) installed, so this device can " +
-			"check what it downloads against what it claims to be. Install it and restart."
-	}
+	// Fingerprinting is required of a federated node, on a player exactly as on a
+	// server (decided 2026-08-09): a device that seeds is redistributing audio,
+	// and without it there is no checking what was fetched against what it claims
+	// to be. That requirement is unchanged and unweakened —
+	// allow_missing_fingerprinting is still never set. What changed is that this
+	// program satisfies it itself (internal/chroma, handed over as tools{}),
+	// instead of needing somebody to install Chromaprint first.
+	//
+	// Until 2026-08-15 the switch was honoured only when fpcalc was on PATH, and
+	// on Android it never could be, so the mesh could not come up there at all.
 	cfg.Federation.Enabled = true
 	cfg.Yggdrasil.Peers = opts.Peers
 	// Local peer discovery, the opposite of a server's default. A phone finding
@@ -193,7 +193,7 @@ func playerConfig(dataDir string, opts Options) (config.Config, string) {
 	// is a fact about this program rather than about the setting.
 	no := false
 	cfg.Yggdrasil.SharePeers = &no
-	return cfg, ""
+	return cfg
 }
 
 // Close shuts the node down. Safe to call more than once.

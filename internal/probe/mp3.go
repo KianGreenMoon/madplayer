@@ -73,6 +73,10 @@ func inspectMP3(r io.ReadSeeker, size int64) (*Info, error) {
 	// of exactly the files people have art on.
 	audioBytes := size - int64(off)
 
+	// averageOver is the span the bitrate is divided by, which is not always the
+	// duration reported — see the Xing branch below.
+	var averageOver float64
+
 	x, tagged := parseXing(head[off:], frame)
 	if tagged {
 		info.SkipSamples = x.skip
@@ -86,10 +90,18 @@ func inspectMP3(r io.ReadSeeker, size int64) (*Info, error) {
 			// format's, so the stream's is the number that has to match. Checked
 			// against ffprobe 7.1 rather than reasoned about — the first attempt
 			// here matched the other one.
+			full := float64(int64(x.frames)*int64(frame.samples)) / float64(frame.sampleRate)
 			samples := int64(x.frames)*int64(frame.samples) - int64(x.startPad) - int64(x.endPad)
 			if samples > 0 {
 				info.DurationSeconds = float64(samples) / float64(frame.sampleRate)
 			}
+			// The bitrate is averaged over the LONGER one — the bytes are spread
+			// over every frame, pads included. ffmpeg divides by frames × samples
+			// here while reporting the shorter duration beside it, and the two
+			// denominators are easy to conflate: using the reported duration puts
+			// the rate 37 bps high on a real file, which is inside any sane
+			// tolerance and still wrong.
+			averageOver = full
 		}
 		if x.bytes > 0 {
 			audioBytes = int64(x.bytes)
@@ -99,13 +111,14 @@ func inspectMP3(r io.ReadSeeker, size int64) (*Info, error) {
 		// Nothing declared: assume the first frame's rate holds throughout, which
 		// is right for CBR and is the same guess ffprobe makes.
 		info.DurationSeconds = float64(audioBytes-int64(frame.size)) * 8 / float64(frame.bitrate)
+		averageOver = info.DurationSeconds
 	}
 	// A CBR file keeps the rate its frames state; only a VBR one has to be
 	// averaged, and ffmpeg averages it over the size the header declares rather
 	// than over the file (which would count the tags). is_cbr is the Info
 	// spelling of the tag, as against Xing.
-	if !x.cbr && x.bytes > 0 && info.DurationSeconds > 0 {
-		info.Bitrate = bitrateFrom(int64(x.bytes), info.DurationSeconds)
+	if !x.cbr && x.bytes > 0 && averageOver > 0 {
+		info.Bitrate = bitrateFrom(int64(x.bytes), averageOver)
 	}
 	return info, nil
 }

@@ -238,8 +238,9 @@ func newApp(win *app.Window, pl *player.Player, be *backend.Backend, store *pref
 	a.vol.Value = float32(cfg.Volume)
 	pl.SetVolume(cfg.Volume)
 	// The switch shows what was ASKED for, not what happened. They differ on a
-	// device with no fpcalc, and the caption beside it is where that is explained
-	// — a box that silently unticked itself would look like it had not been saved.
+	// device where the mesh could not come up, and the caption beside it is where
+	// that is explained — a box that silently unticked itself would look like it
+	// had not been saved.
 	a.meshOn.Value = cfg.Mesh
 	a.keepTechnical.Value = cfg.KeepTechnicalNames
 	a.keepDirEd.SetText(cfg.KeepDir)

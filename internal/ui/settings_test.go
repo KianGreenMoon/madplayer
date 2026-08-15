@@ -95,8 +95,8 @@ func TestMeshControlsLayOutWithNoNode(t *testing.T) {
 }
 
 // The switch shows what was ASKED for, not what happened — they differ on a
-// device with no fpcalc, and the caption beside it explains that. A box that
-// silently unticked itself would read as "it did not save".
+// device where the mesh could not come up, and the caption beside it explains
+// that. A box that silently unticked itself would read as "it did not save".
 func TestTheMeshSwitchShowsWhatWasAskedFor(t *testing.T) {
 	a := testApp(t)
 	a.cfg.Mesh = true

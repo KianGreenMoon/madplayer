@@ -218,10 +218,10 @@ func (a *App) meshControls(gtx C) D {
 				return cb.Layout(gtx)
 			}),
 			layout.Rigid(func(gtx C) D {
-				// One line saying what is actually true right now. The three cases are
+				// One line saying what is actually true right now. The cases are
 				// different problems with different answers: a switch that is off, a
-				// switch that is on and could not be honoured (fpcalc), and a node that
-				// is up but has not yet been vouched for by anybody.
+				// switch that is on and could not be honoured, and a node that is up
+				// but has not yet been vouched for by anybody.
 				var txt string
 				switch {
 				case problem != "":

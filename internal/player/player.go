@@ -508,7 +508,7 @@ func (p *Player) PlayIndex(i int) {
 }
 
 // Position reports elapsed and total seconds for the current track. Both are 0
-// when nothing is loaded.
+// when there is no current track at all.
 //
 // A streaming mp3 has no length of its own — go-mp3 only computes one by
 // walking the whole file, which is exactly what a stream refuses to do. The
@@ -516,12 +516,26 @@ func (p *Player) PlayIndex(i int) {
 // duration. Living here rather than in the player bar means every consumer of
 // the total — the bar, the keyboard's relative seek, the media bus — agrees on
 // it, and a scrub on a streaming track has a length to aim into.
+//
+// Nothing DECODED yet is answered the same way, from what the queue already
+// knows: a restored queue sits on a track it has not opened, and reporting 0:00
+// of 0:00 for a five-minute song made a resumed session look like an empty one.
+// An armed resume position is where that track will start, so it is where the
+// playhead is — the bar shows the point the last session stopped at, before a
+// single byte is read. Seekable stays false throughout: there is a length to
+// read, and still nothing open to scrub.
 func (p *Player) Position() (elapsed, total float64) {
 	cur := p.Current()
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.src == nil {
-		return 0, 0
+		if cur == nil {
+			return 0, 0
+		}
+		if p.resumeKey != "" && p.resumeKey == cur.RowKey() {
+			elapsed = p.resumeAt
+		}
+		return elapsed, cur.Duration
 	}
 	p.sink.Lock()
 	pos, length := p.src.streamer.Position(), p.src.streamer.Len()

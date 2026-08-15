@@ -17,9 +17,12 @@ import (
 func restored(t *testing.T, at float64) (*Player, *fakeSink, []*queue.Item) {
 	t.Helper()
 	dir := t.TempDir()
+	// The durations are what a saved queue.json actually carries: the UI captures
+	// them from the library when the queue is built, which is what lets a
+	// restored track show its length before anything opens the file.
 	items := []*queue.Item{
-		{Path: writeWAV(t, dir, "a.wav", 5)},
-		{Path: writeWAV(t, dir, "b.wav", 5)},
+		{Path: writeWAV(t, dir, "a.wav", 5), Duration: 5},
+		{Path: writeWAV(t, dir, "b.wav", 5), Duration: 5},
 	}
 
 	sink := &fakeSink{}
@@ -37,15 +40,51 @@ func restored(t *testing.T, at float64) (*Player, *fakeSink, []*queue.Item) {
 // Restoring must not start anything. A player that began making noise by itself
 // at launch would be a surprise, and a bad one at three in the morning.
 func TestRestoringDoesNotStartPlaying(t *testing.T) {
-	p, _, items := restored(t, 2)
+	p, sink, items := restored(t, 2)
 	if p.Playing() {
 		t.Error("a restored queue started playing by itself")
 	}
 	if cur := p.Current(); cur == nil || cur.Path != items[0].Path {
 		t.Errorf("current = %v, want the saved track", cur)
 	}
+	// Nothing was opened, which is the claim — and the sink is where that shows,
+	// not the position: since 2026-08-15 the position ANSWERS for a track that
+	// has not been decoded yet (see below), so a zero there would no longer mean
+	// what this test is about.
+	sink.mu.Lock()
+	opened := sink.s != nil
+	sink.mu.Unlock()
+	if opened {
+		t.Error("restoring opened the track")
+	}
+}
+
+// The bar has something to show before a byte is read.
+//
+// A restored queue used to report 0:00 of 0:00 for a five-minute song, because
+// the position came only from an open decoder — so a resumed session looked like
+// an empty player until you pressed play. The queue item carries the length, the
+// armed offset says where the track will start, and neither needs the file.
+// Seekable stays false: there is a length to read and still nothing to scrub.
+func TestARestoredTrackShowsItsLengthAndResumePointBeforeItOpens(t *testing.T) {
+	p, _, _ := restored(t, 2)
+
+	elapsed, total := p.Position()
+	if elapsed != 2 {
+		t.Errorf("elapsed = %.2f, want the armed resume point (2)", elapsed)
+	}
+	if total < 4.9 || total > 5.1 {
+		t.Errorf("total = %.2f, want the queue item's duration (~5)", total)
+	}
+	if p.Seekable() {
+		t.Error("a track nothing has opened reported itself scrubbable")
+	}
+
+	// The offset belongs to a named row. Moving on drops it, and the next track
+	// shows its own length from zero rather than inheriting somebody else's mark.
+	p.Next()
 	if elapsed, _ := p.Position(); elapsed != 0 {
-		t.Errorf("position = %.2f with nothing open", elapsed)
+		t.Errorf("elapsed = %.2f after moving on, want 0", elapsed)
 	}
 }
 

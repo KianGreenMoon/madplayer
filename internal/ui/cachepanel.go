@@ -31,6 +31,12 @@ import (
 // network"). Those are files a person asked for, in a folder they chose; a
 // button that swept them up with the caches would be the worst bug this program
 // could have.
+//
+// Also not here: anybody ELSE's cache. Both directories on this page are under
+// this device's own data dir. A server's cache belongs to whoever administers
+// that server — clearing it from a client is remote administration, a different
+// feature with a different permission behind it, and not something a settings
+// page should quietly be (owner, 2026-08-16).
 
 func (a *App) cachePanel(gtx C) D {
 	a.mu.Lock()
@@ -50,8 +56,6 @@ func (a *App) cachePanel(gtx C) D {
 	if a.btnClearAll.Clicked(gtx) && !busy {
 		a.clearAllCaches()
 	}
-
-	_, meshUp := a.be.Mesh()
 
 	rows := []layout.Widget{
 		func(gtx C) D { return a.sectionTitle(gtx, "Storage") },
@@ -83,10 +87,12 @@ func (a *App) cachePanel(gtx C) D {
 
 		func(gtx C) D { return a.cacheSection(gtx, playbackCache(played, ceiling), &a.btnClearPlayed, busy) },
 		func(gtx C) D {
-			if !meshUp {
-				// No node, no seeding, no second copy: showing an empty row for a
-				// cache this install cannot have would invite somebody to go
-				// looking for the disk it is not using.
+			// Shown whenever there is something to show, rather than whenever the
+			// mesh is on. Turning the madnetwork off does not delete what it
+			// already fetched, and those bytes are exactly the ones somebody goes
+			// looking for — a section that hides with the switch would hide the
+			// disk it left behind.
+			if seedN == 0 {
 				return D{}
 			}
 			return a.cacheSection(gtx, seededCache(seedN, seeded), &a.btnClearSeeded, busy)
@@ -282,7 +288,12 @@ func (a *App) withClearing(run func() string) {
 		a.mu.Lock()
 		a.clearing, a.cacheMsg = false, msg
 		a.mu.Unlock()
+		// BOTH numbers, or the section that was just emptied goes on showing what
+		// it held until somebody reopens the page — which reads as a clear that
+		// did nothing. (It did exactly that until the first live run of this
+		// page, 2026-08-16.)
 		a.refreshCacheSize()
+		a.refreshSeedUsage()
 		a.win.Invalidate()
 	}()
 }

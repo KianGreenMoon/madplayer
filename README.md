@@ -333,11 +333,22 @@ That shape is why it is a page and not the paragraph it used to be in Settings.
 The paragraph had one "Empty now" and it emptied `remote/` — on the developer's
 own machine, 778 MiB cleared and **128 MiB of seeded blobs stayed**, unreachable
 from the program that fetched them, and growing with everything the mesh sends.
-Clearing the seeded half needs `Network.EvictCached`, added to madshare's
-embedder facade for this: it wraps the node's own `EvictCachedBlob`, which is
-safe to call while something is reading the file and leaves the `.part` of an
-in-flight transfer alone — so emptying the cache cannot break the track that is
-playing.
+
+Clearing the seeded half works on the **files**, and that is sound rather than a
+shortcut. `docs/architecture/madnetwork-cache.md` §"The model" makes the
+directory authoritative and the index merely descriptive, and §"Files deleted
+behind the server's back" answers this exact case: nothing dangerous happens,
+ever — seeding re-lists the directory on every request, so a blob that is gone is
+never advertised, and the index self-heals as it is read. Two rules come with
+that permission and both are in the code: only bare 64-hex names are removed, so
+a `<hash>.part` belonging to a transfer that is RUNNING is left alone; and
+unlinking a file something is reading is safe, so clearing cannot stop the track
+that is playing.
+
+**Both directories are this device's own**, under the data dir this client
+created. A server's cache is a different thing with a different answer — it
+belongs to whoever administers that server, and reaching it from a client would
+be remote administration rather than a settings page.
 
 Each section says what clearing it costs, because the two costs differ: the
 playback cache costs a download next time, and the seeded cache costs the

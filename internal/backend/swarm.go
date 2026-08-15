@@ -43,6 +43,15 @@ func (b *Backend) FetchBlob(ctx context.Context, hash string, size int64, holder
 		// The transfer is governed by the same context, so abandoning it here is
 		// enough — it winds itself down rather than running on for a track nobody
 		// is waiting for any more.
+		//
+		// It is logged FIRST, and that matters more than the success case does.
+		// A swarm fetch that expires is the one this side cannot explain: the
+		// error says "context deadline exceeded" and nothing else, while the
+		// transfer knows which holders it asked, how many chunks landed, whether
+		// it was refused, retried or left idle. Discarding exactly that on the
+		// path where the mesh looks broken is how "the swarm doesn't work" became
+		// unanswerable for a week, twice.
+		b.logTransfer(t, time.Since(start))
 		return nil, ctx.Err()
 	case <-t.Done():
 	}

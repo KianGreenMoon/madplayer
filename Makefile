@@ -11,7 +11,8 @@
 #>   make build      the binary, here
 #>   make run        build and start it
 #>   make test       everything, with the race detector
-#>   make android    the APK — x86_64 hosts only
+#>   make android    the APK — x86_64 hosts only (android/setup-build-host.sh
+#>                   provisions one from bare Debian)
 #>   make release    a stripped binary and a tarball in dist/
 #>   make install    binary + icon + menu entry, under $HOME
 #>   make clean      remove what the above wrote

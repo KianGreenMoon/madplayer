@@ -8,6 +8,7 @@ require (
 	github.com/dhowden/tag v0.0.0-20240417053706-3d75831295e8
 	github.com/godbus/dbus/v5 v5.1.0
 	github.com/gopxl/beep/v2 v2.1.1
+	github.com/mewkiz/flac v1.0.12
 	golang.org/x/exp/shiny v0.0.0-20250408133849-7e4ce0ab07d0
 	golang.org/x/image v0.26.0
 )
@@ -58,7 +59,6 @@ require (
 	github.com/jfreymuth/oggvorbis v1.0.5 // indirect
 	github.com/jfreymuth/vorbis v1.0.2 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
-	github.com/mewkiz/flac v1.0.12 // indirect
 	github.com/mewkiz/pkg v0.0.0-20230226050401-4010bf0fec14 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/pkg/errors v0.9.1 // indirect

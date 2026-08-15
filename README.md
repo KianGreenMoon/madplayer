@@ -271,17 +271,25 @@ is unchanged.
 
 Two consequences, both handled rather than suffered:
 
-- **A streaming track scrubs by restarting its decode, never by seeking the
-  decoder.** beep's mp3 decoder *panics* on `Seek` over a non-seekable source,
-  so `player.seekStream` opens a second reader over the same growing cache
-  file — joining the running fetch as one more waiter, never a second
-  download — decodes forward to the target discarding samples, and swaps the
-  source in (pause state carried across; the old position keeps sounding until
-  the swap). Decoding is far faster than realtime, so a scrub into what has
-  arrived lands quickly; one beyond the watermark shows *Loading* and lands
-  when the download reaches it — the same result the web UI gets from the
-  browser plus the relay's Range support, spelled natively. A restored queue
-  position resumes on a stream the same way.
+- **A streaming track scrubs by fetching the SEEKED region first, never by
+  seeking the decoder.** beep's mp3 decoder *panics* on `Seek` over a
+  non-seekable source, so `player.seekStream` swaps a fresh source in instead
+  (pause state carried across; the old position keeps sounding until the
+  swap). For mp3 and flac the fresh source starts MID-STREAM: a Range request
+  at the byte-fraction estimate (`internal/player/rangeseek.go`) — the exact
+  move the web UI's browser makes against the relay, which even tells its
+  swarm to fetch that chunk first. go-mp3 resynchronizes to the next frame on
+  its own (position = the estimate, a browser's accuracy); FLAC frames carry
+  their exact sample number in a CRC-verified header, so after our resync scan
+  the landing is sample-accurate — the metadata header the parser insists on
+  is re-fetched (it is small) and spliced in front. The decoder's own FLAC
+  seek is deliberately not used: without an embedded seek table, mewkiz builds
+  one by parsing *every frame of the whole file* — the download this exists to
+  avoid. Everything else (ogg, wav, a fetcher without ranges, any range-path
+  failure) falls back to decoding forward through the sequential fill,
+  discarding — slower, never lost. The background fill keeps running
+  throughout: the range stream is a listening surface, the fill owns the cache
+  file. A restored queue position resumes on a stream the same way.
 - **A streaming MP3 does not know its own length**, since that is what the walk
   computed. `player.Position` falls back to the queue item's duration, which
   the library knew all along — inside the player, so the bar, the keyboard's

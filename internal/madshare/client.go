@@ -291,6 +291,32 @@ func (c *Client) Search(ctx context.Context, q string) (SearchResults, error) {
 	return out, err
 }
 
+// Length reports a track's total byte size, via HEAD. The seek path needs it
+// to turn a position in seconds into a byte offset before asking for a Range —
+// madshare answers HEAD on every GET route (its SupportHEAD middleware), so
+// this costs a round trip and no bytes.
+func (c *Client) Length(ctx context.Context, rel string) (int64, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, c.Resolve(rel), nil)
+	if err != nil {
+		return 0, err
+	}
+	if c.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.Token)
+	}
+	res, err := c.HTTP.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		return 0, &Error{Status: res.StatusCode, Method: http.MethodHead, Path: rel}
+	}
+	if res.ContentLength <= 0 {
+		return 0, fmt.Errorf("%s did not say how large it is", rel)
+	}
+	return res.ContentLength, nil
+}
+
 // Open streams a track's audio. rel is the URL from a track row, which is
 // server-relative because the server's own web UI is same-origin.
 //

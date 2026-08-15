@@ -526,6 +526,7 @@ func (p *Player) Position() (elapsed, total float64) {
 	p.sink.Lock()
 	pos, length := p.src.streamer.Position(), p.src.streamer.Len()
 	p.sink.Unlock()
+	pos += p.src.base // a mid-track source counts from where its bytes began
 
 	rate := float64(p.src.format.SampleRate)
 	if rate <= 0 {
@@ -680,11 +681,13 @@ func (p *Player) seekStream(seconds float64) {
 // openItemAt is openItem continued to a position: the source comes back
 // standing at the requested second.
 //
-// A reopen can find the download finished in the meantime — the cache then
-// hands back an ordinary file — and a native seek does the job. Otherwise the
-// streamer decodes its way there (discardTo), which keeps Position honest: the
-// decoder really has consumed everything before the target, so elapsed time
-// reads exactly as if the track had played to that point.
+// Three ways there, cheapest honest one first. A local or fully cached file
+// seeks natively. A still-arriving mp3 or flac starts MID-STREAM: a Range
+// request fetches the seeked region first — the same move the web UI's
+// browser makes against the relay — and the decoder picks up there
+// (rangeseek.go). Everything else decodes its way to the target through the
+// sequential fill (discardTo), which also catches every range-path failure:
+// losing the fast path must never lose the seek.
 func (p *Player) openItemAt(ctx context.Context, item *queue.Item, seconds float64) (*source, string, error) {
 	src, path, err := p.openItem(ctx, item)
 	if err != nil {
@@ -696,19 +699,39 @@ func (p *Player) openItemAt(ctx context.Context, item *queue.Item, seconds float
 		return src, path, nil
 	}
 	if src.seekable {
-		if n := src.streamer.Len(); target >= n {
-			target = n - 1
-		}
-		if target > 0 {
+		// A position at or past the end is IMPOSSIBLE, not far: it is ignored
+		// and the track starts at the top — the resume contract, and the sane
+		// answer to a stale duration estimate. Scrubs never get here with one
+		// (the slider is bounded by the total, and the range path clamps).
+		if target < src.streamer.Len() {
 			_ = src.streamer.Seek(target)
 		}
 		return src, path, nil
+	}
+	if ranged, rerr := p.openRanged(ctx, item, seconds, src); rerr == nil {
+		// src stays OPEN underneath, deliberately: its reader is what keeps the
+		// background fill — the cache's copy, the household's seed — counted as
+		// wanted. It closes when the ranged source does.
+		ranged.closer = stackedCloser{ranged.closer, src}
+		return ranged, "", nil
 	}
 	if err := discardTo(src.streamer, target); err != nil {
 		src.Close()
 		return nil, "", err
 	}
 	return src, path, nil
+}
+
+// stackedCloser closes a source's own reader and then whatever it was keeping
+// alive underneath.
+type stackedCloser [2]io.Closer
+
+func (s stackedCloser) Close() error {
+	err := s[0].Close()
+	if e := s[1].Close(); err == nil {
+		err = e
+	}
+	return err
 }
 
 // discardTo decodes and throws away samples until the streamer stands at n.
@@ -812,25 +835,26 @@ func (p *Player) playCurrent() {
 // load resolves an item to a file, decodes it and installs it as the playing
 // source — unless the queue moved on while it was working.
 func (p *Player) load(ctx context.Context, gen uint64, item *queue.Item) {
-	src, path, err := p.openItem(ctx, item)
+	// A restored position is consumed HERE, before the open, and openItemAt
+	// carries the source to it — natively for a file, mid-stream or by
+	// decoding forward for one still arriving. Consumed whether it lands or
+	// not, so a track that will not seek does not keep trying; and outside the
+	// lock, because reaching the position can wait on the network.
+	at := 0.0
+	p.mu.Lock()
+	if gen == p.gen && p.resumeKey != "" && p.resumeKey == item.RowKey() {
+		at = p.resumeAt
+		p.resumeKey, p.resumeAt = "", 0
+	}
+	p.mu.Unlock()
 
-	// A restored position on a STREAMING source is applied here, outside the
-	// lock: it decodes its way to the target (discardTo) and may wait on the
-	// download, which must never happen while holding mu. The seekable case
-	// stays below with the lock held — a native seek is instant.
-	if err == nil && !src.seekable {
-		p.mu.Lock()
-		at := 0.0
-		if gen == p.gen && p.resumeKey != "" && p.resumeKey == item.RowKey() {
-			at = p.resumeAt
-			p.resumeKey, p.resumeAt = "", 0
-		}
-		p.mu.Unlock()
-		if target := int(at * float64(src.format.SampleRate)); target > 0 {
-			// Consumed whether it lands or not, same rule as the seekable path;
-			// a failure here is a position lost, not a track lost.
-			_ = discardTo(src.streamer, target)
-		}
+	var src *source
+	var path string
+	var err error
+	if at > 0 {
+		src, path, err = p.openItemAt(ctx, item, at)
+	} else {
+		src, path, err = p.openItem(ctx, item)
 	}
 
 	p.mu.Lock()
@@ -868,19 +892,6 @@ func (p *Player) load(ctx context.Context, gen uint64, item *queue.Item) {
 	p.src, p.srcPath = src, path
 	delete(p.failed, item.RowKey()) // it played this time
 
-	// A restored position is applied here and nowhere else: the file has to be
-	// open before there is anything to seek within, which is the same reason the
-	// web UI waits for `loadedmetadata`. It is consumed whether the seek lands or
-	// not, so a track that will not seek does not keep trying.
-	if p.resumeKey != "" && p.resumeKey == item.RowKey() {
-		at := p.resumeAt
-		p.resumeKey, p.resumeAt = "", 0
-		if rate := float64(src.format.SampleRate); rate > 0 {
-			if target := int(at * rate); target > 0 && target < src.streamer.Len() {
-				_ = src.streamer.Seek(target)
-			}
-		}
-	}
 	streamer := beep.Streamer(src.streamer)
 	if src.format.SampleRate != SampleRate {
 		streamer = beep.Resample(resampleQuality, src.format.SampleRate, SampleRate, streamer)

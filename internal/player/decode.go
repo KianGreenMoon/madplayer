@@ -67,6 +67,12 @@ type source struct {
 	// so this is what stands between a scrub during a download and the program
 	// dying in the audio path.
 	seekable bool
+	// base is the sample this source's byte stream actually starts at, for a
+	// source opened MID-track (rangeseek.go): the decoder counts from zero
+	// because zero is all it saw, and base is what makes Position read as the
+	// track, not the stream. Exact for flac (the frame header names its
+	// sample), the byte-fraction estimate for mp3 — a browser's accuracy.
+	base int
 }
 
 func (s *source) Close() error {

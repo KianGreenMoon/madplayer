@@ -87,6 +87,11 @@ type Fetcher struct {
 	pmu          sync.Mutex
 	prefetchKey  string
 	prefetchStop context.CancelFunc
+
+	// sizes remembers each track's byte size (TrackSize), so a second seek on
+	// the same track costs no HEAD request.
+	szmu  sync.Mutex
+	sizes map[string]int64
 }
 
 // New returns a fetcher over a cache. It fetches over the relay until SetSwarm
@@ -95,7 +100,7 @@ func New(cache *blobcache.Cache, lg *log.Logger) *Fetcher {
 	if lg == nil {
 		lg = log.Default()
 	}
-	return &Fetcher{cache: cache, log: lg, slot: make(chan struct{}, 1)}
+	return &Fetcher{cache: cache, log: lg, slot: make(chan struct{}, 1), sizes: map[string]int64{}}
 }
 
 // SetSwarm installs the mesh path, or clears it with two nils. Until it is
@@ -373,6 +378,54 @@ func (f *Fetcher) fromRelay(ctx context.Context, cl *madshare.Client, item *queu
 	defer body.Close()
 	_, err = io.Copy(w, body)
 	return err
+}
+
+// TrackSize reports the item's total byte size, asked of its server once and
+// remembered. The player's seek path needs it to turn a position in seconds
+// into the byte offset a Range request wants.
+func (f *Fetcher) TrackSize(ctx context.Context, item *queue.Item) (int64, error) {
+	if item.URL == "" {
+		return 0, errors.New("this track has no server to ask")
+	}
+	f.szmu.Lock()
+	if n, ok := f.sizes[item.URL]; ok {
+		f.szmu.Unlock()
+		return n, nil
+	}
+	f.szmu.Unlock()
+	srv, err := f.serverFor(item.URL)
+	if err != nil {
+		return 0, err
+	}
+	n, err := srv.Client.Length(ctx, item.URL)
+	if err != nil {
+		return 0, err
+	}
+	f.szmu.Lock()
+	f.sizes[item.URL] = n
+	f.szmu.Unlock()
+	return n, nil
+}
+
+// OpenRange returns the track's bytes from a byte offset onward, over the
+// relay — the exact mechanism the web UI seeks with, spelled as a client call.
+// The server delivers the SEEKED region first by construction: /files/* serves
+// any range of a finished file immediately, and the madnetwork streaming relay
+// answers a range by prioritizing that chunk of its own swarm fetch.
+//
+// This is a LISTENING surface, not a caching one: whatever background fill is
+// running for the track keeps running and keeps owning the cache file — bytes
+// read here land in the decoder and nowhere else.
+func (f *Fetcher) OpenRange(ctx context.Context, item *queue.Item, offset int64) (io.ReadCloser, error) {
+	srv, err := f.serverFor(item.URL)
+	if err != nil {
+		return nil, err
+	}
+	body, _, err := srv.Client.OpenFrom(ctx, item.URL, offset)
+	if err != nil {
+		return nil, describe(err, item)
+	}
+	return body, nil
 }
 
 // Cached reports whether the item can be played with no network at all.

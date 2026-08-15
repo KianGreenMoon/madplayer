@@ -31,6 +31,7 @@ func quiet() *log.Logger { return log.New(io.Discard, "", 0) }
 type meshServer struct {
 	*httptest.Server
 	relay   atomic.Int32 // GET /files/…             — the level-1 download
+	heads   atomic.Int32 // HEAD /files/…            — the seek path's size probe
 	holders atomic.Int32 // GET /api/madnetwork/holders/…
 	keys    []string     // who it says holds the blob
 	size    int64
@@ -72,6 +73,13 @@ func newMeshServer(t *testing.T, body string, keys ...string) *meshServer {
 				"holders": hs,
 			})
 		case strings.HasPrefix(r.URL.Path, "/files/"):
+			if r.Method == http.MethodHead {
+				// The real server answers HEAD on every GET route (its
+				// SupportHEAD middleware); TrackSize depends on it.
+				ms.heads.Add(1)
+				w.Header().Set("Content-Length", fmt.Sprint(len(body)))
+				return
+			}
 			ms.relay.Add(1)
 			// Range support, because the real /files/* is http.ServeFile and a
 			// resume depends on it. The header is recorded so a test can assert

@@ -10,7 +10,7 @@
 # fine on aarch64.
 #
 # Prerequisites on the build host:
-#   JDK 17                      javac, keytool — see setup-build-host.sh on why 17
+#   JDK 17 or 21                javac, keytool — gogio needs -source 1.8 to work
 #   Android SDK build-tools     aapt2, d8, zipalign, apksigner
 #   Android NDK r23+            $ANDROID_HOME/ndk/<version>
 #   go install gioui.org/cmd/gogio@latest

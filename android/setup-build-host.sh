@@ -6,11 +6,8 @@
 # It is idempotent — a second run reinstalls nothing and just reprints the two
 # environment lines at the end.
 #
-# Why a JDK 17 and not whatever `default-jdk` is: gogio compiles gio's Java
-# sources with `javac -source 1.8 -target 1.8` (gogio/androidbuild.go), and
-# recent JDKs have been dropping the old -source levels one by one. 17 still
-# accepts 8, and d8 is happy with what it emits. Newer is a gamble, not an
-# upgrade.
+# It is idempotent in the other direction too: JAVA_HOME set in the environment
+# wins over anything it would pick.
 #
 # Usage:  ./setup-build-host.sh [sdk-dir]     (default: /opt/android-sdk)
 
@@ -45,14 +42,59 @@ if [ "$free" -lt 8 ]; then
 	exit 1
 fi
 
-JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
-if [ ! -x "$JAVA_HOME/bin/javac" ]; then
-	echo "==> JDK 17, unzip, curl"
+# The JDK version matters and the package name carrying it does not survive a
+# Debian release, so search for a usable one and install the first candidate apt
+# admits to having. Pinning openjdk-17 here was wrong: trixie ships no
+# openjdk-17 at all, and `apt-get install openjdk-17-jdk-headless` there fails
+# the whole transaction rather than falling back to anything.
+#
+# The order is 21 first. gogio compiles gio's Java with
+# `javac -source 1.8 -target 1.8` (gogio/androidbuild.go) and javac has been
+# retiring the old -source levels one release at a time, so the version is a
+# real constraint — but 21 was checked against that exact invocation and it
+# compiles, with the obsolescence warnings and exit 0. 17 stays as the bookworm
+# answer. default-jdk-headless is the last resort and may be too new; if javac
+# rejects -source 8, install an older JDK and point JAVA_HOME at it, which this
+# script honours.
+find_jdk() {
+	# Trailing * and not -*: Debian names the directory java-21-openjdk-amd64,
+	# other distributions leave the architecture off entirely.
+	for d in /usr/lib/jvm/java-21-openjdk* /usr/lib/jvm/java-17-openjdk* \
+		/usr/lib/jvm/default-java; do
+		if [ -x "$d/bin/javac" ]; then
+			echo "$d"
+			return 0
+		fi
+	done
+	return 1
+}
+
+if [ -n "${JAVA_HOME:-}" ] && [ -x "${JAVA_HOME}/bin/javac" ]; then
+	echo "==> JDK: honouring JAVA_HOME=$JAVA_HOME"
+else
+	JAVA_HOME=$(find_jdk || true)
+fi
+if [ -z "${JAVA_HOME:-}" ]; then
+	echo "==> unzip, curl"
 	apt-get update
 	DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-		openjdk-17-jdk-headless unzip curl ca-certificates
+		unzip curl ca-certificates
+	for pkg in openjdk-21-jdk-headless openjdk-17-jdk-headless default-jdk-headless; do
+		echo "==> trying $pkg"
+		if DEBIAN_FRONTEND=noninteractive apt-get install -y \
+			--no-install-recommends "$pkg"; then
+			break
+		fi
+	done
+	JAVA_HOME=$(find_jdk || true)
+	if [ -z "$JAVA_HOME" ]; then
+		echo "refusing: no JDK found under /usr/lib/jvm after installing." >&2
+		echo "Install one yourself and re-run with JAVA_HOME set to it." >&2
+		exit 1
+	fi
 fi
 export JAVA_HOME
+echo "==> JDK $("$JAVA_HOME/bin/javac" -version 2>&1) at $JAVA_HOME"
 PATH="$JAVA_HOME/bin:$PATH"
 export PATH
 

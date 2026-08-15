@@ -127,6 +127,17 @@ func (a *App) queuePanel(gtx C) D {
 // thing that looks like a server setting — the download limit — is exactly that:
 // madshare's own runtime setting, read from the backend embedded in this
 // process.
+//
+// The whole panel SCROLLS, as one list, and the folders are rows in it rather
+// than a list of their own. Two things fall out of that, and both were wrong
+// before: a person with one folder no longer gets half a screen of nothing
+// between it and the next section (the folder list used to be the flexed child,
+// so it took every pixel the sections below did not), and on a window shorter
+// than the settings — a small laptop, a tiled half-screen, and every phone —
+// the sections below the fold can be reached at all. They used to be laid out
+// into whatever space was left, which on a short window is none.
+//
+// A list inside a list would eat the outer one's scroll, hence the flattening.
 func (a *App) settings(gtx C) D {
 	a.mu.Lock()
 	folders := append([]backend.Folder(nil), a.folders...)
@@ -148,98 +159,112 @@ func (a *App) settings(gtx C) D {
 		a.Rescan()
 	}
 
-	return layout.Inset{Top: 16, Bottom: 16, Left: 20, Right: 20}.Layout(gtx, func(gtx C) D {
-		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-			layout.Rigid(func(gtx C) D {
-				l := material.Body1(a.th, "Music folders")
-				l.Color = colFg
+	rows := []layout.Widget{
+		func(gtx C) D {
+			l := material.Body1(a.th, "Music folders")
+			l.Color = colFg
+			return l.Layout(gtx)
+		},
+		func(gtx C) D {
+			return layout.Inset{Top: 4, Bottom: 12}.Layout(gtx, func(gtx C) D {
+				l := material.Caption(a.th, "Scanned in place. Nothing is copied, moved or written to these folders.")
+				l.Color = colDim
 				return l.Layout(gtx)
-			}),
-			layout.Rigid(func(gtx C) D {
-				return layout.Inset{Top: 4, Bottom: 12}.Layout(gtx, func(gtx C) D {
-					l := material.Caption(a.th, "Scanned in place. Nothing is copied, moved or written to these folders.")
-					l.Color = colDim
-					return l.Layout(gtx)
-				})
-			}),
+			})
+		},
+		func(gtx C) D {
+			return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+				layout.Flexed(1, func(gtx C) D {
+					ed := material.Editor(a.th, &a.folderEd, "/home/you/Music")
+					ed.Color, ed.HintColor = colFg, colDim
+					return filled(gtx, colSel, ed.Layout)
+				}),
+				layout.Rigid(layout.Spacer{Width: 8}.Layout),
+				layout.Rigid(func(gtx C) D {
+					return a.smallButton(gtx, &a.btnAddFolder, "Add folder", false)
+				}),
+				layout.Rigid(layout.Spacer{Width: 8}.Layout),
+				layout.Rigid(func(gtx C) D {
+					label := "Rescan"
+					if scanning {
+						label = "Scanning…"
+					}
+					return a.smallButton(gtx, &a.btnRescan, label, scanning)
+				}),
+			)
+		},
+		func(gtx C) D {
+			if status == "" {
+				return D{}
+			}
+			return layout.Inset{Top: 10}.Layout(gtx, func(gtx C) D {
+				l := material.Caption(a.th, status)
+				l.Color = colDim
+				return l.Layout(gtx)
+			})
+		},
+		layout.Spacer{Height: 10}.Layout,
+	}
 
-			layout.Rigid(func(gtx C) D {
-				return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
-					layout.Flexed(1, func(gtx C) D {
-						ed := material.Editor(a.th, &a.folderEd, "/home/you/Music")
-						ed.Color, ed.HintColor = colFg, colDim
-						return filled(gtx, colSel, ed.Layout)
-					}),
-					layout.Rigid(layout.Spacer{Width: 8}.Layout),
-					layout.Rigid(func(gtx C) D {
-						return a.smallButton(gtx, &a.btnAddFolder, "Add folder", false)
-					}),
-					layout.Rigid(layout.Spacer{Width: 8}.Layout),
-					layout.Rigid(func(gtx C) D {
-						label := "Rescan"
-						if scanning {
-							label = "Scanning…"
-						}
-						return a.smallButton(gtx, &a.btnRescan, label, scanning)
-					}),
-				)
-			}),
+	if len(folders) == 0 {
+		rows = append(rows, func(gtx C) D {
+			l := material.Body2(a.th, "No folders yet.")
+			l.Color = colDim
+			return l.Layout(gtx)
+		})
+	}
+	for i, f := range folders {
+		rows = append(rows, a.folderRow(i, f))
+	}
 
-			layout.Rigid(func(gtx C) D {
-				if status == "" {
-					return D{}
-				}
-				return layout.Inset{Top: 10}.Layout(gtx, func(gtx C) D {
-					l := material.Caption(a.th, status)
-					l.Color = colDim
-					return l.Layout(gtx)
-				})
-			}),
+	rows = append(rows,
+		// The download limit sits under the folders because both answer the same
+		// question — what this device keeps on disk. Signing in to a server is a
+		// different question, and lives on its own panel.
+		a.cacheControls,
+		a.meshControls,
+		a.keepControls,
+		a.shortcutHelp,
+	)
 
-			layout.Rigid(layout.Spacer{Height: 16}.Layout),
-			layout.Flexed(1, func(gtx C) D {
-				if len(folders) == 0 {
-					return a.emptyState(gtx, "No folders yet.")
-				}
-				return material.List(a.th, &a.folderList).Layout(gtx, len(folders), func(gtx C, i int) D {
-					return layout.Inset{Top: 6, Bottom: 6}.Layout(gtx, func(gtx C) D {
-						f := folders[i]
-						return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
-							layout.Flexed(1, func(gtx C) D {
-								return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-									layout.Rigid(func(gtx C) D {
-										l := material.Body2(a.th, f.Path)
-										l.Color = colFg
-										l.MaxLines = 1
-										return l.Layout(gtx)
-									}),
-									layout.Rigid(func(gtx C) D {
-										l := material.Caption(a.th, describeFolder(f))
-										l.Color = colDim
-										if f.Missing || f.Status == "error" {
-											l.Color = colWarn
-										}
-										l.MaxLines = 1
-										return l.Layout(gtx)
-									}),
-								)
-							}),
-							layout.Rigid(func(gtx C) D {
-								return a.smallButton(gtx, &a.rmFolder[i], "Remove", false)
-							}),
-						)
-					})
-				})
-			}),
-			// The download limit sits under the folders because both answer the
-			// same question — what this device keeps on disk. Signing in to a
-			// server is a different question, and lives on its own panel.
-			layout.Rigid(func(gtx C) D { return a.cacheControls(gtx) }),
-			layout.Rigid(func(gtx C) D { return a.meshControls(gtx) }),
-			layout.Rigid(func(gtx C) D { return a.keepControls(gtx) }),
-			layout.Rigid(func(gtx C) D { return a.shortcutHelp(gtx) }),
-		)
+	return layout.Inset{Top: 16, Bottom: 16, Left: 20, Right: 20}.Layout(gtx, func(gtx C) D {
+		lst := material.List(a.th, &a.folderList)
+		lst.Indicator.Color = colLine
+		return lst.Layout(gtx, len(rows), func(gtx C, i int) D { return rows[i](gtx) })
 	})
+}
+
+// folderRow is one music folder: where it is, how the last scan went, and the
+// button that forgets it.
+func (a *App) folderRow(i int, f backend.Folder) layout.Widget {
+	return func(gtx C) D {
+		return layout.Inset{Top: 6, Bottom: 6}.Layout(gtx, func(gtx C) D {
+			return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+				layout.Flexed(1, func(gtx C) D {
+					return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+						layout.Rigid(func(gtx C) D {
+							l := material.Body2(a.th, f.Path)
+							l.Color = colFg
+							l.MaxLines = 1
+							return l.Layout(gtx)
+						}),
+						layout.Rigid(func(gtx C) D {
+							l := material.Caption(a.th, describeFolder(f))
+							l.Color = colDim
+							if f.Missing || f.Status == "error" {
+								l.Color = colWarn
+							}
+							l.MaxLines = 1
+							return l.Layout(gtx)
+						}),
+					)
+				}),
+				layout.Rigid(func(gtx C) D {
+					return a.smallButton(gtx, &a.rmFolder[i], "Remove", false)
+				}),
+			)
+		})
+	}
 }
 
 // shortcutHelp prints the keyboard bindings, generated from the same table that

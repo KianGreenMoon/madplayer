@@ -84,6 +84,38 @@ func TestSettingsPanelLaysOut(t *testing.T) {
 	}
 }
 
+// The panel is taller than a small window, and everything under the fold has to
+// be reachable — the download limit, the madnetwork switch, the keep folder and
+// the shortcut list all live down there.
+//
+// It was a vertical Flex until 2026-08-15, which does not scroll: the folder
+// list took every pixel the sections below did not want, and on a window shorter
+// than the panel those sections were laid out into whatever was left, which is
+// nothing. A person on a half-screen window could not turn the madnetwork on.
+func TestTheSettingsPanelScrollsToItsLowerSections(t *testing.T) {
+	a := testApp(t)
+	short := func() layout.Context {
+		gtx := headless()
+		gtx.Constraints = layout.Exact(image.Pt(1000, 240))
+		return gtx
+	}
+
+	a.settings(short())
+	if !a.folderList.Position.BeforeEnd {
+		t.Fatal("a 240px window fitted the whole settings panel — this test is no longer testing anything")
+	}
+
+	// Scroll past the end; a list clamps to its last item.
+	a.folderList.Position.First = 1 << 20
+	a.settings(short())
+	if a.folderList.Position.BeforeEnd {
+		t.Error("scrolling to the end of Settings did not reach the end — the lower sections are unreachable")
+	}
+	if a.folderList.Position.Count == 0 {
+		t.Error("the end of Settings laid out nothing")
+	}
+}
+
 func TestMeshControlsLayOutWithNoNode(t *testing.T) {
 	a := testApp(t)
 	if a.enrol != nil {

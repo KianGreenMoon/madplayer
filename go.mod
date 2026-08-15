@@ -3,7 +3,7 @@ module daemonlord.ygg/madplayer
 go 1.26.4
 
 require (
-	daemonlord.ygg/madshare v0.8.8
+	daemonlord.ygg/madshare v0.8.10
 	gioui.org v0.10.1
 	github.com/dhowden/tag v0.0.0-20240417053706-3d75831295e8
 	github.com/godbus/dbus/v5 v5.1.0
@@ -16,6 +16,14 @@ require (
 // The embedded backend, pinned to a released tag and upgraded on purpose — that
 // is what madshare's tagging buys (docs/ui/madplayer.md §"Versioned dependency,
 // not a vendored copy").
+//
+// KEEP THIS NUMBER TRUE. The replace below means nothing here is ever fetched,
+// so a stale version is not an error and Go will never say a word about it —
+// which is exactly how this line sat at v0.8.8 while the code called an API
+// that no madshare tag contained at all. It built here and nowhere else, and
+// the first machine to try was a clean Debian host in 2026-08-16 that could not
+// build the program from any released madshare. When the code needs something
+// new from madshare, tag madshare and raise this in the same breath.
 //
 // The replace is what makes the require resolvable today, and it is a stand-in
 // rather than the intended end state. madshare's module path is

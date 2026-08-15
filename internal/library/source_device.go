@@ -38,7 +38,8 @@ func (d deviceSource) Artists(ctx context.Context) ([]*Artist, error) {
 	return out, nil
 }
 
-func (d deviceSource) Albums(ctx context.Context, artistID int64) ([]*Album, error) {
+func (d deviceSource) Albums(ctx context.Context, artist Origin) ([]*Album, error) {
+	artistID := artist.ID
 	rows, err := d.lib.AlbumsByArtist(ctx, artistID)
 	if err != nil {
 		return nil, err
@@ -62,7 +63,8 @@ func (d deviceSource) Albums(ctx context.Context, artistID int64) ([]*Album, err
 	return out, nil
 }
 
-func (d deviceSource) AlbumTracks(ctx context.Context, albumID int64, albumTitle string) ([]*Track, error) {
+func (d deviceSource) AlbumTracks(ctx context.Context, album Origin, albumTitle string) ([]*Track, error) {
+	albumID := album.ID
 	rows, err := d.lib.TracksByAlbum(ctx, albumID)
 	if err != nil {
 		return nil, err

@@ -33,13 +33,23 @@ import (
 // string so that a zero Origin means "here", which is the common case.
 const DeviceID = ""
 
-// Origin is one library a row appears in, and the id it has THERE. Ids are
-// per-library: two servers both call something 41, and they are not the same
-// thing, so nothing may be addressed by an id without the source beside it.
+// Origin is one library a row appears in, and the address it has THERE.
+// Addresses are per-library: two servers both call something 41, and they are
+// not the same thing, so nothing may be addressed without the source beside it.
+//
+// There are two kinds of address because there are two kinds of library. A
+// library with an index addresses a row by ID. The madnetwork has no id space
+// at all — it is many nodes' catalogs merged on text, and the ids in it belong
+// to the nodes it was merged from — so it addresses by Ref, the name the server
+// itself takes as a query parameter. A source uses whichever it filled in.
 type Origin struct {
 	Source string // DeviceID, or the server's base URL
 	Label  string // what to call it on screen
 	ID     int64
+	// Ref is the name-shaped address, for a source that has no ids: the artist
+	// name on an artist row, and the ALBUM ARTIST's name on an album row, which
+	// with the album's own title is what addresses its tracks.
+	Ref string
 }
 
 // OnDevice reports whether this origin is the library on this machine.
@@ -48,12 +58,16 @@ func (o Origin) OnDevice() bool { return o.Source == DeviceID }
 // Source is one library that can be browsed. Both the embedded backend and a
 // remote server implement it, and the merge above does not care which is which
 // — that is the whole point of the interface.
+//
+// Drilling takes the whole Origin rather than an id, because what addresses a
+// row differs by source (see Origin) and only the source that produced one
+// knows which half of it to read.
 type Source interface {
 	ID() string
 	Label() string
 	Artists(ctx context.Context) ([]*Artist, error)
-	Albums(ctx context.Context, artistID int64) ([]*Album, error)
-	AlbumTracks(ctx context.Context, albumID int64, albumTitle string) ([]*Track, error)
+	Albums(ctx context.Context, artist Origin) ([]*Album, error)
+	AlbumTracks(ctx context.Context, album Origin, albumTitle string) ([]*Track, error)
 	Search(ctx context.Context, q string) (SearchResults, error)
 }
 
@@ -68,6 +82,10 @@ type Problem struct {
 }
 
 func (p Problem) Error() string { return p.Label + ": " + p.Err.Error() }
+
+// errNoClient is a server row with no HTTP client behind it — a wiring mistake,
+// answered rather than dereferenced. See remoteSource.client.
+var errNoClient = errors.New("this server has no connection configured")
 
 // Artist is a row of the artist list: album artists, merged across libraries.
 type Artist struct {
@@ -260,8 +278,8 @@ func (l *Library) Albums(ctx context.Context, ar *Artist) ([]*Album, []Problem, 
 	if ar == nil {
 		return nil, nil, nil
 	}
-	lists, probs, err := perOrigin(ctx, l.sources(), ar.Origins, func(ctx context.Context, s Source, id int64) ([]*Album, error) {
-		return s.Albums(ctx, id)
+	lists, probs, err := perOrigin(ctx, l.sources(), ar.Origins, func(ctx context.Context, s Source, o Origin) ([]*Album, error) {
+		return s.Albums(ctx, o)
 	})
 	if err != nil {
 		return nil, probs, err
@@ -275,8 +293,8 @@ func (l *Library) AlbumTracks(ctx context.Context, al *Album) ([]*Track, []Probl
 	if al == nil {
 		return nil, nil, nil
 	}
-	lists, probs, err := perOrigin(ctx, l.sources(), al.Origins, func(ctx context.Context, s Source, id int64) ([]*Track, error) {
-		return s.AlbumTracks(ctx, id, al.Title)
+	lists, probs, err := perOrigin(ctx, l.sources(), al.Origins, func(ctx context.Context, s Source, o Origin) ([]*Track, error) {
+		return s.AlbumTracks(ctx, o, al.Title)
 	})
 	if err != nil {
 		return nil, probs, err
@@ -304,7 +322,7 @@ func (l *Library) DeviceAlbumTracks(ctx context.Context, al *Album) ([]*Track, e
 	}
 	for _, o := range al.Origins {
 		if o.OnDevice() {
-			return device.AlbumTracks(ctx, o.ID, al.Title)
+			return device.AlbumTracks(ctx, o, al.Title)
 		}
 	}
 	return nil, nil
@@ -346,7 +364,7 @@ func (l *Library) Search(ctx context.Context, q string) (SearchResults, []Proble
 // skipped rather than failed: signing out of a server while its albums are on
 // screen is a normal thing to do.
 func perOrigin[T any](ctx context.Context, sources []Source, origins []Origin,
-	call func(context.Context, Source, int64) ([]T, error)) ([][]T, []Problem, error) {
+	call func(context.Context, Source, Origin) ([]T, error)) ([][]T, []Problem, error) {
 
 	byID := map[string]Source{}
 	for _, s := range sources {
@@ -354,17 +372,17 @@ func perOrigin[T any](ctx context.Context, sources []Source, origins []Origin,
 	}
 	type job struct {
 		src Source
-		id  int64
+		at  Origin
 	}
 	jobs := make([]job, 0, len(origins))
 	for _, o := range origins {
 		if s, ok := byID[o.Source]; ok {
-			jobs = append(jobs, job{src: s, id: o.ID})
+			jobs = append(jobs, job{src: s, at: o})
 		}
 	}
 	return gather(ctx, len(jobs), func(i int) (string, func(context.Context) ([]T, error)) {
 		j := jobs[i]
-		return j.src.Label(), func(ctx context.Context) ([]T, error) { return call(ctx, j.src, j.id) }
+		return j.src.Label(), func(ctx context.Context) ([]T, error) { return call(ctx, j.src, j.at) }
 	})
 }
 

@@ -21,12 +21,30 @@ type remoteSource struct {
 func (r remoteSource) ID() string    { return r.base }
 func (r remoteSource) Label() string { return r.label }
 
+// client is the HTTP client, or a reason there is none.
+//
+// A Server always carries one in this program — applyServers builds it — so this
+// guards a wiring mistake rather than a supported state. It is here because of
+// where the mistake would land: a browse runs on a background goroutine, and a
+// nil dereference there takes the whole player down, where an error greys out
+// one library and says which (see Problem).
+func (r remoteSource) client() (*madshare.Client, error) {
+	if r.cl == nil {
+		return nil, errNoClient
+	}
+	return r.cl, nil
+}
+
 func (r remoteSource) origin(id int64) Origin {
 	return Origin{Source: r.base, Label: r.label, ID: id}
 }
 
 func (r remoteSource) Artists(ctx context.Context) ([]*Artist, error) {
-	rows, err := r.cl.Artists(ctx)
+	cl, err := r.client()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := cl.Artists(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -37,8 +55,12 @@ func (r remoteSource) Artists(ctx context.Context) ([]*Artist, error) {
 	return out, nil
 }
 
-func (r remoteSource) Albums(ctx context.Context, artistID int64) ([]*Album, error) {
-	rows, err := r.cl.Albums(ctx, artistID)
+func (r remoteSource) Albums(ctx context.Context, artist Origin) ([]*Album, error) {
+	cl, err := r.client()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := cl.Albums(ctx, artist.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -59,8 +81,12 @@ func (r remoteSource) Albums(ctx context.Context, artistID int64) ([]*Album, err
 	return out, nil
 }
 
-func (r remoteSource) AlbumTracks(ctx context.Context, albumID int64, albumTitle string) ([]*Track, error) {
-	rows, err := r.cl.Tracks(ctx, albumID)
+func (r remoteSource) AlbumTracks(ctx context.Context, album Origin, albumTitle string) ([]*Track, error) {
+	cl, err := r.client()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := cl.Tracks(ctx, album.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -73,7 +99,11 @@ func (r remoteSource) AlbumTracks(ctx context.Context, albumID int64, albumTitle
 
 func (r remoteSource) Search(ctx context.Context, q string) (SearchResults, error) {
 	var res SearchResults
-	got, err := r.cl.Search(ctx, q)
+	cl, err := r.client()
+	if err != nil {
+		return SearchResults{}, err
+	}
+	got, err := cl.Search(ctx, q)
 	if err != nil {
 		return res, err
 	}

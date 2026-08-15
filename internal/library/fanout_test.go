@@ -24,14 +24,14 @@ func (f fakeSource) Artists(ctx context.Context) ([]*Artist, error) {
 	return f.artists, nil
 }
 
-func (f fakeSource) Albums(ctx context.Context, artistID int64) ([]*Album, error) {
+func (f fakeSource) Albums(ctx context.Context, artist Origin) ([]*Album, error) {
 	if f.err != nil {
 		return nil, f.err
 	}
-	return []*Album{{Title: f.label + " album", Origins: []Origin{{Source: f.id, Label: f.label, ID: artistID}}}}, nil
+	return []*Album{{Title: f.label + " album", Origins: []Origin{{Source: f.id, Label: f.label, ID: artist.ID}}}}, nil
 }
 
-func (f fakeSource) AlbumTracks(ctx context.Context, albumID int64, albumTitle string) ([]*Track, error) {
+func (f fakeSource) AlbumTracks(ctx context.Context, album Origin, albumTitle string) ([]*Track, error) {
 	return nil, f.err
 }
 

@@ -41,15 +41,26 @@ type Cache struct {
 	mu       sync.Mutex
 	limit    int64 // bytes; 0 = no ceiling
 	inflight map[string]*call
+	// seq numbers each fetch's part file (<key><ext>.<seq>.part), so a fetch
+	// started moments after another was abandoned writes its OWN file. With one
+	// shared ".part" name, the dying fetch's file handle pointed at the same
+	// inode the fresh fetch had truncated — and one late write from the old
+	// fetch could land in bytes the new one had already published, in the worst
+	// case after the rename, corrupting the finished cache file.
+	seq int64
 }
 
 // call is one fetch several callers may be waiting on.
 type call struct {
+	key     string
 	done    chan struct{}
 	cancel  context.CancelFunc
 	waiters int
 	path    string
-	err     error
+	// err is written by the fetch goroutine and read by drop, both under
+	// Cache.mu: drop must be able to ask "did it fail?" BEFORE done closes,
+	// because the last waiter often leaves while the fetch is still dying.
+	err error
 
 	// prog and part let a LATER caller join a fetch that is already running and
 	// read it as it lands, rather than waiting for it to finish. That is the

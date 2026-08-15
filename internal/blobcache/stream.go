@@ -3,6 +3,7 @@ package blobcache
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -213,14 +214,19 @@ func (c *Cache) begin(ctx context.Context, key, ext string, fetch Fetch) (*call,
 	// DETACHED from any one caller and reference-counted: the fetch is shared, so
 	// the first caller giving up must not cancel a download the second is
 	// listening to. What stops it is the last waiter leaving.
+	//
+	// The part name carries a sequence number — see Cache.seq for why a fetch
+	// must never share a part file with the dying fetch it replaces.
 	fctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	prog := newProgress()
+	c.seq++
 	cl := &call{
+		key:     key,
 		done:    make(chan struct{}),
 		cancel:  cancel,
 		waiters: 1,
 		prog:    prog,
-		part:    c.path(key, ext) + ".part",
+		part:    fmt.Sprintf("%s.%d.part", c.path(key, ext), c.seq),
 	}
 	c.inflight[key] = cl
 	c.mu.Unlock()
@@ -235,23 +241,31 @@ func (c *Cache) begin(ctx context.Context, key, ext string, fetch Fetch) (*call,
 // drop releases one caller's interest, stopping the fetch when that was the
 // last — and only then removing what a failed fetch left behind, since a reader
 // still holding on has an error to be told about first.
+//
+// Deciding "last" and unregistering the call are ONE critical section. Deciding
+// first and cancelling later left a window in which a new caller found the call
+// still registered, joined it, and inherited the cancellation — which the
+// player reads as "the user skipped", so the click silently did nothing
+// (reproduced 2026-08-15). A caller arriving after this now starts fresh.
 func (c *Cache) drop(cl *call) {
 	c.mu.Lock()
 	cl.waiters--
 	last := cl.waiters == 0
+	failed := cl.err != nil
+	if last && c.inflight[cl.key] == cl {
+		delete(c.inflight, cl.key)
+	}
 	c.mu.Unlock()
 	if !last {
 		return
 	}
 	cl.cancel()
-	select {
-	case <-cl.done:
-		if cl.err != nil {
-			// A half-written file must never be presented as a track: it would
-			// decode into silence or noise and look like a corrupt original.
-			_ = os.Remove(cl.part)
-		}
-	default:
+	if failed {
+		// A half-written file must never be presented as a track: it would
+		// decode into silence or noise and look like a corrupt original. A fetch
+		// still dying at this point has err unset yet — it removes its own part
+		// when it finishes and finds no waiters left (startFetch).
+		_ = os.Remove(cl.part)
 	}
 }
 
@@ -279,27 +293,30 @@ func (s *streamed) Close() error {
 // Removing it here was a race the reader lost, and lost confusingly — reporting
 // "no such file" instead of why the fetch failed.
 func (c *Cache) startFetch(ctx context.Context, key, ext string, fetch Fetch, cl *call, prog *progress) error {
-	abandon := func(err error) error {
+	// The delete is guarded by identity: drop unregisters the call the moment
+	// the last waiter leaves, and a FRESH call for the same key may already be
+	// in the map by the time this dying one gets here. An unguarded delete
+	// would evict the newcomer.
+	unregister := func() {
 		c.mu.Lock()
-		delete(c.inflight, key)
+		if c.inflight[key] == cl {
+			delete(c.inflight, key)
+		}
 		c.mu.Unlock()
+	}
+
+	final := c.path(key, ext)
+	f, err := os.OpenFile(cl.part, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		unregister()
 		cl.cancel()
 		close(cl.done)
 		return err
 	}
 
-	final := c.path(key, ext)
-	part := final + ".part"
-	f, err := os.OpenFile(part, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
-	if err != nil {
-		return abandon(err)
-	}
-
 	go func() {
 		defer func() {
-			c.mu.Lock()
-			delete(c.inflight, key)
-			c.mu.Unlock()
+			unregister()
 			cl.cancel()
 			close(cl.done)
 		}()
@@ -309,15 +326,23 @@ func (c *Cache) startFetch(ctx context.Context, key, ext string, fetch Fetch, cl
 		if err == nil {
 			err = closeErr
 		}
-		if err != nil {
-			// The half-written file stays until the last waiter goes (drop): the
-			// readers attached to it need the error, not a vanished file.
-			cl.err = err
-			prog.finish(err)
-			return
+		if err == nil {
+			err = os.Rename(cl.part, final)
 		}
-		if err := os.Rename(part, final); err != nil {
+		if err != nil {
+			// The half-written file stays while a waiter is attached: the readers
+			// need the error, not a vanished file, and the last of them removes it
+			// on the way out (drop). When nobody is left — the ordinary way a
+			// fetch dies, since the last reader leaving is what cancels it — the
+			// removal is this goroutine's job, or the part sat on disk until the
+			// next launch's reaper.
+			c.mu.Lock()
 			cl.err = err
+			orphaned := cl.waiters == 0
+			c.mu.Unlock()
+			if orphaned {
+				_ = os.Remove(cl.part)
+			}
 			prog.finish(err)
 			return
 		}

@@ -270,7 +270,7 @@ type Folder struct {
 	Path   string
 	Status string // "active" | "scanning" | "error"
 
-	Tracks    int   // files linked by the last scan
+	Tracks    int   // audio files the last scan found in the folder
 	Failed    int   // files the last scan could not read
 	ScannedAt int64 // 0 = never finished a scan
 
@@ -297,7 +297,16 @@ func (b *Backend) Folders(ctx context.Context) ([]Folder, error) {
 			f.ScannedAt = *s.ScannedAt
 		}
 		if s.Summary != nil {
-			f.Tracks, f.Failed = s.Summary.Linked, s.Summary.Failed
+			// Scanned, not Linked. Linked counts links the last scan CREATED, so
+			// it is the whole folder the first time and zero on every rescan of an
+			// unchanged one — which is how a folder holding thirteen tracks came
+			// to describe itself as "0 tracks" in Settings. Scanned is what was
+			// found: linked + skipped + failed.
+			f.Tracks, f.Failed = s.Summary.Scanned, s.Summary.Failed
+			if f.Tracks == 0 {
+				// A summary written before madshare counted them at all.
+				f.Tracks = s.Summary.Linked
+			}
 		}
 		out = append(out, f)
 	}

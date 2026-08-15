@@ -115,7 +115,23 @@ type fakeSwarm struct {
 	peak atomic.Int32
 }
 
-func (s *fakeSwarm) FetchBlob(ctx context.Context, hash string, size int64, holders []string) (io.ReadCloser, error) {
+// StreamBlob is the interface the fetcher uses. The fake keeps the old
+// whole-blob shape underneath because these tests are about the DECISIONS
+// around a swarm fetch — which holders, whose token, one at a time, what
+// happens when it dies part-way — and none of those change with streaming.
+//
+// firstByte is honoured the way the real one does: it bounds getting started,
+// which for a fake that is gated is the gate.
+func (s *fakeSwarm) StreamBlob(ctx context.Context, hash string, size int64, holders []string, firstByte time.Duration) (io.ReadCloser, error) {
+	if firstByte > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, firstByte)
+		defer cancel()
+	}
+	return s.fetchBlob(ctx, hash, size, holders)
+}
+
+func (s *fakeSwarm) fetchBlob(ctx context.Context, hash string, size int64, holders []string) (io.ReadCloser, error) {
 	n := s.live.Add(1)
 	defer s.live.Add(-1)
 	for {
@@ -428,4 +444,72 @@ func equal(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// The budget bounds getting STARTED, not finishing.
+//
+// This is the fix for the measurement that prompted it: this device's home
+// server delivered a 19.3 MiB track over the swarm in 18.9s against a 20s
+// WHOLE-TRANSFER budget, and lost by a second — every time, after spending the
+// twenty seconds. A transfer slower than the budget must now still win, because
+// playback starts from the bytes as they land and a long transfer is no longer a
+// long silence.
+func TestASwarmSlowerThanTheBudgetStillWins(t *testing.T) {
+	ms := newMeshServer(t, "RELAY bytes", "aa11")
+	sw := &fakeSwarm{stream: &slowReader{body: "SWARM bytes", gap: 40 * time.Millisecond}}
+	f := meshFetcher(t, ms, sw, &fakeVouch{ok: true})
+	f.SetSwarmBudget(30 * time.Millisecond) // far shorter than the transfer
+
+	path, err := f.Local(context.Background(), ms.track(hashA))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := read(t, path); got != "SWARM bytes" {
+		t.Errorf("played %q, want the swarm's copy — a transfer slower than the budget was thrown away", got)
+	}
+	if n := ms.relay.Load(); n != 0 {
+		t.Errorf("relay hit %d time(s); the swarm was working", n)
+	}
+}
+
+// A swarm that never answers is still a decline, and still hands over to the
+// relay — which is what the budget is FOR now.
+func TestASwarmThatNeverStartsFallsBackToTheRelay(t *testing.T) {
+	ms := newMeshServer(t, "RELAY bytes", "aa11")
+	gate := make(chan struct{}) // never closed: the fetch never begins
+	sw := &fakeSwarm{body: "SWARM bytes", gate: gate}
+	f := meshFetcher(t, ms, sw, &fakeVouch{ok: true})
+	f.SetSwarmBudget(40 * time.Millisecond)
+
+	start := time.Now()
+	path, err := f.Local(context.Background(), ms.track(hashA))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := read(t, path); got != "RELAY bytes" {
+		t.Errorf("played %q, want the relay's copy", got)
+	}
+	if n := ms.relay.Load(); n != 1 {
+		t.Errorf("relay hit %d time(s), want once", n)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("took %v to give up on a swarm that never answered", elapsed)
+	}
+}
+
+// slowReader dribbles a body out, so a transfer can outlast a budget.
+type slowReader struct {
+	body string
+	gap  time.Duration
+	pos  int
+}
+
+func (r *slowReader) Read(p []byte) (int, error) {
+	if r.pos >= len(r.body) {
+		return 0, io.EOF
+	}
+	time.Sleep(r.gap)
+	n := copy(p, r.body[r.pos:r.pos+1])
+	r.pos += n
+	return n, nil
 }

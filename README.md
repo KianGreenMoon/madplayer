@@ -340,6 +340,28 @@ a line, because a mesh that quietly never works looks exactly like one that does
   been used. It is now structural rather than positional: the list is computed
   and kept whether or not there is an enrolment to hand it to, and handed over
   the moment one exists, so the order cannot matter again.
+- **The swarm STREAMS, and the budget bounds the first byte** (2026-08-15).
+  It used to bound the whole transfer, and that was right while playback waited
+  for the last byte: a slow swarm meant silence, so the relay had to be handed a
+  live context while some of the allowance was left. Now a track plays from the
+  bytes as they land, so a long transfer is not a long wait. Measured against
+  this device's own home server: the swarm delivered 19.3 MiB in 18.9 s and lost
+  a 20 s whole-transfer budget **by one second, every time**, after spending the
+  twenty. With the deadline on the start instead: **audio at 2.1 s, transfer
+  complete at 18.3 s**, no relay fallback.
+
+  `backend.StreamBlob` reads the transfer's own partial file through
+  `Transfer.WaitFor` / `Available` — the same pair madshare's
+  `/api/madnetwork/stream/{hash}` relay uses, so these are per-chunk-verified
+  bytes it already considers safe to serve. No madshare change was needed.
+
+  **The cost, paid deliberately:** once swarm bytes reach the cache there is no
+  falling back, so a swarm that dies *mid-track* fails that play instead of
+  being rescued by the relay. Appending a second source's bytes to the first's
+  decodes as noise, which is worse than a track that failed. A swarm that never
+  *starts* is still an ordinary decline, and the relay still takes it.
+- **`FetchBlob` still blocks** and is now used only for keeping a track on this
+  device, where a half-copied file would be worse than a wait.
 - **The swarm gets a budget, not the caller's whole deadline**
   (`remote.DefaultSwarmBudget`, 20 s). This is not a tidiness rule, it is the
   difference between music and none: measured against a real server, the relay

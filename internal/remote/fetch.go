@@ -42,7 +42,11 @@ import (
 // chunk accounting and its partial reads are a streaming caller's business, and
 // a client whose decoders demand the whole file is not one.
 type Swarm interface {
-	FetchBlob(ctx context.Context, hash string, size int64, holders []string) (io.ReadCloser, error)
+	// StreamBlob hands over a reader as soon as the first byte lands, and
+	// firstByte is how long to wait for that. The transfer itself runs under
+	// ctx and is not otherwise bounded — see fromSwarm for why the deadline
+	// moved off the whole download and onto its start.
+	StreamBlob(ctx context.Context, hash string, size int64, holders []string, firstByte time.Duration) (io.ReadCloser, error)
 }
 
 // Vouch installs the capability token a mesh fetch presents, and reports whether
@@ -238,19 +242,24 @@ func (f *Fetcher) fromSwarm(ctx context.Context, srv library.Server, item *queue
 		return false, nil
 	}
 
-	// The swarm gets a BUDGET, not the caller's whole deadline.
+	// The budget bounds the FIRST BYTE, not the whole transfer.
 	//
-	// Without this the faster path can starve the one that works: measured against
-	// a real server (2026-08-09), the relay delivered a 20 MB track in 3.8s and
-	// the swarm took 4m05s for the same bytes — so a swarm attempt left to run to
-	// the caller's deadline spends the entire allowance and then hands the relay a
-	// context that is already dead. The person gets no music at all, which is
-	// strictly worse than the level-1 client they had before.
+	// It used to bound the whole thing, and the reasoning was sound at the time:
+	// playback could not begin until the last byte landed, so a slow swarm meant
+	// silence, and the relay had to be handed a live context while there was
+	// still some of the caller's allowance left. Measured 2026-08-09, the relay
+	// delivered a 20 MB track in 3.8s and the swarm took 4m05s.
 	//
-	// Expiring here is an ordinary decline: nothing has been written, so the relay
-	// takes over with whatever the caller still has left.
-	sctx, cancel := context.WithTimeout(ctx, f.budget())
-	defer cancel()
+	// A track now plays from the bytes as they arrive, so a nineteen-second
+	// transfer is not a nineteen-second wait — it is a track that started at
+	// second one. Bounding the whole download therefore threw away working
+	// fetches for no gain: measured 2026-08-15 against this device's own home
+	// server, the swarm delivered 19.3 MiB in 18.9s and lost a 20s budget by a
+	// second, every time, after spending the twenty seconds.
+	//
+	// What still deserves a deadline is a swarm that never answers, because that
+	// IS silence. Expiring on the first byte is an ordinary decline: nothing has
+	// been written, so the relay takes over with what the caller has left.
 
 	// Who holds it is asked of the home server, every time.
 	//
@@ -259,7 +268,12 @@ func (f *Fetcher) fromSwarm(ctx context.Context, srv library.Server, item *queue
 	// /madnetwork page, which browses OTHER nodes' catalogs, while madplayer
 	// merges each server's ordinary library — and an ordinary track row carries no
 	// holders. So the endpoint is the only source here, not the fallback.
-	plan, err := srv.Client.Holders(sctx, item.Hash)
+	// The holder lookup shares the first-byte budget: it is part of "the swarm
+	// answered", and a server that will not say who holds a track is a swarm
+	// that never starts.
+	hctx, cancel := context.WithTimeout(ctx, f.budget())
+	defer cancel()
+	plan, err := srv.Client.Holders(hctx, item.Hash)
 	if err != nil {
 		return false, fmt.Errorf("asking %s who holds this track: %w", srv.Label, err)
 	}
@@ -268,11 +282,21 @@ func (f *Fetcher) fromSwarm(ctx context.Context, srv library.Server, item *queue
 		return false, nil
 	}
 
-	body, err := swarm.FetchBlob(sctx, item.Hash, plan.Size, keys)
+	body, err := swarm.StreamBlob(ctx, item.Hash, plan.Size, keys, f.budget())
 	if err != nil {
 		return false, fmt.Errorf("fetching from %d holder(s) of %s: %w", len(keys), item.Hash, err)
 	}
 	defer body.Close()
+
+	// Past this point there is no falling back, and streaming makes that matter
+	// more than it did: bytes reach the caller's file as they arrive rather than
+	// only after the whole transfer verified, so a swarm that dies mid-track
+	// cannot be rescued by the relay. Appending a second source's bytes to the
+	// first's produces something that decodes as noise, which is worse than a
+	// track that failed. madshare verifies each chunk as it lands, so what is
+	// copied here is checked bytes — the same ones its own streaming relay
+	// serves — and a whole-file mismatch fails the transfer rather than passing
+	// silently.
 	n, err := io.Copy(w, body)
 	return n > 0, err
 }

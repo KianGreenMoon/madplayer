@@ -106,6 +106,11 @@ type Player struct {
 	// previous one's download, or skipping through a queue would fetch every
 	// track it passed.
 	cancel context.CancelFunc
+	// seekCancel stops a streaming seek in flight (seekStream). Separate from
+	// cancel because they end different things: cancel is the PLAYING source's
+	// reader, which a pending seek must leave alone — the track keeps sounding
+	// until the seek's replacement source is ready to swap in.
+	seekCancel context.CancelFunc
 
 	// resumeKey and resumeAt are a restored queue's playback position, waiting
 	// for the track it belongs to.
@@ -504,7 +509,15 @@ func (p *Player) PlayIndex(i int) {
 
 // Position reports elapsed and total seconds for the current track. Both are 0
 // when nothing is loaded.
+//
+// A streaming mp3 has no length of its own — go-mp3 only computes one by
+// walking the whole file, which is exactly what a stream refuses to do. The
+// library knows it anyway, so the total falls back to the queue item's
+// duration. Living here rather than in the player bar means every consumer of
+// the total — the bar, the keyboard's relative seek, the media bus — agrees on
+// it, and a scrub on a streaming track has a length to aim into.
 func (p *Player) Position() (elapsed, total float64) {
+	cur := p.Current()
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.src == nil {
@@ -518,50 +531,205 @@ func (p *Player) Position() (elapsed, total float64) {
 	if rate <= 0 {
 		return 0, 0
 	}
-	return float64(pos) / rate, float64(length) / rate
+	elapsed, total = float64(pos)/rate, float64(length)/rate
+	if total <= 0 && cur != nil {
+		total = cur.Duration
+	}
+	return elapsed, total
 }
 
 // Seekable reports whether the track playing right now can be scrubbed.
 //
-// It is false while a remote track is still arriving: the stream is decoded from
-// a reader that deliberately does not seek, which is the very thing that let it
-// start playing early. It becomes true when the same track is played again from
-// the cache.
+// Any open track can: a local file natively, and a track still arriving via
+// seekStream, which restarts its decode at the target rather than ever calling
+// the decoder's own Seek — beep's mp3 decoder PANICS on a non-seekable source,
+// and that guard now lives inside Seek instead of disabling the bar.
 func (p *Player) Seekable() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.src != nil && p.src.seekable
+	return p.src != nil
 }
 
 // Seek moves to a position in seconds, clamped to the track.
 //
-// A source that is still arriving is left alone, and that guard is load-bearing
-// rather than tidy: beep's mp3 decoder PANICS when Seek is called on a
-// non-seekable reader, so without it a scrub during a download would take the
-// whole program down from inside the audio path.
+// A seekable source (a local or fully cached file) seeks in place. One still
+// arriving cannot — its decoder chose the streaming path precisely because its
+// reader does not seek, and beep's mp3 Seek panics on such a source — so the
+// scrub is answered by seekStream: reopen the growing file and decode forward
+// to the target. The web UI gets the same result from the browser plus the
+// relay's Range support; this is the native client's spelling of it.
 func (p *Player) Seek(seconds float64) {
+	if seconds < 0 {
+		seconds = 0
+	}
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.src == nil || !p.src.seekable {
+	if p.src == nil {
+		p.mu.Unlock()
+		return
+	}
+	if !p.src.seekable {
+		p.mu.Unlock()
+		p.seekStream(seconds)
 		return
 	}
 	rate := float64(p.src.format.SampleRate)
 	target := int(seconds * rate)
-	if target < 0 {
-		target = 0
-	}
 
 	p.sink.Lock()
-	defer p.sink.Unlock()
 	// Seeking exactly to the end would end the track, turning a scrub to the
 	// right-hand edge into a skip. Stop one sample short.
 	if n := p.src.streamer.Len(); target >= n {
 		target = n - 1
 	}
-	if target < 0 {
+	if target >= 0 {
+		_ = p.src.streamer.Seek(target)
+	}
+	p.sink.Unlock()
+	p.mu.Unlock()
+}
+
+// seekStream scrubs a track whose bytes are still arriving.
+//
+// The mechanism is restart-with-skip: open a SECOND reader over the same
+// growing cache file — joining the running fetch as one more waiter, never a
+// second download — decode forward to the target discarding samples, and swap
+// the finished source in. Decoding runs far faster than realtime, so a scrub
+// into what has already arrived lands quickly; one beyond the watermark waits
+// for the download to reach it, the old position audibly playing on until the
+// swap. The decoder's own Seek is never called, so the mp3 panic is
+// structurally unreachable.
+//
+// The swap bumps gen, exactly like a track change: the superseded source's
+// end-of-track callback goes stale, a newer scrub obsoletes an older one still
+// skipping, and a track change obsoletes them all.
+func (p *Player) seekStream(seconds float64) {
+	item := p.Current()
+	p.mu.Lock()
+	if item == nil || p.fetch == nil || p.src == nil || p.src.seekable {
+		p.mu.Unlock()
 		return
 	}
-	_ = p.src.streamer.Seek(target)
+	p.gen++
+	gen := p.gen
+	if p.seekCancel != nil {
+		p.seekCancel()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	p.seekCancel = cancel
+	// Say something while it works: a scrub past the watermark takes as long
+	// as the download, and a thumb that snaps back with no explanation reads
+	// as a refusal.
+	p.loading = true
+	p.mu.Unlock()
+	p.changed()
+
+	go func() {
+		src, path, err := p.openItemAt(ctx, item, seconds)
+		p.mu.Lock()
+		// p.src can be nil here (Stop won the race): a seek of a stopped player
+		// must not resurrect playback.
+		if gen != p.gen || p.src == nil {
+			p.mu.Unlock()
+			src.Close()
+			cancel()
+			return
+		}
+		p.loading = false
+		p.seekCancel = nil
+		if err != nil {
+			// A failed scrub is not a failed track: whatever was playing keeps
+			// playing where it was.
+			p.mu.Unlock()
+			cancel()
+			p.changed()
+			return
+		}
+
+		p.sink.Lock()
+		paused := p.ctrl != nil && p.ctrl.Paused
+		p.sink.Unlock()
+
+		old, oldCancel := p.src, p.cancel
+		p.src, p.srcPath = src, path
+		p.cancel = cancel
+		streamer := beep.Streamer(src.streamer)
+		if src.format.SampleRate != SampleRate {
+			streamer = beep.Resample(resampleQuality, src.format.SampleRate, SampleRate, streamer)
+		}
+		p.ctrl = &beep.Ctrl{Streamer: streamer, Paused: paused}
+		p.vol = &effects.Volume{Streamer: p.ctrl, Base: 2, Volume: volumeToDB(p.volume), Silent: p.volume == 0}
+		p.sink.Clear()
+		p.sink.Play(beep.Seq(p.vol, beep.Callback(func() {
+			select {
+			case p.ended <- gen:
+			default:
+			}
+		})))
+		p.mu.Unlock()
+
+		// The replaced source closes AFTER the swap, so the audio never gaps on
+		// a closed reader; its context follows, waking anything parked on it.
+		old.Close()
+		if oldCancel != nil {
+			oldCancel()
+		}
+		p.changed()
+	}()
+}
+
+// openItemAt is openItem continued to a position: the source comes back
+// standing at the requested second.
+//
+// A reopen can find the download finished in the meantime — the cache then
+// hands back an ordinary file — and a native seek does the job. Otherwise the
+// streamer decodes its way there (discardTo), which keeps Position honest: the
+// decoder really has consumed everything before the target, so elapsed time
+// reads exactly as if the track had played to that point.
+func (p *Player) openItemAt(ctx context.Context, item *queue.Item, seconds float64) (*source, string, error) {
+	src, path, err := p.openItem(ctx, item)
+	if err != nil {
+		return nil, "", err
+	}
+	rate := float64(src.format.SampleRate)
+	target := int(seconds * rate)
+	if target <= 0 {
+		return src, path, nil
+	}
+	if src.seekable {
+		if n := src.streamer.Len(); target >= n {
+			target = n - 1
+		}
+		if target > 0 {
+			_ = src.streamer.Seek(target)
+		}
+		return src, path, nil
+	}
+	if err := discardTo(src.streamer, target); err != nil {
+		src.Close()
+		return nil, "", err
+	}
+	return src, path, nil
+}
+
+// discardTo decodes and throws away samples until the streamer stands at n.
+//
+// Stopping early at a clean end is not an error: a scrub past the end of the
+// track hands the sink an exhausted streamer, which it turns into an ordinary
+// end-of-track — the same thing seeking to the last instant means.
+func discardTo(s beep.StreamSeekCloser, n int) error {
+	buf := make([][2]float64, 1024)
+	for n > 0 {
+		want := len(buf)
+		if n < want {
+			want = n
+		}
+		got, ok := s.Stream(buf[:want])
+		n -= got
+		if !ok {
+			return s.Err()
+		}
+	}
+	return nil
 }
 
 // SetVolume sets the output level, 0..1, on a perceptual curve — a linear fader
@@ -623,6 +791,13 @@ func (p *Player) playCurrent() {
 	if p.cancel != nil {
 		p.cancel() // abandon the previous track's download
 	}
+	if p.seekCancel != nil {
+		// A pending scrub of the old track dies with it — its goroutine would
+		// otherwise sit on the old download as a waiter forever, keeping a
+		// fetch alive that nobody will ever hear.
+		p.seekCancel()
+		p.seekCancel = nil
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	p.cancel = cancel
 	// Only a download is worth announcing. Opening a local file is fast enough
@@ -638,6 +813,25 @@ func (p *Player) playCurrent() {
 // source — unless the queue moved on while it was working.
 func (p *Player) load(ctx context.Context, gen uint64, item *queue.Item) {
 	src, path, err := p.openItem(ctx, item)
+
+	// A restored position on a STREAMING source is applied here, outside the
+	// lock: it decodes its way to the target (discardTo) and may wait on the
+	// download, which must never happen while holding mu. The seekable case
+	// stays below with the lock held — a native seek is instant.
+	if err == nil && !src.seekable {
+		p.mu.Lock()
+		at := 0.0
+		if gen == p.gen && p.resumeKey != "" && p.resumeKey == item.RowKey() {
+			at = p.resumeAt
+			p.resumeKey, p.resumeAt = "", 0
+		}
+		p.mu.Unlock()
+		if target := int(at * float64(src.format.SampleRate)); target > 0 {
+			// Consumed whether it lands or not, same rule as the seekable path;
+			// a failure here is a position lost, not a track lost.
+			_ = discardTo(src.streamer, target)
+		}
+	}
 
 	p.mu.Lock()
 	if gen != p.gen {
@@ -812,6 +1006,10 @@ func (p *Player) stop() {
 	if p.cancel != nil {
 		p.cancel() // whatever was downloading, nobody is waiting for it now
 		p.cancel = nil
+	}
+	if p.seekCancel != nil {
+		p.seekCancel() // same for a scrub still working its way there
+		p.seekCancel = nil
 	}
 	p.mu.Unlock()
 	p.changed()

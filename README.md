@@ -269,16 +269,27 @@ blocks at the tail rather than reporting an end that has not happened, and it is
 A blob already cached comes back as an ordinary `*os.File`, so replaying a track
 is unchanged.
 
-Two costs, both paid on purpose:
+Two consequences, both handled rather than suffered:
 
-- **A streaming track cannot be scrubbed.** `player.Seekable` reports it and the
-  seek bar goes quiet. This is not merely cosmetic: beep's mp3 decoder
-  *panics* on `Seek` over a non-seekable source, so the guard in `player.Seek`
-  is what stands between a drag and the process dying inside the audio path.
+- **A streaming track scrubs by restarting its decode, never by seeking the
+  decoder.** beep's mp3 decoder *panics* on `Seek` over a non-seekable source,
+  so `player.seekStream` opens a second reader over the same growing cache
+  file — joining the running fetch as one more waiter, never a second
+  download — decodes forward to the target discarding samples, and swaps the
+  source in (pause state carried across; the old position keeps sounding until
+  the swap). Decoding is far faster than realtime, so a scrub into what has
+  arrived lands quickly; one beyond the watermark shows *Loading* and lands
+  when the download reaches it — the same result the web UI gets from the
+  browser plus the relay's Range support, spelled natively. A restored queue
+  position resumes on a stream the same way.
 - **A streaming MP3 does not know its own length**, since that is what the walk
-  computed. The player bar falls back to the queue item's duration, which the
-  library knew all along. FLAC needs none of this — `STREAMINFO` carries the
-  sample count, so it reports its length even while streaming.
+  computed. `player.Position` falls back to the queue item's duration, which
+  the library knew all along — inside the player, so the bar, the keyboard's
+  relative seek and the media bus agree. FLAC needs none of this —
+  `STREAMINFO` carries the sample count, so it reports its length even while
+  streaming. A streaming mp3 whose server never analyzed it has no total at
+  all; that is the one case the seek bar still goes quiet, for want of
+  anything to aim into.
 
 The cache itself is unchanged in every other way:
 

@@ -15,13 +15,14 @@ import (
 
 // FetchBlob downloads one blob from the holders named and opens it for reading.
 //
-// It BLOCKS until the transfer is complete and verified. That used to be
-// justified by "the decoders want the whole file on disk, so a partial-read
-// surface would be a feature with no caller" — both halves of which are now
-// false. The decoders take a reader (internal/blobcache/stream.go), and the
-// caller exists: see StreamBlob below, which is what playback uses. This is kept
-// for the one job that genuinely wants every byte before it starts — keeping a
-// track on this device, where a half-copied file would be worse than a wait.
+// It BLOCKS until the transfer is complete and verified, and it currently has
+// NO CALLER: keep-on-this-device, which its comment used to name as the job it
+// was kept for, actually goes through remote.Fetcher.Local — the swarm-then-
+// relay path with the vouch and the one-fetch-at-a-time rule in front of it.
+// Both of those rules live in the FETCHER, not here, so calling this directly
+// presents no token (a third-party holder 404s the fetch) and races whatever
+// the fetcher is doing. If a genuine whole-file-first caller appears, put a
+// fetcher in front of it or move those two rules deliberately.
 //
 // The bytes land in madshare's OWN download cache — hash-named, no extension —
 // and that is the point rather than an inconvenience. It is the only directory
@@ -45,10 +46,12 @@ func (b *Backend) FetchBlob(ctx context.Context, hash string, size int64, holder
 	}
 	select {
 	case <-ctx.Done():
-		// The transfer is governed by the same context, so abandoning it here is
-		// enough — it winds itself down rather than running on for a track nobody
-		// is waiting for any more.
-		//
+		// Abandoned EXPLICITLY. Transfers deliberately run on the node's
+		// lifetime, not the caller's context — cache-through is the server's
+		// shape, and this comment used to claim the opposite ("governed by the
+		// same context") while the transfer ran to completion in the background.
+		// Abandon is the surface madshare grew for exactly this caller.
+		t.Abandon()
 		// It is logged FIRST, and that matters more than the success case does.
 		// A swarm fetch that expires is the one this side cannot explain: the
 		// error says "context deadline exceeded" and nothing else, while the
@@ -101,7 +104,12 @@ func (b *Backend) StreamBlob(ctx context.Context, hash string, size int64, holde
 	defer cancel()
 	if err := t.WaitFor(openCtx, 0); err != nil {
 		// Nothing arrived in time, or the transfer died. Either way this is a
-		// decline with no bytes written, so the relay can still take over.
+		// decline with no bytes written, so the relay can still take over — and
+		// the transfer must be ABANDONED, not merely walked away from: it runs
+		// on the node's lifetime, so leaving it would download the whole track
+		// over the mesh in parallel with the relay now fetching the same bytes,
+		// on exactly the link that was too slow to answer within the budget.
+		t.Abandon()
 		b.logTransfer(t, time.Since(start))
 		if terr := t.Err(); terr != nil {
 			return nil, terr
@@ -111,6 +119,7 @@ func (b *Backend) StreamBlob(ctx context.Context, hash string, size int64, holde
 
 	f, err := t.Open()
 	if err != nil {
+		t.Abandon()
 		b.logTransfer(t, time.Since(start))
 		return nil, err
 	}
@@ -164,7 +173,15 @@ func (r *swarmReader) Read(p []byte) (int, error) {
 }
 
 func (r *swarmReader) Close() error {
-	r.once.Do(func() { r.b.logTransfer(r.t, time.Since(r.start)) })
+	r.once.Do(func() {
+		// A reader that leaves is the only consumer this transfer has, so its
+		// departure abandons the run. On the ordinary path this is a no-op —
+		// the copy ended at EOF because the transfer finished — but a reader
+		// closed mid-transfer (the track was skipped) used to leave the swarm
+		// downloading the rest for nobody.
+		r.t.Abandon()
+		r.b.logTransfer(r.t, time.Since(r.start))
+	})
 	return r.f.Close()
 }
 

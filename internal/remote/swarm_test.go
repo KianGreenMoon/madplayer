@@ -41,6 +41,9 @@ type meshServer struct {
 	// lastRange is the Range header the relay last saw, so a resume can be
 	// asserted as a resume rather than as a second full download.
 	lastRange atomic.Pointer[string]
+	// holdersDelay slows the holder lookup, for the test that the lookup and
+	// the first byte share ONE budget rather than getting one each.
+	holdersDelay time.Duration
 }
 
 func newMeshServer(t *testing.T, body string, keys ...string) *meshServer {
@@ -54,6 +57,9 @@ func newMeshServer(t *testing.T, body string, keys ...string) *meshServer {
 		switch {
 		case strings.HasPrefix(r.URL.Path, "/api/madnetwork/holders/"):
 			ms.holders.Add(1)
+			if ms.holdersDelay > 0 {
+				time.Sleep(ms.holdersDelay)
+			}
 			hs := make([]map[string]any, 0, len(ms.keys))
 			for _, k := range ms.keys {
 				hs = append(hs, map[string]any{
@@ -130,6 +136,9 @@ type fakeSwarm struct {
 	gate <-chan struct{}
 	live atomic.Int32
 	peak atomic.Int32
+	// lastFirstByte is the first-byte allowance the last call arrived with, in
+	// nanoseconds — what the budget-sharing test reads.
+	lastFirstByte atomic.Int64
 }
 
 // StreamBlob is the interface the fetcher uses. The fake keeps the old
@@ -140,6 +149,7 @@ type fakeSwarm struct {
 // firstByte is honoured the way the real one does: it bounds getting started,
 // which for a fake that is gated is the gate.
 func (s *fakeSwarm) StreamBlob(ctx context.Context, hash string, size int64, holders []string, firstByte time.Duration) (io.ReadCloser, error) {
+	s.lastFirstByte.Store(int64(firstByte))
 	if firstByte > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, firstByte)

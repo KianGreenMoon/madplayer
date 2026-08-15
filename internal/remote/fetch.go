@@ -71,10 +71,15 @@ type Fetcher struct {
 	vouch       Vouch
 	swarmBudget time.Duration
 
-	// smu serializes mesh fetches. The mesh carries ONE vouch, installed
-	// process-wide, so a second fetch starting underneath the first would present
-	// its own token and break it — see fromSwarm.
-	smu sync.Mutex
+	// slot serializes mesh fetches — a one-place semaphore rather than a mutex,
+	// because WAITING for it must be boundable. The mesh carries ONE vouch,
+	// installed process-wide, so a second fetch starting underneath the first
+	// would present its own token and break it — see fromSwarm. Since fetches
+	// stream, a transfer can hold the slot for minutes; a mutex here once let a
+	// clicked track wait out a prefetch's whole transfer before making a sound
+	// (.issues/open-issues.md, reproduced 2026-08-15). Now a contender that
+	// cannot take the slot within the budget declines to the relay instead.
+	slot chan struct{}
 
 	// prefetch is the speculative download of the NEXT track, cancelled as soon
 	// as a different one is wanted. Without the cancel, changing your mind about
@@ -90,7 +95,7 @@ func New(cache *blobcache.Cache, lg *log.Logger) *Fetcher {
 	if lg == nil {
 		lg = log.Default()
 	}
-	return &Fetcher{cache: cache, log: lg}
+	return &Fetcher{cache: cache, log: lg, slot: make(chan struct{}, 1)}
 }
 
 // SetSwarm installs the mesh path, or clears it with two nils. Until it is
@@ -182,7 +187,17 @@ func (f *Fetcher) Stream(ctx context.Context, item *queue.Item) (io.ReadCloser, 
 // the swarm and the relay is made in one place and cannot drift between "play
 // this" and "keep this".
 func (f *Fetcher) fill(srv library.Server, item *queue.Item) blobcache.Fetch {
+	key, _ := cacheKey(item)
 	return func(ctx context.Context, w io.Writer) error {
+		// A fetch for a DIFFERENT track outranks the speculative one: a guess
+		// must never make a person wait. Without this, a running prefetch held
+		// the mesh slot for its whole transfer and a clicked track queued
+		// behind it — bounded now (the slot wait shares the budget), but
+		// "bounded" is still a budget's worth of silence for a guess. The
+		// prefetch's own fill passes its own key and is not preempted by itself;
+		// a playback fetch for the very track being prefetched joins that fetch
+		// in the cache and never gets here.
+		f.preemptPrefetch(key)
 		wrote, err := f.fromSwarm(ctx, srv, item, w)
 		switch {
 		case err == nil && wrote > 0:
@@ -235,7 +250,13 @@ func (f *Fetcher) fromSwarm(ctx context.Context, srv library.Server, item *queue
 		return 0, nil
 	}
 
-	// One fetch at a time, with the token installed inside the lock.
+	// ONE deadline covers everything before bytes flow: taking the fetch slot,
+	// asking who holds the track, and waiting for the first byte. They are one
+	// question — "did the swarm answer?" — and giving each stage its own budget
+	// quietly multiplied the worst-case silence by the number of stages.
+	deadline := time.Now().Add(f.budget())
+
+	// One fetch at a time, with the token installed inside the slot.
 	//
 	// A device signed in to several servers holds several tokens and the mesh
 	// carries one: a third node checks the vouch against an issuer IT can place,
@@ -244,13 +265,19 @@ func (f *Fetcher) fromSwarm(ctx context.Context, srv library.Server, item *queue
 	// fetching has to be indivisible, or a prefetch for another server's track
 	// swaps the token out from under a fetch that is already running.
 	//
-	// The cost is that a slow swarm fetch delays the next one rather than running
-	// beside it. That is the right trade here: the queue fetches the playing track
-	// and speculatively the one after it, so the thing being made to wait is a
-	// guess about the future, and it inherits a context that is cancelled the
-	// moment the guess turns out wrong.
-	f.smu.Lock()
-	defer f.smu.Unlock()
+	// The wait for the slot is BOUNDED by the shared deadline: fetches stream
+	// now, so whoever holds the slot may hold it for a whole transfer, and a
+	// track that cannot have the mesh within its budget still has the relay.
+	// Declining here is ordinary — the relay is a working answer, and silence
+	// while queueing behind another download is not.
+	select {
+	case f.slot <- struct{}{}:
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	case <-time.After(time.Until(deadline)):
+		return 0, nil
+	}
+	defer func() { <-f.slot }()
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
@@ -284,10 +311,10 @@ func (f *Fetcher) fromSwarm(ctx context.Context, srv library.Server, item *queue
 	// /madnetwork page, which browses OTHER nodes' catalogs, while madplayer
 	// merges each server's ordinary library — and an ordinary track row carries no
 	// holders. So the endpoint is the only source here, not the fallback.
-	// The holder lookup shares the first-byte budget: it is part of "the swarm
+	// The holder lookup shares the deadline: it is part of "the swarm
 	// answered", and a server that will not say who holds a track is a swarm
 	// that never starts.
-	hctx, cancel := context.WithTimeout(ctx, f.budget())
+	hctx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
 	plan, err := srv.Client.Holders(hctx, item.Hash)
 	if err != nil {
@@ -298,7 +325,13 @@ func (f *Fetcher) fromSwarm(ctx context.Context, srv library.Server, item *queue
 		return 0, nil
 	}
 
-	body, err := swarm.StreamBlob(ctx, item.Hash, plan.Size, keys, f.budget())
+	// Whatever the earlier stages left is the first-byte allowance. Nothing
+	// left is a decline like any other — no byte was written.
+	firstByte := time.Until(deadline)
+	if firstByte <= 0 {
+		return 0, nil
+	}
+	body, err := swarm.StreamBlob(ctx, item.Hash, plan.Size, keys, firstByte)
 	if err != nil {
 		return 0, fmt.Errorf("fetching from %d holder(s) of %s: %w", len(keys), item.Hash, err)
 	}
@@ -366,17 +399,25 @@ func (f *Fetcher) Prefetch(item *queue.Item) {
 		return
 	}
 	key, ext := cacheKey(item)
-	if _, ok := f.cache.Lookup(key, ext); ok {
-		return
-	}
 
 	f.pmu.Lock()
 	if f.prefetchKey == key {
 		f.pmu.Unlock()
 		return // already running for this very track
 	}
+	// Whatever else is running is a STALE guess — the queue moved and this
+	// track is the guess now — so it stops even when the new guess turns out
+	// to be on disk already. The cached check used to come first, which left
+	// the stale download running (and holding the mesh slot) with nothing to
+	// preempt it until the next real fetch.
 	if f.prefetchStop != nil {
 		f.prefetchStop()
+		f.prefetchStop = nil
+		f.prefetchKey = ""
+	}
+	if _, ok := f.cache.Lookup(key, ext); ok {
+		f.pmu.Unlock()
+		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	f.prefetchKey, f.prefetchStop = key, cancel
@@ -394,6 +435,25 @@ func (f *Fetcher) Prefetch(item *queue.Item) {
 		}
 		f.pmu.Unlock()
 	}()
+}
+
+// preemptPrefetch abandons a running prefetch when a fetch for a DIFFERENT
+// track starts: the slot is single, transfers are long, and a guess about the
+// future must never be what an actual request waits behind. Reached from fill,
+// so every real fetch — playback, keep-on-device — outranks the speculation.
+//
+// Deliberately NOT reached when the keys match: the prefetch of this very
+// track IS the fetch (the cache joins them), and cancelling it would cancel
+// the caller.
+func (f *Fetcher) preemptPrefetch(key string) {
+	f.pmu.Lock()
+	defer f.pmu.Unlock()
+	if f.prefetchKey == "" || f.prefetchKey == key || f.prefetchStop == nil {
+		return
+	}
+	f.prefetchStop()
+	f.prefetchStop = nil
+	f.prefetchKey = ""
 }
 
 // StopPrefetch abandons any speculative download. Called on the way out.

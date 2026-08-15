@@ -3,6 +3,7 @@ package ui
 import (
 	"gioui.org/io/event"
 	"gioui.org/io/key"
+	"gioui.org/widget"
 )
 
 // Keyboard control.
@@ -84,10 +85,27 @@ var keyFilters = func() []event.Filter {
 	return out
 }()
 
+// editors is every text box in the program.
+//
+// It exists as one list because the keyboard gate below is only as good as its
+// completeness: an editor missing from it takes Space, N, P, S, R, Q and / as
+// commands while somebody is typing a path into it. That is not hypothetical —
+// keepDirEd was added with the managed folder and left out of here, so typing
+// "/home/…" into it jumped to search and toggled playback on the way. A test
+// walks the struct and fails when a new editor field is not in this list
+// (keys_test.go).
+func (a *App) editors() []*widget.Editor {
+	return []*widget.Editor{
+		&a.search, &a.folderEd,
+		&a.srvAddr, &a.srvUser, &a.srvPass,
+		&a.cacheEd, &a.keepDirEd,
+	}
+}
+
 // typing reports whether a text box has focus, which is what makes an
 // unmodified letter a letter rather than a command.
 func (a *App) typing(gtx C) bool {
-	for _, ed := range []any{&a.search, &a.folderEd, &a.srvAddr, &a.srvUser, &a.srvPass, &a.cacheEd} {
+	for _, ed := range a.editors() {
 		if gtx.Focused(ed) {
 			return true
 		}

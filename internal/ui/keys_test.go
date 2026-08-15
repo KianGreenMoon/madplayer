@@ -1,10 +1,13 @@
 package ui
 
 import (
+	"reflect"
 	"strings"
 	"testing"
+	"unsafe"
 
 	"gioui.org/io/key"
+	"gioui.org/widget"
 
 	"daemonlord.ygg/madplayer/internal/queue"
 )
@@ -79,6 +82,45 @@ func TestTheHelpNamesEveryLabelledBinding(t *testing.T) {
 	}
 	if summary == "" {
 		t.Fatal("the shortcut help is empty")
+	}
+}
+
+// The typing gate is only as good as the list of editors it consults, and that
+// list is hand-written while the editors are struct fields — so it drifts
+// silently, and the symptom lands on whoever types into the newest text box.
+// That already happened once: keepDirEd arrived with the managed music folder
+// and nothing added it here, so a path typed into it played, paused, shuffled
+// and searched on the way in.
+//
+// Walking the struct is what makes the list unable to fall behind again. The
+// field addresses are compared rather than the values, which is why it can be
+// done at all without exporting anything.
+func TestEveryEditorIsInTheTypingGate(t *testing.T) {
+	a := testApp(t)
+
+	listed := map[uintptr]bool{}
+	for _, ed := range a.editors() {
+		listed[uintptr(unsafe.Pointer(ed))] = true
+	}
+
+	v := reflect.ValueOf(a).Elem()
+	edType := reflect.TypeOf(widget.Editor{})
+	found := 0
+	for i := 0; i < v.NumField(); i++ {
+		if v.Type().Field(i).Type != edType {
+			continue
+		}
+		found++
+		if !listed[v.Field(i).UnsafeAddr()] {
+			t.Errorf("App.%s is a text box that the keyboard gate does not know about — "+
+				"typing in it would run the unmodified shortcuts", v.Type().Field(i).Name)
+		}
+	}
+	if found != len(listed) {
+		t.Errorf("%d editor fields on App, %d in editors()", found, len(listed))
+	}
+	if found == 0 {
+		t.Fatal("found no editor fields at all — the walk is not looking at App")
 	}
 }
 

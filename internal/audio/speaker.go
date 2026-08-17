@@ -1,6 +1,10 @@
+//go:build !android
+
 // Package audio is the real audio device — the one place in madplayer that
 // needs a sound card, and therefore cgo (ALSA on Linux, CoreAudio on macOS,
-// WASAPI on Windows) by way of beep's speaker and oto.
+// WASAPI on Windows) by way of beep's speaker and oto. Android bypasses
+// beep's speaker — see speaker_android.go for why its buffer split can never
+// feed oto's driver there.
 //
 // It is a package of its own precisely so nothing else has to be. Everything
 // that decides anything — decode, seek, position, queue advance, the whole UI —

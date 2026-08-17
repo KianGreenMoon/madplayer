@@ -6,6 +6,7 @@ require (
 	daemonlord.ygg/madshare v0.8.10
 	gioui.org v0.10.1
 	github.com/dhowden/tag v0.0.0-20240417053706-3d75831295e8
+	github.com/ebitengine/oto/v3 v3.4.0
 	github.com/godbus/dbus/v5 v5.1.0
 	github.com/gopxl/beep/v2 v2.1.1
 	github.com/mewkiz/flac v1.0.12
@@ -54,7 +55,6 @@ require (
 	github.com/coder/websocket v1.8.15 // indirect
 	github.com/disintegration/imaging v1.6.2 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
-	github.com/ebitengine/oto/v3 v3.4.0 // indirect
 	github.com/ebitengine/purego v0.9.0 // indirect
 	github.com/go-chi/chi/v5 v5.2.5 // indirect
 	github.com/go-text/typesetting v0.3.4 // indirect

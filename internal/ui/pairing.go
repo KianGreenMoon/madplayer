@@ -4,17 +4,16 @@ package ui
 // madshare servers do on /admin/network — own card out, their card (or bare
 // key) in, and the peer table with its states.
 //
-// This is an EXPERIMENT, switched by pairingEnabled below. It deliberately
-// crosses the household design (a device that appears in nobody's friend
-// list): a paired device is an ordinary community member with a gossiped edge
-// and a place on every map, which is exactly the trade the owner wants to see
-// on a real device before judging it (2026-08-17). Flip the const to false to
-// take the section out of Settings; removing the experiment entirely is
-// deleting this file, backend/pairing.go, the pairEd field (app.go, keys.go)
-// and the one row in panels.go.
+// An EXPERIMENT, switched by pairingEnabled below. A device paired here is a
+// full community member — a gossiped edge, a place on every map, exactly like
+// a server; the quiet listener path stays what an unpaired device gets. The
+// owner is trying membership on a real device (2026-08-17). Flip the const to
+// false to take the section out of Settings; removing the experiment entirely
+// is deleting this file, backend/pairing.go, the pairEd field (app.go,
+// keys.go) and the one row in panels.go.
 //
-// Even paired, this node publishes nothing — the library is pinned closed and
-// only the seeded cache is served — so the test costs presence, not privacy.
+// Sharing is separate and unchanged: the library stays pinned closed and only
+// the seeded cache is served, paired or not.
 
 import (
 	"context"

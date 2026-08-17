@@ -4,14 +4,15 @@ package backend
 // exchanged public keys, the way two madshare servers do — madshare's
 // EXPERIMENTAL app.Pairing (v0.8.11), translated into rows the UI may hold.
 //
-// This is deliberately NOT the household design. A paired device is an
-// ordinary community member: a gossiped edge, a place on everybody's network
-// map, availability that counts — the exact trade federation-access.md
-// §"The household" refused for phones. It exists so that trade can be tried on
-// a real device (owner's call, 2026-08-17), it is switched by ui.pairingEnabled,
-// and removing the experiment entirely is deleting this file and
-// internal/ui/pairing.go. Even paired, the node publishes nothing: the library
-// stays pinned closed, only the seeded cache is served.
+// A device paired this way is a full member of the community: a gossiped
+// edge, a place on the network map, holders of its own — everything a server
+// gets, nothing withheld. The quiet listener path (federation-access.md
+// §"The household") remains what a device that does NOT pair gets; pairing is
+// how this one opts into membership instead. Experimental while the owner
+// tries it (2026-08-17): switched by ui.pairingEnabled, and removing it
+// entirely is deleting this file and internal/ui/pairing.go. Sharing is a
+// separate axis and unchanged — the library stays pinned closed, only the
+// seeded cache is served.
 
 import (
 	"context"

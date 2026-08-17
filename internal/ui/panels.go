@@ -223,6 +223,7 @@ func (a *App) settings(gtx C) D {
 		// there are two caches with different answers, and one paragraph here
 		// kept describing only the one it could clear.
 		a.meshControls,
+		a.pairingControls,
 		a.keepControls,
 		a.shortcutHelp,
 		a.aboutControls,

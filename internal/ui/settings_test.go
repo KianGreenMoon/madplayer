@@ -313,3 +313,17 @@ func TestAClearReportsWhatItFreed(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// The pairing experiment (pairing.go). With the mesh off the section still
+// stands, saying what it needs — a section that vanished with the mesh would
+// hide the switch that turns it on. Skipped when the experiment is switched
+// off in code, which is the intended way to retire it.
+func TestPairingControlsLayOutWithNoNode(t *testing.T) {
+	if !pairingEnabled {
+		t.Skip("the pairing experiment is switched off")
+	}
+	a := testApp(t)
+	if d := a.pairingControls(headless()); d.Size.Y == 0 {
+		t.Fatal("the pairing section laid out to nothing")
+	}
+}

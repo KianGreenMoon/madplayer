@@ -3,7 +3,7 @@ module daemonlord.ygg/madplayer
 go 1.26.4
 
 require (
-	daemonlord.ygg/madshare v0.8.10
+	daemonlord.ygg/madshare v0.8.11
 	gioui.org v0.10.1
 	github.com/dhowden/tag v0.0.0-20240417053706-3d75831295e8
 	github.com/ebitengine/oto/v3 v3.4.0

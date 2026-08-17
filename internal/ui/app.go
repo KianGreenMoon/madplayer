@@ -204,6 +204,11 @@ type App struct {
 	keepTechnical                        widget.Bool
 	btnSignIn, btnCacheSave              widget.Clickable
 	meshOn                               widget.Bool
+	// pairEd and pairing are the node-pairing experiment (pairing.go). The
+	// editor is a top-level field so the typing-gate walk sees it; everything
+	// else the experiment owns lives in the one struct, for easy removal.
+	pairEd  widget.Editor
+	pairing pairingState
 	// themeBtn is one clickable per entry of themes, in the same order.
 	themeBtn []widget.Clickable
 	rmFolder []widget.Clickable
@@ -273,6 +278,7 @@ func newApp(win *app.Window, pl *player.Player, be *backend.Backend, store *pref
 	a.srvPass.Mask = '•'
 	a.cacheEd.SingleLine = true
 	a.keepDirEd.SingleLine = true
+	a.pairEd.SingleLine = true
 
 	cfg, err := a.store.Load()
 	if err != nil {

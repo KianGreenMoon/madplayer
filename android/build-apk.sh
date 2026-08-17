@@ -153,6 +153,22 @@ fi
 # binary, not merely for anet. Only the Android build carries this — the
 # desktop build in the Makefile does not, because only interface_android.go
 # does it.
+# The signing key. gogio signs with ~/.android/debug.keystore when that file
+# exists and otherwise generates a THROWAWAY key inside the build's temp dir —
+# a brand-new signature every build. Android refuses to update across
+# signatures, so every rebuild forced an uninstall, which wipes the app's data
+# and made the phone re-enrol as a fresh mesh node each time. Generate the
+# keystore ONCE at the path gogio already looks; every later build on this
+# host then signs identically and `adb install -r` updates in place.
+keystore=$HOME/.android/debug.keystore
+if [ ! -f "$keystore" ]; then
+	echo "==> $keystore (new signing key: THIS build still needs one last uninstall)"
+	mkdir -p "$HOME/.android"
+	keytool -genkeypair -keystore "$keystore" -storepass android \
+		-keypass android -alias androiddebugkey -keyalg RSA -keysize 2048 \
+		-validity 10950 -dname "CN=Android Debug,O=Android,C=US"
+fi
+
 echo "==> $out/madplayer.apk"
 # -minsdk 21: android.media.session.MediaSession is API 21, and gogio's
 # default of 16 would promise five versions the playback service class cannot

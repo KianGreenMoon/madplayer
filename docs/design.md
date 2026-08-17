@@ -398,6 +398,35 @@ Two things follow. Playback had to become **asynchronous**, since a download
 cannot run on the goroutine that handled the click; and the next queue item is
 **prefetched**, so only the first remote track in a run pays the gap.
 
+#### Playback streams the download since 2026-08-15 — and the audio path may not wait on it (2026-08-17)
+
+The heading above kept its truth for the **cache** — a fetched track still
+lands whole, content-addressed, evictable — but playback stopped waiting for
+it: the decoders take their streaming path over a reader that blocks at the
+tail of the growing file (`blobcache.Stream`), so a track sounds after a
+fraction of a percent of its bytes instead of after all of them.
+
+That blocking reader created a rule, and it was learned as an ANR on the
+phone: **a read that can wait on the network belongs to no lock the window
+can end up behind.** The decode used to run inside the audio device's pull
+with the sink lock held; the UI reads the playhead through that lock on every
+frame; a stalled download therefore froze the whole program for as long as
+the network cared to stall, while the already-buffered audio played on —
+which Android reports as "not responding" after five seconds of undelivered
+touches. A streaming source now plays through a decode-ahead ring
+(`internal/player/buffered.go`): a goroutine owns the decoder and runs it off
+every lock into a couple of seconds of samples, the device's pull only ever
+copies, and a stall costs silence instead of the window. The ring also
+removes the real-time deadline the pull used to impose on the decode, which
+is what turned a busy phone into crackle on streamed tracks.
+
+Seekable sources — local files, finished downloads — are not wrapped: they
+never block, and the ring deliberately does not seek. Scrubs on a stream were
+already answered by restarting the decode at the target (`seekStream`), never
+by the decoder's own Seek, and the seek machinery keeps talking to the raw
+decoder — a ring that pads silence would count padding as skipped audio and
+land every seek short.
+
 ### The credential is a token, and it belongs to that server
 
 A player must survive a restart still signed in, and storing the password to

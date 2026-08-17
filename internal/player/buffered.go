@@ -1,0 +1,266 @@
+package player
+
+// Decoding ahead of the audio device, for a track whose bytes are still
+// arriving.
+//
+// Without this the decode ran INSIDE the device's pull: the sink calls
+// Stream, Stream runs the decoder, and the decoder reads from a reader that
+// blocks at the tail of a growing file (blobcache.tail) until the download
+// delivers more bytes. Every one of those calls happens with the sink lock
+// held — and the UI takes that lock through Position() on every frame. So a
+// network stall parked the audio goroutine on a condition variable while it
+// held the lock, the frame handler queued behind it, Gio's Android callback
+// never returned, and after five seconds of undelivered touches the system
+// declared the whole program unresponsive. Seen live on the phone,
+// 2026-08-17: main thread in GioView.onFrameCallback, sound still coming out
+// of a track that trickled.
+//
+// The fix is structural rather than a timeout: a fill goroutine owns the
+// decoder and runs it OFF every lock, into a ring holding a couple of seconds
+// of samples. What the sink pulls is only ever a memory copy. A stall now
+// costs silence — the ring runs dry and the stream pads — instead of wedging
+// every lock between the network and the screen. The same window also absorbs
+// the scheduling jitter that used to turn a busy phone into crackle: the pull
+// no longer needs the decoder to hit a real-time deadline, only the copy.
+//
+// Only a NON-SEEKABLE source is wrapped (source.bufferAhead), and only when
+// it is installed for playback: rangeseek's base calibration and openItemAt's
+// discardTo must talk to the raw decoder, because a ring that pads silence
+// would let a seek count padding as audio and land short of its target.
+
+import (
+	"errors"
+	"sync"
+	"time"
+
+	"github.com/gopxl/beep/v2"
+)
+
+const (
+	// aheadWindow is how much decoded audio the ring holds. Long enough to ride
+	// out the stalls a phone's link actually has (scheduling, wifi power
+	// management, a swarm holder pausing between chunks), short enough that a
+	// track change does not sit on megabytes nobody will hear. Two seconds of
+	// stereo float64 is ~1.4 MB.
+	aheadWindow = 2 * time.Second
+
+	// fillChunk is how many samples the fill decodes per call — the same 512
+	// beep's own mixer streams in, so one decode step and one mix step move
+	// the same amount of audio.
+	fillChunk = 512
+)
+
+// buffered is a beep.StreamSeekCloser that serves from a ring a background
+// goroutine keeps full. Its Stream never blocks and never returns short while
+// the track is alive — both halves are load-bearing:
+//
+//   - never blocks: Stream runs under the sink lock, which the UI needs every
+//     frame. Anything slower than a copy here is the freeze this type exists
+//     to remove.
+//   - never short: beep's Mixer drops a streamer that returns fewer samples
+//     than asked even with ok=true, and its Resampler reads a short fill as
+//     end-of-data. A stall answered "honestly" would therefore END the track;
+//     it has to be silence instead.
+type buffered struct {
+	// inner is the real decoder. The fill goroutine OWNS it: nothing else may
+	// touch it once the goroutine starts, and it is the goroutine that closes
+	// it on the way out — Close from another goroutine racing a Stream call in
+	// progress is exactly the kind of decoder-internal race this avoids.
+	inner beep.StreamSeekCloser
+
+	// mu guards the ring and the flags. It is only ever held for memory
+	// copies — the whole point — so anyone may take it from any goroutine
+	// without inheriting the network's schedule. The fill waits on cond for
+	// space; Stream and Close broadcast.
+	mu    sync.Mutex
+	cond  *sync.Cond
+	ring  [][2]float64
+	start int // first undelivered sample
+	count int // how many the ring holds
+	// done is the fill finished — the decoder drained or failed — and err is
+	// what it had to say. The stream ends when done AND the ring is empty:
+	// the last buffered samples still belong to the listener.
+	done bool
+	err  error
+	// closed is Close having been called. The fill exits at the next
+	// opportunity; a fill parked inside a blocking read is woken by the load
+	// context's cancellation, which every caller performs around Close.
+	closed bool
+
+	// pos is the playhead in samples: the decoder's position at wrap time plus
+	// every REAL sample delivered since. Padding does not count — silence the
+	// network owes is not audio that played — so a stalled track's bar stands
+	// still, which is the truth. Starting from the decoder's own position is
+	// what keeps a mid-stream source honest: rangeseek calibrates base against
+	// that value, and a wrapper that reset it to zero would shear every ranged
+	// seek by the primed amount.
+	pos int64
+	// length is the decoder's Len at wrap time. Snapshot rather than delegated
+	// because the fill owns the decoder — and for these sources it never
+	// changes: flac's comes from STREAMINFO, a streaming mp3 reports none.
+	length int
+
+	// exited closes when the fill goroutine is gone and the decoder closed —
+	// what a test synchronises on, since Close deliberately does not wait.
+	exited chan struct{}
+}
+
+// newBuffered wraps a decoder and starts its fill. From this moment the
+// decoder belongs to the fill goroutine.
+func newBuffered(inner beep.StreamSeekCloser, rate beep.SampleRate) *buffered {
+	n := rate.N(aheadWindow)
+	if n <= 0 {
+		n = int(SampleRate) * 2
+	}
+	b := &buffered{
+		inner:  inner,
+		ring:   make([][2]float64, n),
+		length: inner.Len(),
+		pos:    int64(inner.Position()),
+		exited: make(chan struct{}),
+	}
+	b.cond = sync.NewCond(&b.mu)
+	go b.fill()
+	return b
+}
+
+// fill runs the decoder into the ring until the track ends or Close asks it
+// to stop. The decode itself happens with NO lock held: it is the one call in
+// the program allowed to sit on the network, and the price of that privilege
+// is owning nothing anybody else waits on.
+func (b *buffered) fill() {
+	defer func() {
+		// The decoder is the goroutine's to close (see buffered.inner). Its
+		// own reader closes underneath it, as it did before this type existed.
+		_ = b.inner.Close()
+		close(b.exited)
+	}()
+
+	buf := make([][2]float64, fillChunk)
+	for {
+		b.mu.Lock()
+		for b.count == len(b.ring) && !b.closed {
+			b.cond.Wait()
+		}
+		if b.closed {
+			b.mu.Unlock()
+			return
+		}
+		want := min(len(buf), len(b.ring)-b.count)
+		b.mu.Unlock()
+
+		// Space only grows while the lock is down — the fill is the sole
+		// producer — so want is still available when the samples come back.
+		got, ok := b.inner.Stream(buf[:want])
+
+		b.mu.Lock()
+		for i := 0; i < got; {
+			at := (b.start + b.count) % len(b.ring)
+			n := min(got-i, len(b.ring)-at)
+			copy(b.ring[at:at+n], buf[i:i+n])
+			b.count += n
+			i += n
+		}
+		if !ok {
+			b.done, b.err = true, b.inner.Err()
+		}
+		closed := b.closed
+		b.mu.Unlock()
+		if !ok || closed {
+			return
+		}
+	}
+}
+
+// Stream serves what the ring holds and pads the rest with silence. See the
+// type comment for why it must neither block nor return short mid-track.
+func (b *buffered) Stream(samples [][2]float64) (int, bool) {
+	b.mu.Lock()
+	got := 0
+	for b.count > 0 && got < len(samples) {
+		n := min(b.count, len(samples)-got, len(b.ring)-b.start)
+		copy(samples[got:got+n], b.ring[b.start:b.start+n])
+		b.start = (b.start + n) % len(b.ring)
+		b.count -= n
+		got += n
+	}
+	b.pos += int64(got)
+	ended := (b.done || b.closed) && b.count == 0
+	b.mu.Unlock()
+	if got > 0 {
+		b.cond.Broadcast() // room freed; the fill may be waiting for it
+	}
+
+	if got == len(samples) {
+		return got, true
+	}
+	if ended {
+		// The decoder is finished and the ring is drained: these are the
+		// track's last samples, and the short return is the end-of-track
+		// signal that runs the queue.
+		return got, false
+	}
+	// The ring ran dry with the track still alive: the network is behind.
+	// Silence, counted by nobody — pos stands still until real audio moves it.
+	clear(samples[got:])
+	return len(samples), true
+}
+
+// Position is the playhead in samples — see buffered.pos for what counts.
+func (b *buffered) Position() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return int(b.pos)
+}
+
+// Len is the total the decoder knew at wrap time, and 0-or-less when it knew
+// none — the player falls back to the library's duration exactly as before.
+func (b *buffered) Len() int { return b.length }
+
+// Err is why the stream ended, when it ended badly.
+func (b *buffered) Err() error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.err
+}
+
+// Seek is structurally unreachable: only a non-seekable source is wrapped,
+// and the player answers scrubs on those with seekStream, never the
+// streamer's own Seek.
+func (b *buffered) Seek(int) error {
+	return errors.New("a buffered stream does not seek")
+}
+
+// Close asks the fill to stop and returns WITHOUT waiting for it. It is
+// called with the player's lock held (source.Close under playCurrent and
+// stop), and a fill parked inside a blocked read only wakes when the load
+// context is cancelled — waiting here would re-create the very wedge this
+// type removes. The callers all cancel that context around the close; the
+// decoder is closed by the fill on its way out.
+func (b *buffered) Close() error {
+	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		return nil
+	}
+	b.closed = true
+	b.mu.Unlock()
+	b.cond.Broadcast()
+	return nil
+}
+
+// bufferAhead moves a streaming source's decode off the audio pull, onto a
+// ring a goroutine keeps full. Called exactly once, when the source is about
+// to be installed for playback — never earlier, because rangeseek's base
+// calibration and openItemAt's discardTo need the raw decoder (a padding ring
+// would count silence as skipped audio and land a seek short).
+//
+// A seekable source is left alone: it reads from a finished file on disk,
+// which never blocks on anything the UI could end up waiting behind.
+func (s *source) bufferAhead() {
+	if s == nil || s.seekable || s.buf != nil {
+		return
+	}
+	s.buf = newBuffered(s.streamer, s.format.SampleRate)
+	s.streamer = s.buf
+}

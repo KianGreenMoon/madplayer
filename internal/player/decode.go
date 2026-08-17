@@ -73,6 +73,11 @@ type source struct {
 	// track, not the stream. Exact for flac (the frame header names its
 	// sample), the byte-fraction estimate for mp3 — a browser's accuracy.
 	base int
+	// buf is the decode-ahead ring a streaming source plays through
+	// (bufferAhead), and nil for a seekable one. The player reads the playhead
+	// from it WITHOUT the sink lock: its bookkeeping is its own, and the sink
+	// lock is exactly what a stalled network used to hold.
+	buf *buffered
 }
 
 func (s *source) Close() error {

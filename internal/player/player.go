@@ -537,9 +537,20 @@ func (p *Player) Position() (elapsed, total float64) {
 		}
 		return elapsed, cur.Duration
 	}
-	p.sink.Lock()
-	pos, length := p.src.streamer.Position(), p.src.streamer.Len()
-	p.sink.Unlock()
+	var pos, length int
+	if b := p.src.buf; b != nil {
+		// A streaming source answers from its ring's own bookkeeping, and
+		// deliberately NOT under the sink lock: the audio pull may be inside a
+		// Stream call at any moment, and this method runs on the UI's frame.
+		// Before the ring existed, that lock was held across a decoder read
+		// that could park on the network — which froze the window for as long
+		// as the download stalled (the Android ANR of 2026-08-17).
+		pos, length = b.Position(), b.Len()
+	} else {
+		p.sink.Lock()
+		pos, length = p.src.streamer.Position(), p.src.streamer.Len()
+		p.sink.Unlock()
+	}
 	pos += p.src.base // a mid-track source counts from where its bytes began
 
 	rate := float64(p.src.format.SampleRate)
@@ -640,6 +651,12 @@ func (p *Player) seekStream(seconds float64) {
 
 	go func() {
 		src, path, err := p.openItemAt(ctx, item, seconds)
+		if err == nil {
+			// Same rule as load: the ring goes on when the source is about to
+			// reach the sink, and only then (openItemAt's discardTo counted
+			// real samples through the raw decoder to land this seek).
+			src.bufferAhead()
+		}
 		p.mu.Lock()
 		// p.src can be nil here (Stop won the race): a seek of a stopped player
 		// must not resurrect playback.
@@ -682,12 +699,14 @@ func (p *Player) seekStream(seconds float64) {
 		})))
 		p.mu.Unlock()
 
-		// The replaced source closes AFTER the swap, so the audio never gaps on
-		// a closed reader; its context follows, waking anything parked on it.
-		old.Close()
+		// The replaced source is retired AFTER the swap, so the audio never
+		// gaps on a closed reader. Its context goes first — the cancel is what
+		// wakes a fill goroutine parked on a stalled download, and the close
+		// is only a signal to it (buffered.Close).
 		if oldCancel != nil {
 			oldCancel()
 		}
+		old.Close()
 		p.changed()
 	}()
 }
@@ -820,13 +839,12 @@ func (p *Player) playCurrent() {
 	}
 
 	p.mu.Lock()
-	p.sink.Clear()
-	p.src.Close()
-	p.src, p.ctrl, p.vol, p.srcPath = nil, nil, nil, ""
-	p.gen++
-	gen := p.gen
+	// The old download is abandoned FIRST, before anything touches the sink or
+	// the source: a fill goroutine parked at the tail of a stalled download
+	// wakes on this cancellation and on nothing else, and it is what lets the
+	// close below be a signal instead of a wait.
 	if p.cancel != nil {
-		p.cancel() // abandon the previous track's download
+		p.cancel()
 	}
 	if p.seekCancel != nil {
 		// A pending scrub of the old track dies with it — its goroutine would
@@ -835,6 +853,11 @@ func (p *Player) playCurrent() {
 		p.seekCancel()
 		p.seekCancel = nil
 	}
+	p.sink.Clear()
+	p.src.Close()
+	p.src, p.ctrl, p.vol, p.srcPath = nil, nil, nil, ""
+	p.gen++
+	gen := p.gen
 	ctx, cancel := context.WithCancel(context.Background())
 	p.cancel = cancel
 	// Only a download is worth announcing. Opening a local file is fast enough
@@ -869,6 +892,12 @@ func (p *Player) load(ctx context.Context, gen uint64, item *queue.Item) {
 		src, path, err = p.openItemAt(ctx, item, at)
 	} else {
 		src, path, err = p.openItem(ctx, item)
+	}
+	if err == nil {
+		// A still-arriving track plays through the decode-ahead ring from here
+		// on: the sink must never run a decoder that can block on the network.
+		// After openItemAt, on purpose — its seek work needs the raw decoder.
+		src.bufferAhead()
 	}
 
 	p.mu.Lock()
@@ -1026,11 +1055,9 @@ func (p *Player) advance(errored bool) {
 
 func (p *Player) stop() {
 	p.mu.Lock()
-	p.sink.Clear()
-	p.src.Close()
-	p.src, p.ctrl, p.vol, p.srcPath = nil, nil, nil, ""
-	p.gen++
-	p.loading = false
+	// Cancellation first, close after, same as playCurrent: the cancel is what
+	// wakes a fill goroutine parked on a stalled download, and the source's
+	// close is only a signal to it.
 	if p.cancel != nil {
 		p.cancel() // whatever was downloading, nobody is waiting for it now
 		p.cancel = nil
@@ -1039,6 +1066,11 @@ func (p *Player) stop() {
 		p.seekCancel() // same for a scrub still working its way there
 		p.seekCancel = nil
 	}
+	p.sink.Clear()
+	p.src.Close()
+	p.src, p.ctrl, p.vol, p.srcPath = nil, nil, nil, ""
+	p.gen++
+	p.loading = false
 	p.mu.Unlock()
 	p.changed()
 }

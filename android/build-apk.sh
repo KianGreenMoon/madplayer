@@ -10,10 +10,13 @@
 # fine on aarch64.
 #
 # Prerequisites on the build host:
-#   JDK 17 or 21                javac, keytool — gogio needs -source 1.8 to work
+#   JDK 17 or 21                javac, jar, keytool — gogio needs -source 1.8
 #   Android SDK build-tools     aapt2, d8, zipalign, apksigner
 #   Android NDK r23+            $ANDROID_HOME/ndk/<version>
-#   go install gioui.org/cmd/gogio@latest
+#   gioui.org/cmd@v0.10.0       in the module cache or reachable via GOPROXY —
+#                               the script builds its OWN gogio from it (with
+#                               the playback service patched into the manifest
+#                               template), so a gogio on PATH is not used
 #
 # On a bare Debian/Ubuntu box, ./setup-build-host.sh installs all four.
 #
@@ -42,10 +45,97 @@ export ANDROID_HOME ANDROID_SDK_ROOT="$ANDROID_HOME"
 
 mkdir -p "$out"
 
+# The newest installed platform and build-tools, the same way gogio picks them
+# — including gogio's rule that a platform with a non-integer suffix
+# (android-33-ext4, android-CANARY) does not count.
+platform=$(ls -d "$ANDROID_HOME"/platforms/android-* 2>/dev/null | grep -E 'android-[0-9]+$' | sort -V | tail -1)
+buildtools=$(ls -d "$ANDROID_HOME"/build-tools/* 2>/dev/null | sort -V | tail -1)
+if [ -z "$platform" ] || [ -z "$buildtools" ]; then
+	echo "refusing: no Android platform or build-tools under $ANDROID_HOME." >&2
+	echo "Run android/setup-build-host.sh first." >&2
+	exit 1
+fi
+
 # The packagers require a launcher icon; generate it rather than commit a blob.
 # It is the same generator the desktop entry uses (packaging/).
 icon="$here/icon.png"
 [ -f "$icon" ] || (cd "$root" && go run ./packaging/icon "$icon")
+
+# The Java half of internal/mediasession, compiled into a jar IN the package
+# directory — that placement is the mechanism, not a convenience: gogio globs
+# *.jar from every Go package directory in the import graph and feeds them to
+# d8, so a jar lying beside the Go source is how third-party Java gets into
+# the APK at all. Compiled here rather than committed, like the icon.
+msdir=$root/internal/mediasession
+msjar=$msdir/mediasession.jar
+if [ ! -f "$msjar" ] || [ "$msdir/PlaybackService.java" -nt "$msjar" ]; then
+	echo "==> $msjar"
+	classes=$(mktemp -d)
+	javac -source 1.8 -target 1.8 -Xlint:-options \
+		-bootclasspath "$platform/android.jar" \
+		-d "$classes" "$msdir/PlaybackService.java"
+	jar cf "$msjar" -C "$classes" .
+	rm -rf "$classes"
+fi
+
+# gogio, patched. Its AndroidManifest comes out of a fixed template inside its
+# own source: permissions can be added by importing gioui.org/app/permission/*
+# packages, but a <service> element cannot be expressed at all — and the
+# foreground media service that keeps playback alive with the screen off must
+# be declared in the manifest. So the build uses its own gogio, built from the
+# pinned module source with the service and its permissions inserted into the
+# template. The version is pinned because the insertion anchors on exact lines;
+# bumping it means re-checking both anchors below.
+#
+# POST_NOTIFICATIONS is manifest-only here (nothing requests it at runtime):
+# on Android 13+ the media controls ride the quick-settings carousel, which a
+# MediaSession reaches without notification permission — declaring it merely
+# lets the person enable the shade notification in system settings.
+GOGIO_VERSION=${GOGIO_VERSION:-v0.10.0}
+pgogio=$out/tools/gogio-$GOGIO_VERSION-playback
+if [ ! -x "$pgogio" ]; then
+	echo "==> gogio $GOGIO_VERSION + the PlaybackService manifest entries"
+	(cd "$root" && go mod download "gioui.org/cmd@$GOGIO_VERSION")
+	src=$(cd "$root" && go env GOMODCACHE)/gioui.org/cmd@$GOGIO_VERSION
+	work=$(mktemp -d)
+	cp -R "$src" "$work/cmd"
+	chmod -R u+w "$work/cmd"
+	ab=$work/cmd/gogio/androidbuild.go
+
+	# Both anchors must match exactly once, or the template moved under the
+	# pin and the insertion would land somewhere silent and wrong.
+	for anchor in 'android:targetSdkVersion="{{.TargetSDK}}"' '	</activity>'; do
+		n=$(grep -cF "$anchor" "$ab") || true
+		if [ "$n" != 1 ]; then
+			echo "refusing: gogio $GOGIO_VERSION matches anchor '$anchor' $n times, not once." >&2
+			echo "The manifest template changed; re-derive the insertion in $0." >&2
+			exit 1
+		fi
+	done
+
+	awk '
+		{ print }
+		index($0, "android:targetSdkVersion=\"{{.TargetSDK}}\"") {
+			print "\t<uses-permission android:name=\"android.permission.FOREGROUND_SERVICE\"/>"
+			print "\t<uses-permission android:name=\"android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK\"/>"
+			print "\t<uses-permission android:name=\"android.permission.POST_NOTIFICATIONS\"/>"
+		}
+		$0 == "\t\t</activity>" {
+			print "\t\t<service android:name=\"ygg.daemonlord.madplayer.PlaybackService\""
+			print "\t\t\tandroid:exported=\"false\""
+			print "\t\t\tandroid:foregroundServiceType=\"mediaPlayback\"/>"
+		}
+	' "$ab" >"$ab.patched"
+	mv "$ab.patched" "$ab"
+	grep -q 'PlaybackService' "$ab" || {
+		echo "refusing: the service did not land in the template." >&2
+		exit 1
+	}
+
+	mkdir -p "$out/tools"
+	(cd "$work/cmd" && go build -o "$pgogio" ./gogio)
+	rm -rf "$work"
+fi
 
 # -checklinkname=0 is required, and only on Android. github.com/wlynxg/anet —
 # pulled in by yggdrasil-go, so it arrives through madshare's mesh and is not
@@ -64,13 +154,34 @@ icon="$here/icon.png"
 # desktop build in the Makefile does not, because only interface_android.go
 # does it.
 echo "==> $out/madplayer.apk"
-(cd "$root" && gogio \
+# -minsdk 21: android.media.session.MediaSession is API 21, and gogio's
+# default of 16 would promise five versions the playback service class cannot
+# load on.
+(cd "$root" && "$pgogio" \
 	-target android \
 	-appid ygg.daemonlord.madplayer \
+	-minsdk 21 \
 	-icon "$icon" \
 	-ldflags=-checklinkname=0 \
 	-o "$out/madplayer.apk" \
 	./cmd/madplayer)
+
+# Trust nothing above: the service entry rides on a patched tool and the jar
+# on a glob, and either could quietly regress into an APK that installs, runs,
+# and dies with the screen — precisely the bug this build exists to fix. Read
+# the answer out of the artifact itself.
+echo "==> verifying the playback service is in the APK"
+manifest=$("$buildtools/aapt2" dump xmltree --file AndroidManifest.xml "$out/madplayer.apk")
+for want in PlaybackService FOREGROUND_SERVICE_MEDIA_PLAYBACK; do
+	if ! printf '%s\n' "$manifest" | grep -q "$want"; then
+		echo "refusing: the APK manifest lacks $want — the patched gogio did not run?" >&2
+		exit 1
+	fi
+done
+if ! unzip -p "$out/madplayer.apk" 'classes*.dex' | grep -qa PlaybackService; then
+	echo "refusing: no PlaybackService in the dex — was $msjar picked up?" >&2
+	exit 1
+fi
 
 echo
 echo "built:"

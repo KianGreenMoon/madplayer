@@ -29,6 +29,7 @@ import (
 	"daemonlord.ygg/madplayer/internal/library"
 	"daemonlord.ygg/madplayer/internal/madshare"
 	"daemonlord.ygg/madplayer/internal/materialize"
+	"daemonlord.ygg/madplayer/internal/mediasession"
 	"daemonlord.ygg/madplayer/internal/mesh"
 	"daemonlord.ygg/madplayer/internal/mpris"
 	"daemonlord.ygg/madplayer/internal/player"
@@ -223,6 +224,12 @@ type App struct {
 	// player's goroutine, hence the atomic. Every method on the value is
 	// nil-safe.
 	mediaBus atomic.Pointer[mpris.Service]
+
+	// mediaSession is the same presence on Android — the lock screen, the
+	// quick-settings carousel and the foreground service that keeps playback
+	// alive with the screen off. A stub everywhere else, and nil-safe for the
+	// same reasons as mediaBus.
+	mediaSession atomic.Pointer[mediasession.Service]
 }
 
 // New wires the UI to a player and the embedded backend.
@@ -333,6 +340,7 @@ func newApp(win *app.Window, pl *player.Player, be *backend.Backend, store *pref
 	pl.OnChange = func() {
 		a.prefetchNext()
 		a.mediaBus.Load().Update()
+		a.mediaSession.Load().Update()
 		a.markQueueDirty()
 		win.Invalidate()
 	}
@@ -773,6 +781,12 @@ func (a *App) Run() error {
 		a.mediaBus.Store(svc)
 		a.mediaBus.Load().Update()
 	}
+	// Android's media surfaces: the lock-screen controls and the foreground
+	// service without which playback dies when the screen sleeps. A no-op stub
+	// on every other platform; on Android a failure inside disables itself
+	// with one log line, so there is no error to handle here.
+	a.mediaSession.Store(mediasession.New(controls{a.pl, a.art}))
+	a.mediaSession.Load().Update()
 	go a.queueSaver()
 
 	// Android paints the system bars itself, and its default is white — a
@@ -789,6 +803,7 @@ func (a *App) Run() error {
 			// The media bus learns the playhead here and nowhere else: it is the
 			// one property a client polls rather than being told about.
 			a.mediaBus.Load().Tick()
+			a.mediaSession.Load().Tick()
 			if a.pl.Playing() {
 				a.win.Invalidate()
 			}
@@ -804,6 +819,7 @@ func (a *App) Run() error {
 			a.save()
 			a.writeQueue()
 			_ = a.mediaBus.Load().Close()
+			a.mediaSession.Load().Close()
 			return e.Err
 		case app.FrameEvent:
 			gtx := app.NewContext(&ops, e)

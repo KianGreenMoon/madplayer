@@ -260,6 +260,29 @@ shuffle, loop, volume and Quit all work.
 - **It is a view, not a second player.** Nothing there holds playback state —
   every property is computed from the player when asked, so the bus and the
   window cannot disagree.
+
+## …and on Android's
+
+`internal/mediasession` is the same story on the phone, with one addition that
+is the whole point: the `MediaSession` travels inside a **foreground service**,
+and the service is what stops Android's cached-app freezer from killing
+playback about a second after the screen sleeps. The controls — lock screen,
+quick-settings media carousel, notification, Bluetooth and wired-headset
+buttons — are the same MPRIS surfaces under Android's names, driven through the
+same `Controls` view of the player, with the same rules: optional, never fatal,
+a view and not a second player. Audio focus rides along (pause on another app
+taking the output or on unplugged headphones, resume after a transient loss),
+because on a phone that is part of being a player at all.
+
+Two mechanics are non-obvious enough to name. The Java half
+(`internal/mediasession/PlaybackService.java`) reaches the APK as a **jar
+compiled by `android/build-apk.sh` into the Go package directory** — gogio dexes
+any `*.jar` it finds beside a Go package in the import graph, and that glob is
+the only way third-party Java gets into a gogio build. And the `<service>`
+manifest entry comes from a **patched gogio** the same script builds from the
+pinned `gioui.org/cmd` source, because stock gogio generates the manifest from
+a fixed template that cannot declare a service; the script refuses to hand over
+an APK whose manifest or dex is missing the service.
 - **`Position` is written, not signalled.** The D-Bus properties helper stores
   values rather than computing them, so a continuously-changing property has to
   be pushed; it is declared `EmitFalse` and updated on the UI's own 200 ms tick,
@@ -616,6 +639,8 @@ internal/probe/      tech columns read out of the container — what ffprobe wou
 internal/artwork/    cover art, read out of the music file or the folder beside it
 internal/materialize/ where network music is kept, what it is named, and what is ours
 internal/mpris/      the desktop's media bus: media keys, the system media widget
+internal/mediasession/  the same on Android: lock-screen controls + the
+                     foreground service that keeps playback alive, screen off
 internal/library/    the merged browse view — sources, the merge rule, disc headers
 internal/prefs/      the settings that belong to this device (volume, servers, cache)
 internal/queue/      play queue: index arithmetic, shuffle, repeat

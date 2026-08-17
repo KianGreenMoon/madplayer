@@ -149,6 +149,13 @@ type App struct {
 	// a changed track from sixty identical frames.
 	title string
 
+	// narrowUI is whether this frame is being laid out at phone width (under
+	// narrowBar). Set at the top of layout each frame and only read from layout
+	// code, so it needs no lock; it exists because the interesting decisions
+	// (row buttons without hover, dropping the origin column) happen deep in
+	// flexes where the local constraints no longer know the window's width.
+	narrowUI bool
+
 	// build is what this binary IS — commit, toolchain, embedded engine — read
 	// once at start because it cannot change while the program runs. The About
 	// section needs it, and so does the licence it satisfies (internal/about).
@@ -881,6 +888,11 @@ func (a *App) retitle() {
 }
 
 func (a *App) layout(gtx C) D {
+	// One width decision per frame, taken where the constraints ARE the window.
+	// Deeper layout code sits inside flexes whose remaining-space constraints
+	// say nothing about the screen, so anything phone-conditional reads this
+	// rather than measuring locally and guessing wrong.
+	a.narrowUI = gtx.Constraints.Max.X < gtx.Dp(narrowBar)
 	a.update(gtx)
 	a.retitle()
 	paint.FillShape(gtx.Ops, colBg, clip.Rect{Max: gtx.Constraints.Max}.Op())

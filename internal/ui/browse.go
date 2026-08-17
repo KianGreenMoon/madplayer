@@ -498,7 +498,12 @@ func (a *App) rowActions(gtx C, i int, t *library.Track) D {
 		a.keep([]*library.Track{t}, a.albumArtistName())
 	}
 
-	show := a.rows[i].Hovered() || a.rowNext[i].Hovered() || a.rowAdd[i].Hovered() || a.rowKeep[i].Hovered()
+	// On a phone there is no pointer to hover with — the buttons were
+	// invisible until already pressed, which is a control surface nobody can
+	// discover. At phone width they are simply always there (owner's call,
+	// 2026-08-17); the hover reveal stays the desktop's tidier answer.
+	show := a.narrowUI ||
+		a.rows[i].Hovered() || a.rowNext[i].Hovered() || a.rowAdd[i].Hovered() || a.rowKeep[i].Hovered()
 	width := 2*rowActionSize + 8
 	if keepable {
 		width += rowActionSize + 8
@@ -576,7 +581,9 @@ func decodableCopy(c library.Copy) bool {
 // saying "this device" would be noise about a distinction that does not yet
 // exist for that person.
 func (a *App) originBadge(gtx C, origins []library.Origin) D {
-	if !a.lib.Remote() || len(origins) == 0 {
+	// At phone width the badge is dropped entirely (owner's call, 2026-08-17):
+	// a 400 dp row has one line to spend and the title is what it is for.
+	if a.narrowUI || !a.lib.Remote() || len(origins) == 0 {
 		return D{}
 	}
 	return layout.Inset{Left: 10}.Layout(gtx, func(gtx C) D {

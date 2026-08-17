@@ -114,7 +114,11 @@ func (a *App) nowPlaying(gtx C) D {
 		if cur.Album != "" {
 			sub += "  ·  " + cur.Album
 		}
-		if cur.Origin != "" {
+		// The origin is desktop-only decoration: at phone width the one
+		// subtitle line belongs to the artist and the album (owner's call,
+		// 2026-08-17). The Downloading message below keeps naming it
+		// everywhere, because there it explains a wait.
+		if cur.Origin != "" && !a.narrowUI {
 			sub += "  ·  " + cur.Origin
 		}
 		// A download takes as long as it takes, and silence with no explanation

@@ -32,6 +32,27 @@ var (
 	iconKept = mustIcon(icons.ActionDone)
 	// iconNoCover is the record drawn on a tile whose music has no art.
 	iconNoCover = mustIcon(icons.AVAlbum)
+
+	// The transport, in the web UI's order: shuffle · prev · play · next ·
+	// repeat. These are the one place an icon needs no worded twin — they are
+	// the same glyphs every player has drawn for fifty years — and the keyboard
+	// list in Settings still spells the actions out.
+	iconShuffle   = mustIcon(icons.AVShuffle)
+	iconPrev      = mustIcon(icons.AVSkipPrevious)
+	iconPlay      = mustIcon(icons.AVPlayArrow)
+	iconPause     = mustIcon(icons.AVPause)
+	iconNext      = mustIcon(icons.AVSkipNext)
+	iconRepeat    = mustIcon(icons.AVRepeat)
+	iconRepeatOne = mustIcon(icons.AVRepeatOne)
+	// iconLoading stands on the play button while a download is what is
+	// actually happening — the bar's subtitle names the server it comes from.
+	iconLoading = mustIcon(icons.ActionHourglassEmpty)
+
+	// The Settings panel's actions.
+	iconAddFolder = mustIcon(icons.FileCreateNewFolder)
+	iconRescan    = mustIcon(icons.NavigationRefresh)
+	iconDelete    = mustIcon(icons.ActionDelete)
+	iconSave      = mustIcon(icons.ContentSave)
 )
 
 func mustIcon(data []byte) *widget.Icon {
@@ -65,6 +86,90 @@ func (a *App) iconButton(gtx C, click *widget.Clickable, ic *widget.Icon, size u
 			col := colDim
 			if click.Hovered() {
 				col = colFg
+			}
+			return ic.Layout(gtx, col)
+		})
+	})
+}
+
+// ctrlButton is one transport control, the web UI's .ctrl-btn: a quiet glyph
+// that gains a circle on hover and holds the accent while its mode is on —
+// which is how shuffle and repeat say they are engaged without a word.
+func (a *App) ctrlButton(gtx C, click *widget.Clickable, ic *widget.Icon, size unit.Dp, active bool) D {
+	px := gtx.Dp(size)
+	return click.Layout(gtx, func(gtx C) D {
+		gtx.Constraints = layout.Exact(image.Pt(px, px))
+		if click.Hovered() {
+			circle := clip.Ellipse{Max: image.Pt(px, px)}
+			paint.FillShape(gtx.Ops, colSel, circle.Op(gtx.Ops))
+		}
+		if ic == nil {
+			return D{Size: image.Pt(px, px)}
+		}
+		return layout.Center.Layout(gtx, func(gtx C) D {
+			gtx.Constraints = layout.Exact(image.Pt(px*3/5, px*3/5))
+			col := colDim
+			switch {
+			case active:
+				col = colAccent
+			case click.Hovered():
+				col = colFg
+			}
+			return ic.Layout(gtx, col)
+		})
+	})
+}
+
+// primaryButton is the play/pause control, the web UI's .ctrl-btn.primary: an
+// accent-filled circle, a shade darker under the pointer, with a white glyph.
+// One control on the bar gets to be loud, and it is the one that answers what
+// a music player is for.
+func (a *App) primaryButton(gtx C, click *widget.Clickable, ic *widget.Icon, size unit.Dp) D {
+	px := gtx.Dp(size)
+	return click.Layout(gtx, func(gtx C) D {
+		gtx.Constraints = layout.Exact(image.Pt(px, px))
+		bg := colAccent
+		if click.Hovered() {
+			bg = colAccentDim
+		}
+		circle := clip.Ellipse{Max: image.Pt(px, px)}
+		paint.FillShape(gtx.Ops, bg, circle.Op(gtx.Ops))
+		if ic == nil {
+			return D{Size: image.Pt(px, px)}
+		}
+		return layout.Center.Layout(gtx, func(gtx C) D {
+			gtx.Constraints = layout.Exact(image.Pt(px*3/5, px*3/5))
+			return ic.Layout(gtx, colOnAccent)
+		})
+	})
+}
+
+// actionButton is a Settings action as an icon: the filled square that stands
+// where a worded button stood. It keeps a visible background at rest — unlike
+// the row icons, it is not competing with forty siblings for quiet — and takes
+// the accent while its action runs (a rescan in flight).
+func (a *App) actionButton(gtx C, click *widget.Clickable, ic *widget.Icon, active bool) D {
+	px := gtx.Dp(34)
+	return click.Layout(gtx, func(gtx C) D {
+		gtx.Constraints = layout.Exact(image.Pt(px, px))
+		bg := colSel
+		if click.Hovered() {
+			bg = colLine
+		}
+		if active {
+			bg = colAccent
+		}
+		r := gtx.Dp(8)
+		rect := clip.RRect{Rect: image.Rectangle{Max: image.Pt(px, px)}, SE: r, SW: r, NE: r, NW: r}
+		paint.FillShape(gtx.Ops, bg, rect.Op(gtx.Ops))
+		if ic == nil {
+			return D{Size: image.Pt(px, px)}
+		}
+		return layout.Center.Layout(gtx, func(gtx C) D {
+			gtx.Constraints = layout.Exact(image.Pt(px*3/5, px*3/5))
+			col := colFg
+			if active {
+				col = colOnAccent
 			}
 			return ic.Layout(gtx, col)
 		})

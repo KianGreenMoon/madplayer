@@ -153,30 +153,39 @@ func (a *App) nowPlaying(gtx C) D {
 			}),
 		)
 	}
+	// The transport is icons in the web UI's order — shuffle · prev · play ·
+	// next · repeat — with the same statement of state: an engaged mode holds
+	// the accent, and play is the one accent-filled circle on the bar.
 	buttons := []layout.FlexChild{
 		layout.Rigid(func(gtx C) D {
-			return a.smallButton(gtx, &a.btnShuffle, "Shuffle", a.pl.Shuffled())
+			return a.ctrlButton(gtx, &a.btnShuffle, iconShuffle, 36, a.pl.Shuffled())
 		}),
-		layout.Rigid(layout.Spacer{Width: 6}.Layout),
+		layout.Rigid(layout.Spacer{Width: 4}.Layout),
+		layout.Rigid(func(gtx C) D { return a.ctrlButton(gtx, &a.btnPrev, iconPrev, 36, false) }),
+		layout.Rigid(layout.Spacer{Width: 8}.Layout),
 		layout.Rigid(func(gtx C) D {
-			r := a.pl.Repeat()
-			return a.smallButton(gtx, &a.btnRepeat, "Repeat: "+r.String(), r != queue.RepeatOff)
-		}),
-		layout.Rigid(layout.Spacer{Width: 14}.Layout),
-		layout.Rigid(func(gtx C) D { return a.smallButton(gtx, &a.btnPrev, "Prev", false) }),
-		layout.Rigid(layout.Spacer{Width: 6}.Layout),
-		layout.Rigid(func(gtx C) D {
-			label := "Play"
+			ic := iconPlay
 			switch {
 			case a.pl.Loading():
-				label = "…"
+				ic = iconLoading
 			case a.pl.Playing():
-				label = "Pause"
+				ic = iconPause
 			}
-			return a.smallButton(gtx, &a.btnPlay, label, false)
+			return a.primaryButton(gtx, &a.btnPlay, ic, 42)
 		}),
-		layout.Rigid(layout.Spacer{Width: 6}.Layout),
-		layout.Rigid(func(gtx C) D { return a.smallButton(gtx, &a.btnNext, "Next", false) }),
+		layout.Rigid(layout.Spacer{Width: 8}.Layout),
+		layout.Rigid(func(gtx C) D { return a.ctrlButton(gtx, &a.btnNext, iconNext, 36, false) }),
+		layout.Rigid(layout.Spacer{Width: 4}.Layout),
+		layout.Rigid(func(gtx C) D {
+			// Repeat-one is its own glyph rather than a badge: Gio ships it,
+			// where the web UI has to fake one with CSS.
+			r := a.pl.Repeat()
+			ic := iconRepeat
+			if r == queue.RepeatOne {
+				ic = iconRepeatOne
+			}
+			return a.ctrlButton(gtx, &a.btnRepeat, ic, 36, r != queue.RepeatOff)
+		}),
 	}
 
 	// One row on a desktop, two on a phone. Five rigid buttons beside a

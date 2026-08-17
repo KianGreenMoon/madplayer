@@ -204,9 +204,11 @@ type App struct {
 	keepTechnical                        widget.Bool
 	btnSignIn, btnCacheSave              widget.Clickable
 	meshOn                               widget.Bool
-	rmFolder                             []widget.Clickable
-	rmServer                             []widget.Clickable
-	rmQueue                              []widget.Clickable
+	// themeBtn is one clickable per entry of themes, in the same order.
+	themeBtn []widget.Clickable
+	rmFolder []widget.Clickable
+	rmServer []widget.Clickable
+	rmQueue  []widget.Clickable
 	// rowNext and rowAdd are the per-row queue buttons, indexed exactly like
 	// rows — see ensureRows, which grows all three together.
 	rowNext []widget.Clickable
@@ -277,6 +279,10 @@ func newApp(win *app.Window, pl *player.Player, be *backend.Backend, store *pref
 		a.status = "settings could not be read: " + err.Error()
 	}
 	a.cfg = cfg
+	// The saved look, before the first frame: a light-theme user should not see
+	// the window open dark and then correct itself.
+	a.themeBtn = make([]widget.Clickable, len(themes))
+	a.applyTheme(cfg.Theme)
 	a.vol.Value = float32(cfg.Volume)
 	pl.SetVolume(cfg.Volume)
 	// The switch shows what was ASKED for, not what happened. They differ on a
@@ -1222,7 +1228,8 @@ func bar(gtx C, w layout.Widget) D {
 func filled(gtx C, bg color.NRGBA, w layout.Widget) D {
 	return layout.Stack{}.Layout(gtx,
 		layout.Expanded(func(gtx C) D {
-			r := gtx.Dp(6)
+			// 8dp everywhere a corner rounds, the web UI's --radius.
+			r := gtx.Dp(8)
 			rect := clip.RRect{Rect: image.Rectangle{Max: gtx.Constraints.Min}, SE: r, SW: r, NE: r, NW: r}
 			paint.FillShape(gtx.Ops, bg, rect.Op(gtx.Ops))
 			return D{Size: gtx.Constraints.Min}
@@ -1237,11 +1244,13 @@ func filled(gtx C, bg color.NRGBA, w layout.Widget) D {
 func (a *App) smallButton(gtx C, click *widget.Clickable, label string, active bool) D {
 	b := material.Button(a.th, click, label)
 	b.Background = colSel
-	if active {
-		b.Background = colAccent
-	}
 	b.Color = colFg
-	b.CornerRadius = 6
+	if active {
+		// Accent-filled buttons carry white text in every theme, like the web
+		// UI's — colFg would vanish into a light theme's accent.
+		b.Background, b.Color = colAccent, colOnAccent
+	}
+	b.CornerRadius = 8
 	b.TextSize = unit.Sp(13)
 	b.Inset = layout.Inset{Top: 6, Bottom: 6, Left: 12, Right: 12}
 	return b.Layout(gtx)

@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"gioui.org/layout"
+	"gioui.org/op/clip"
+	"gioui.org/op/paint"
 	"gioui.org/widget"
 	"gioui.org/widget/material"
 
@@ -180,16 +182,14 @@ func (a *App) settings(gtx C) D {
 					return filled(gtx, colSel, ed.Layout)
 				}),
 				layout.Rigid(layout.Spacer{Width: 8}.Layout),
+				// Add and rescan as icons; a running rescan holds the accent, and
+				// the status line below still says "Scanning…" in words.
 				layout.Rigid(func(gtx C) D {
-					return a.smallButton(gtx, &a.btnAddFolder, "Add folder", false)
+					return a.actionButton(gtx, &a.btnAddFolder, iconAddFolder, false)
 				}),
 				layout.Rigid(layout.Spacer{Width: 8}.Layout),
 				layout.Rigid(func(gtx C) D {
-					label := "Rescan"
-					if scanning {
-						label = "Scanning…"
-					}
-					return a.smallButton(gtx, &a.btnRescan, label, scanning)
+					return a.actionButton(gtx, &a.btnRescan, iconRescan, scanning)
 				}),
 			)
 		},
@@ -218,6 +218,7 @@ func (a *App) settings(gtx C) D {
 	}
 
 	rows = append(rows,
+		a.appearanceControls,
 		// What this device keeps on disk moved to its own page in 2026-08-15:
 		// there are two caches with different answers, and one paragraph here
 		// kept describing only the one it could clear.
@@ -260,7 +261,7 @@ func (a *App) folderRow(i int, f backend.Folder) layout.Widget {
 					)
 				}),
 				layout.Rigid(func(gtx C) D {
-					return a.smallButton(gtx, &a.rmFolder[i], "Remove", false)
+					return a.actionButton(gtx, &a.rmFolder[i], iconDelete, false)
 				}),
 			)
 		})
@@ -363,6 +364,112 @@ func (a *App) removeFolder(f backend.Folder) {
 	}()
 }
 
+// --- appearance ---------------------------------------------------------------
+
+// appearanceControls is the theme choice: the same four palettes as madshare's
+// web UI settings page, offered the same way — a swatch and a name per theme —
+// and saved with this device's preferences. A theme is a per-device taste, not
+// an account setting, on both sides.
+func (a *App) appearanceControls(gtx C) D {
+	for i := range themes {
+		if a.themeBtn[i].Clicked(gtx) {
+			a.setTheme(themes[i].name)
+		}
+	}
+	a.mu.Lock()
+	cur := themeName(a.cfg.Theme)
+	a.mu.Unlock()
+
+	return layout.Inset{Top: 18}.Layout(gtx, func(gtx C) D {
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+			layout.Rigid(func(gtx C) D { return a.sectionTitle(gtx, "Appearance") }),
+			layout.Rigid(func(gtx C) D {
+				return a.sectionHint(gtx, "The same themes as madshare's web UI. Applies right away, saved on this device.")
+			}),
+			layout.Rigid(func(gtx C) D {
+				// One row of four on a desktop; at phone width four chips
+				// overrun the screen, so they stack two by two.
+				perRow := len(themes)
+				if a.narrowUI {
+					perRow = 2
+				}
+				var rows []layout.FlexChild
+				for start := 0; start < len(themes); start += perRow {
+					if start > 0 {
+						rows = append(rows, layout.Rigid(layout.Spacer{Height: 8}.Layout))
+					}
+					end := min(start+perRow, len(themes))
+					children := make([]layout.FlexChild, 0, perRow*2)
+					for i := start; i < end; i++ {
+						if i > start {
+							children = append(children, layout.Rigid(layout.Spacer{Width: 8}.Layout))
+						}
+						t, click := themes[i], &a.themeBtn[i]
+						children = append(children, layout.Rigid(func(gtx C) D {
+							return a.themeChip(gtx, click, t, t.name == cur)
+						}))
+					}
+					rows = append(rows, layout.Rigid(func(gtx C) D {
+						return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx, children...)
+					}))
+				}
+				return layout.Flex{Axis: layout.Vertical}.Layout(gtx, rows...)
+			}),
+		)
+	})
+}
+
+// themeChip is one theme on offer: its own colors as a swatch — the accent dot
+// on its background, which is what the theme mostly IS — with its name beside
+// it, ringed in the accent when it is the one in force.
+func (a *App) themeChip(gtx C, click *widget.Clickable, t themeChoice, active bool) D {
+	border := widget.Border{Color: colLine, CornerRadius: 8, Width: 1}
+	if active {
+		border.Color = colAccent
+	}
+	return border.Layout(gtx, func(gtx C) D {
+		return click.Layout(gtx, func(gtx C) D {
+			return layout.Stack{}.Layout(gtx,
+				layout.Expanded(func(gtx C) D {
+					bg := colBar
+					if active || click.Hovered() {
+						bg = colSel
+					}
+					r := gtx.Dp(8)
+					rect := clip.RRect{Rect: image.Rectangle{Max: gtx.Constraints.Min}, SE: r, SW: r, NE: r, NW: r}
+					paint.FillShape(gtx.Ops, bg, rect.Op(gtx.Ops))
+					return D{Size: gtx.Constraints.Min}
+				}),
+				layout.Stacked(func(gtx C) D {
+					return layout.Inset{Top: 8, Bottom: 8, Left: 10, Right: 12}.Layout(gtx, func(gtx C) D {
+						return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+							layout.Rigid(func(gtx C) D { return themeSwatch(gtx, t.pal) }),
+							layout.Rigid(layout.Spacer{Width: 8}.Layout),
+							layout.Rigid(func(gtx C) D {
+								l := material.Body2(a.th, t.label)
+								l.Color = colFg
+								return l.Layout(gtx)
+							}),
+						)
+					})
+				}),
+			)
+		})
+	})
+}
+
+// themeSwatch draws a theme as the web UI's theme-dot does: that theme's
+// accent on a disc of its background, so the chip shows the theme's own colors
+// whatever theme is currently painting the rest of the panel.
+func themeSwatch(gtx C, p palette) D {
+	px := gtx.Dp(18)
+	paint.FillShape(gtx.Ops, p.bg, clip.Ellipse{Max: image.Pt(px, px)}.Op(gtx.Ops))
+	inset := px / 4
+	dot := clip.Ellipse{Min: image.Pt(inset, inset), Max: image.Pt(px-inset, px-inset)}
+	paint.FillShape(gtx.Ops, p.accent, dot.Op(gtx.Ops))
+	return D{Size: image.Pt(px, px)}
+}
+
 // --- keeping network music --------------------------------------------------
 
 // keepControls is where network music goes when it is kept.
@@ -419,7 +526,7 @@ func (a *App) keepControls(gtx C) D {
 					}),
 					layout.Rigid(layout.Spacer{Width: 8}.Layout),
 					layout.Rigid(func(gtx C) D {
-						return a.smallButton(gtx, &a.btnKeepDirSave, "Save", false)
+						return a.actionButton(gtx, &a.btnKeepDirSave, iconSave, false)
 					}),
 				)
 			}),

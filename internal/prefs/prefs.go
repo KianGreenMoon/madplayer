@@ -34,6 +34,12 @@ type Config struct {
 	// Volume is 0..1.
 	Volume float64 `json:"volume"`
 
+	// Theme is the color scheme, named exactly as madshare's web UI names its
+	// themes ("dark", "light", "ocean", "sunset") — the two settings pages offer
+	// the same list. Empty means the default (dark), so omitempty is safe here:
+	// unlike Mesh, "never chosen" and the default look identical on purpose.
+	Theme string `json:"theme,omitempty"`
+
 	// Servers are the remote madshares this device is signed in to. Each carries
 	// an API token, which is why this file is written 0600 (see Save).
 	Servers []Server `json:"servers,omitempty"`

@@ -85,6 +85,16 @@ var keyFilters = func() []event.Filter {
 	return out
 }()
 
+// keyFiltersBack is the same set plus Android's hardware back button.
+//
+// Back is deliberately NOT in the shortcuts table: whether it is filtered is a
+// decision taken per frame rather than a binding (see canGoBack), and it has no
+// keyboard twin to print in the help — a desktop has Escape, which is the same
+// act with a key on it. Both sets are built once so choosing between them costs
+// nothing sixty times a second.
+var keyFiltersBack = append(append([]event.Filter(nil), keyFilters...),
+	key.Filter{Name: key.NameBack})
+
 // editors is every text box in the program.
 //
 // It exists as one list because the keyboard gate below is only as good as its
@@ -118,13 +128,24 @@ func (a *App) typing(gtx C) bool {
 // anything is laid out, so a key and the frame it changes are the same frame.
 func (a *App) handleKeys(gtx C) {
 	typing := a.typing(gtx)
+	filters := keyFilters
+	if a.canGoBack() {
+		filters = keyFiltersBack
+	}
 	for {
-		ev, ok := gtx.Event(keyFilters...)
+		ev, ok := gtx.Event(filters...)
 		if !ok {
 			return
 		}
 		ke, isKey := ev.(key.Event)
 		if !isKey || ke.State != key.Press {
+			continue
+		}
+		// Back is the phone's, and it is Escape: it steps out of wherever you
+		// are, including out of a text box, which is why it is not gated on
+		// typing either.
+		if ke.Name == key.NameBack {
+			a.escape(gtx)
 			continue
 		}
 		for _, s := range shortcuts {
@@ -171,10 +192,17 @@ func (a *App) focusSearch(gtx C) {
 	gtx.Execute(key.FocusCmd{Tag: &a.search})
 }
 
-// escape steps back one level: it leaves a panel first, then walks the drill up.
-// This is the order the web UI's back handler uses, and it is what a phone's
-// hardware back button will need when this reaches Android.
+// escape steps back one level: out of a settings page first, then out of a
+// panel, then up the drill. This is the order the web UI's back handler uses,
+// and since 2026-08-18 it is also what a phone's hardware back button does.
 func (a *App) escape(gtx C) {
+	// Settings is an index of pages now, so the first step back out of one is
+	// to the index rather than out of Settings entirely (settingsnav.go).
+	if a.view == viewSettings && a.settingsPage != pageIndex {
+		a.openSettingsPage(pageIndex)
+		gtx.Execute(key.FocusCmd{Tag: nil})
+		return
+	}
 	if a.view != viewBrowse || a.search.Text() != "" {
 		a.search.SetText("")
 		a.view = viewBrowse
@@ -182,4 +210,22 @@ func (a *App) escape(gtx C) {
 		return
 	}
 	a.drillUp()
+}
+
+// canGoBack reports whether escape has anywhere to go.
+//
+// On the desktop this decides nothing — Escape with nothing to leave is simply
+// a no-op. On Android it decides whether the app stays open at all: Gio hands
+// the hardware back press to the router and reads "no handler matched" as
+// permission to finish the activity (app/os_android.go, onBack). So the Back
+// filter is installed per frame, on this answer, and at the top of the library
+// the press is deliberately left unclaimed — that is the one place where
+// closing the app IS what back means.
+//
+// Every branch here mirrors one in escape. A test walks the states and fails if
+// the two ever disagree, because the ways they can disagree are both bad: a
+// back button that quits from inside a settings page, or one that can never
+// quit at all.
+func (a *App) canGoBack() bool {
+	return a.view != viewBrowse || a.search.Text() != "" || a.level != levelArtists
 }

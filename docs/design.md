@@ -918,6 +918,23 @@ discipline, not luck:
   UI's answer to the same problem is the row's ⋯ menu — see
   `player-and-queue.md` §"Favorites & quick-add"; the native client prefers
   always-visible icons over a menu tap.)
+- **Settings is an index of pages, not one scroll** (2026-08-18). It grew section
+  by section until reaching the madnetwork switch on a phone meant scrolling past
+  two paragraphs about music folders and four theme chips, with nothing to aim
+  at. The sections are pages behind an index now, which is what a settings screen
+  on a phone is. Two consequences are worth more than the tap they cost: the
+  index says what each page currently **answers** — how many folders, which
+  theme, whether the madnetwork is on — so the common visit, which is checking
+  rather than changing, ends at the index; and a page only lays out when it is
+  open, so the pairing section stops polling the peer table while somebody
+  chooses a theme. One table generates the index and dispatches the body, so a
+  page that is listed and cannot be opened is not expressible. **The hardware
+  back button became load-bearing on the same day**: Gio hands Android's back
+  press to the router and reads "no handler matched" as permission to finish the
+  activity, so back is filtered per frame on whether this program has anywhere to
+  go — out of a settings page, out of a panel, up the drill — and deliberately
+  left unclaimed at the top of the library, which is the one place where closing
+  the app *is* what back means.
 - **Touch has no Ctrl+V either, so every settings box carries its own clipboard
   buttons** (2026-08-18). Gio reaches the clipboard *only* through keyboard
   shortcuts — `widget.Editor` answers Ctrl+C/V/X and draws no selection toolbar,

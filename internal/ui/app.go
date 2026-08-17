@@ -216,6 +216,12 @@ type App struct {
 	clipFolder, clipKeepDir      clipButtons
 	clipCard                     clipButtons
 	clipAddr, clipUser, clipPass clipButtons
+	// Settings is an index of pages rather than one scroll (settingsnav.go).
+	// settingsPage is which one is open, settingsBtn one clickable per index
+	// row, and btnSettingsBack the way out of a page.
+	settingsPage    settingsPage
+	settingsBtn     []widget.Clickable
+	btnSettingsBack widget.Clickable
 	// themeBtn is one clickable per entry of themes, in the same order.
 	themeBtn []widget.Clickable
 	rmFolder []widget.Clickable
@@ -946,7 +952,15 @@ func (a *App) problemBanner(gtx C) D {
 // frame it affects are the same frame.
 func (a *App) update(gtx C) {
 	if a.btnSettings.Clicked(gtx) {
-		a.view = toggleView(a.view, viewSettings)
+		// Pressing Settings from inside one of its pages goes back to the index,
+		// the way pressing an already-active tab returns it to its root
+		// everywhere else. Only from the index does it close the panel — leaving
+		// Settings altogether from three pages deep is a jump nobody asked for.
+		if a.view == viewSettings && a.settingsPage != pageIndex {
+			a.openSettingsPage(pageIndex)
+		} else {
+			a.view = toggleView(a.view, viewSettings)
+		}
 	}
 	if a.btnCache.Clicked(gtx) {
 		a.view = toggleView(a.view, viewCache)

@@ -119,28 +119,19 @@ func (a *App) queuePanel(gtx C) D {
 
 // --- folders / settings -----------------------------------------------------
 
-// settings is this device's own panel: where its music comes from, and how much
-// of somebody else's it keeps. There is no native folder picker in Gio, so a
-// path is typed or pasted — and validated before being accepted, because a
-// silently-ignored typo looks exactly like an empty library.
+// folderRows is the Music folders page: where this device's own music comes
+// from. There is no native folder picker in Gio, so a path is typed or pasted —
+// and validated before being accepted, because a silently-ignored typo looks
+// exactly like an empty library.
 //
 // These are PREFERENCES, not an account: there is no password here and nothing
-// to sign in to (docs/design.md §"There is no local account"). The one
-// thing that looks like a server setting — the download limit — is exactly that:
-// madshare's own runtime setting, read from the backend embedded in this
-// process.
+// to sign in to (docs/design.md §"There is no local account").
 //
-// The whole panel SCROLLS, as one list, and the folders are rows in it rather
-// than a list of their own. Two things fall out of that, and both were wrong
-// before: a person with one folder no longer gets half a screen of nothing
-// between it and the next section (the folder list used to be the flexed child,
-// so it took every pixel the sections below did not), and on a window shorter
-// than the settings — a small laptop, a tiled half-screen, and every phone —
-// the sections below the fold can be reached at all. They used to be laid out
-// into whatever space was left, which on a short window is none.
-//
-// A list inside a list would eat the outer one's scroll, hence the flattening.
-func (a *App) settings(gtx C) D {
+// It returns ROWS rather than one widget because the folders are items of the
+// page's own scrolling list. A list inside a list would eat the outer one's
+// scroll, and a folder list as a flexed child took every pixel the rest of the
+// page did not want — both were wrong here before 2026-08-15.
+func (a *App) folderRows(gtx C) []layout.Widget {
 	a.mu.Lock()
 	folders := append([]backend.Folder(nil), a.folders...)
 	status, scanning := a.status, a.scanning
@@ -211,24 +202,7 @@ func (a *App) settings(gtx C) D {
 	for i, f := range folders {
 		rows = append(rows, a.folderRow(i, f))
 	}
-
-	rows = append(rows,
-		a.appearanceControls,
-		// What this device keeps on disk moved to its own page in 2026-08-15:
-		// there are two caches with different answers, and one paragraph here
-		// kept describing only the one it could clear.
-		a.meshControls,
-		a.pairingControls,
-		a.keepControls,
-		a.shortcutHelp,
-		a.aboutControls,
-	)
-
-	return layout.Inset{Top: 16, Bottom: 16, Left: 20, Right: 20}.Layout(gtx, func(gtx C) D {
-		lst := material.List(a.th, &a.folderList)
-		lst.Indicator.Color = colLine
-		return lst.Layout(gtx, len(rows), func(gtx C, i int) D { return rows[i](gtx) })
-	})
+	return rows
 }
 
 // folderRow is one music folder: where it is, how the last scan went, and the

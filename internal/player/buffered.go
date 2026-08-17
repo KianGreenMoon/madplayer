@@ -16,12 +16,15 @@ package player
 // of a track that trickled.
 //
 // The fix is structural rather than a timeout: a fill goroutine owns the
-// decoder and runs it OFF every lock, into a ring holding a couple of seconds
-// of samples. What the sink pulls is only ever a memory copy. A stall now
-// costs silence — the ring runs dry and the stream pads — instead of wedging
-// every lock between the network and the screen. The same window also absorbs
-// the scheduling jitter that used to turn a busy phone into crackle: the pull
-// no longer needs the decoder to hit a real-time deadline, only the copy.
+// decoder and runs it OFF every lock, into a ring holding several seconds of
+// samples. What the sink pulls is only ever a memory copy. A stall now costs
+// silence — the ring runs dry and the stream pads — instead of wedging every
+// lock between the network and the screen. The same window also absorbs the
+// scheduling jitter that used to turn a busy phone into crackle: the pull no
+// longer needs the decoder to hit a real-time deadline, only the copy. And
+// where the ring DOES run out, the gap is made clean rather than crackly:
+// delivery holds until rearmWindow is buffered again (a trickle is not
+// dribbled out with silence between), and both edges of the gap are ramped.
 //
 // Only a NON-SEEKABLE source is wrapped (source.bufferAhead), and only when
 // it is installed for playback: rangeseek's base calibration and openItemAt's
@@ -37,17 +40,32 @@ import (
 )
 
 const (
-	// aheadWindow is how much decoded audio the ring holds. Long enough to ride
-	// out the stalls a phone's link actually has (scheduling, wifi power
-	// management, a swarm holder pausing between chunks), short enough that a
-	// track change does not sit on megabytes nobody will hear. Two seconds of
-	// stereo float64 is ~1.4 MB.
-	aheadWindow = 2 * time.Second
+	// aheadWindow is how much decoded audio the ring holds. It has to ride out
+	// the pauses a swarm fetch actually has — a holder going quiet between
+	// chunks is seconds, not milliseconds (ChunkStall alone tolerates 20) —
+	// plus the CPU spikes chunk hashing and overlay crypto put next to the
+	// decoder on a phone. Two seconds proved too tight in exactly that spot,
+	// heard as occasional crackle on remote tracks (2026-08-17). Eight seconds
+	// of stereo float64 is ~5.6 MB, dropped whole at track change.
+	aheadWindow = 8 * time.Second
+
+	// rearmWindow is how much the ring must refill before audio resumes after
+	// running dry. Without it a slow trickle is delivered the moment it
+	// arrives, a few hundred samples at a time with silence padded between —
+	// audio and silence alternating at buffer rate, which is heard as crackle.
+	// Gated, one dry spell is one gap: one artifact instead of dozens.
+	rearmWindow = 500 * time.Millisecond
 
 	// fillChunk is how many samples the fill decodes per call — the same 512
 	// beep's own mixer streams in, so one decode step and one mix step move
 	// the same amount of audio.
 	fillChunk = 512
+
+	// declickLen is the ramp, in samples (~3 ms at 44.1 kHz), applied where
+	// real audio meets ring padding. A hard cut to or from silence is a click,
+	// and a dry spell has two such edges; the ramp runs over the real audio on
+	// each side of the gap.
+	declickLen = 128
 )
 
 // buffered is a beep.StreamSeekCloser that serves from a ring a background
@@ -87,6 +105,12 @@ type buffered struct {
 	// context's cancellation, which every caller performs around Close.
 	closed bool
 
+	// rearm and starved carry the dry-spell hysteresis: once Stream has had to
+	// pad, starved holds delivery silent until the ring holds rearm samples
+	// again (or the track is done and owed its last ones) — see rearmWindow.
+	rearm   int
+	starved bool
+
 	// pos is the playhead in samples: the decoder's position at wrap time plus
 	// every REAL sample delivered since. Padding does not count — silence the
 	// network owes is not audio that played — so a stalled track's bar stands
@@ -118,6 +142,10 @@ func newBuffered(inner beep.StreamSeekCloser, rate beep.SampleRate) *buffered {
 		length: inner.Len(),
 		pos:    int64(inner.Position()),
 		exited: make(chan struct{}),
+	}
+	b.rearm = rate.N(rearmWindow)
+	if b.rearm <= 0 || b.rearm > n/2 {
+		b.rearm = n / 2
 	}
 	b.cond = sync.NewCond(&b.mu)
 	go b.fill()
@@ -177,33 +205,72 @@ func (b *buffered) fill() {
 func (b *buffered) Stream(samples [][2]float64) (int, bool) {
 	b.mu.Lock()
 	got := 0
-	for b.count > 0 && got < len(samples) {
-		n := min(b.count, len(samples)-got, len(b.ring)-b.start)
-		copy(samples[got:got+n], b.ring[b.start:b.start+n])
-		b.start = (b.start + n) % len(b.ring)
-		b.count -= n
-		got += n
+	// A starved stream stays silent until the ring rearms — unless the track
+	// is done, in which case what remains is its last audio and is owed.
+	gated := b.starved && !b.done && !b.closed && b.count < b.rearm
+	if !gated {
+		for b.count > 0 && got < len(samples) {
+			n := min(b.count, len(samples)-got, len(b.ring)-b.start)
+			copy(samples[got:got+n], b.ring[b.start:b.start+n])
+			b.start = (b.start + n) % len(b.ring)
+			b.count -= n
+			got += n
+		}
+	}
+	resumed := b.starved && got > 0
+	if got > 0 {
+		b.starved = false
 	}
 	b.pos += int64(got)
 	ended := (b.done || b.closed) && b.count == 0
+	// The ring ran dry with the track still alive: the network is behind.
+	// Silence, counted by nobody — pos stands still until real audio moves it.
+	padding := got < len(samples) && !ended
+	if padding {
+		b.starved = true
+	}
 	b.mu.Unlock()
 	if got > 0 {
 		b.cond.Broadcast() // room freed; the fill may be waiting for it
 	}
 
+	if resumed {
+		fadeIn(samples[:got])
+	}
+	if padding {
+		fadeOut(samples[:got])
+		clear(samples[got:])
+		return len(samples), true
+	}
 	if got == len(samples) {
 		return got, true
 	}
-	if ended {
-		// The decoder is finished and the ring is drained: these are the
-		// track's last samples, and the short return is the end-of-track
-		// signal that runs the queue.
-		return got, false
+	// The decoder is finished and the ring is drained: these are the track's
+	// last samples, and the short return is the end-of-track signal that runs
+	// the queue.
+	return got, false
+}
+
+// fadeIn ramps the head of the first real audio after a dry spell up from
+// near-silence, over at most declickLen samples.
+func fadeIn(s [][2]float64) {
+	n := min(declickLen, len(s))
+	for i := 0; i < n; i++ {
+		g := float64(i+1) / float64(n+1)
+		s[i][0] *= g
+		s[i][1] *= g
 	}
-	// The ring ran dry with the track still alive: the network is behind.
-	// Silence, counted by nobody — pos stands still until real audio moves it.
-	clear(samples[got:])
-	return len(samples), true
+}
+
+// fadeOut ramps the tail of the real audio before a pad down to exactly zero,
+// over at most declickLen samples, so the padding continues it seamlessly.
+func fadeOut(s [][2]float64) {
+	n := min(declickLen, len(s))
+	for i := 0; i < n; i++ {
+		g := float64(n-1-i) / float64(n)
+		s[len(s)-n+i][0] *= g
+		s[len(s)-n+i][1] *= g
+	}
 }
 
 // Position is the playhead in samples — see buffered.pos for what counts.

@@ -211,6 +211,111 @@ func TestCloseDoesNotWaitForAParkedFill(t *testing.T) {
 	}
 }
 
+// A dry spell is one gap, not a crackle. Once the ring has run dry, a trickle
+// of samples must NOT be delivered as it arrives — audio and silence
+// alternating at buffer rate is the intermittent crackle heard on remote
+// tracks (2026-08-17) — so the stream stays silent until rearm's worth is
+// buffered again, then resumes faded in.
+func TestADrySpellIsOneGapNotACrackle(t *testing.T) {
+	inner := newScripted(0)
+	// A tiny rate keeps the numbers readable: ring 800, rearm 50.
+	b := newBuffered(inner, 100)
+	defer func() { close(inner.ch); <-b.exited }()
+	if b.rearm != 50 {
+		t.Fatalf("rearm = %d, want 50 at rate 100", b.rearm)
+	}
+
+	go inner.feed(20)
+	waitFor(t, "the fill to buffer the opening samples", func() bool {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		return b.count >= 20
+	})
+	buf := make([][2]float64, 20)
+	if n, ok := b.Stream(buf); n != 20 || !ok {
+		t.Fatalf("opening Stream = (%d, %v), want (20, true)", n, ok)
+	}
+
+	// Dry: this pad opens the spell.
+	if n, ok := b.Stream(buf[:8]); n != 8 || !ok {
+		t.Fatalf("padding Stream = (%d, %v), want (8, true)", n, ok)
+	}
+
+	// A trickle below rearm arrives. Delivering it now would be the crackle.
+	go inner.feed(30)
+	waitFor(t, "the trickle to be buffered", func() bool {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		return b.count >= 30
+	})
+	if n, ok := b.Stream(buf[:8]); n != 8 || !ok {
+		t.Fatalf("gated Stream = (%d, %v), want (8, true)", n, ok)
+	}
+	for i := 0; i < 8; i++ {
+		if buf[i] != ([2]float64{}) {
+			t.Fatalf("sample %d = %v while gated, want silence — a delivered trickle is the crackle", i, buf[i])
+		}
+	}
+	if got := b.Position(); got != 20 {
+		t.Errorf("Position = %d while gated, want 20 — gated silence is not audio that played", got)
+	}
+
+	// The ring reaches rearm; audio resumes, faded in.
+	go inner.feed(30)
+	waitFor(t, "the ring to rearm", func() bool {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		return b.count >= b.rearm
+	})
+	if n, ok := b.Stream(buf[:8]); n != 8 || !ok {
+		t.Fatalf("resumed Stream = (%d, %v), want (8, true)", n, ok)
+	}
+	for i := 0; i < 8; i++ {
+		if buf[i] == ([2]float64{}) {
+			t.Fatalf("sample %d silent after the ring rearmed, want audio", i)
+		}
+	}
+	if buf[0][0] >= 1 {
+		t.Errorf("first resumed sample = %v, want it faded in below the fed value 1", buf[0])
+	}
+	if got := b.Position(); got != 28 {
+		t.Errorf("Position = %d after resuming, want 28", got)
+	}
+}
+
+// The edge where audio meets padding is ramped: a hard cut to silence is the
+// click half of the crackle. The last real sample before a pad must reach
+// exactly zero, so the silence continues it seamlessly.
+func TestPaddingEdgesAreRamped(t *testing.T) {
+	inner := newScripted(0)
+	b := newBuffered(inner, 100)
+	defer func() { close(inner.ch); <-b.exited }()
+
+	go inner.feed(4)
+	waitFor(t, "the fill to buffer the samples", func() bool {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		return b.count >= 4
+	})
+	buf := make([][2]float64, 8)
+	if n, ok := b.Stream(buf); n != 8 || !ok {
+		t.Fatalf("Stream = (%d, %v), want a full padded buffer (8, true)", n, ok)
+	}
+	// Four real samples (values 1..4), faded out over their whole length:
+	// gains 3/4, 2/4, 1/4, 0 — all exact in binary.
+	want := [][2]float64{{0.75, 0.75}, {1, 1}, {0.75, 0.75}, {0, 0}}
+	for i, w := range want {
+		if buf[i] != w {
+			t.Errorf("sample %d = %v, want %v (fed value %d faded out)", i, buf[i], w, i+1)
+		}
+	}
+	for i := 4; i < 8; i++ {
+		if buf[i] != ([2]float64{}) {
+			t.Errorf("pad sample %d = %v, want silence", i, buf[i])
+		}
+	}
+}
+
 // The whole chain, as the phone runs it: a streaming track stalls mid-song
 // while the device keeps pulling, and the calls the UI makes every frame
 // still answer. Before the ring, the pull blocked inside the decoder holding

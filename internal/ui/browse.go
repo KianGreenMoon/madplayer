@@ -319,46 +319,90 @@ func (a *App) albumHeader(gtx C, tracks []*library.Track) D {
 		meta = fmt.Sprintf("%d  ·  %s", a.album.Year, meta)
 	}
 
+	titles := func(gtx C) D {
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+			layout.Rigid(func(gtx C) D {
+				l := material.H6(a.th, a.album.Title)
+				l.Color = colFg
+				l.MaxLines = 2
+				return l.Layout(gtx)
+			}),
+			layout.Rigid(func(gtx C) D {
+				l := material.Body2(a.th, a.album.ArtistName)
+				l.Color = colDim
+				l.MaxLines = 1
+				return l.Layout(gtx)
+			}),
+			layout.Rigid(layout.Spacer{Height: 6}.Layout),
+			layout.Rigid(func(gtx C) D {
+				l := material.Caption(a.th, meta)
+				l.Color = colDim
+				l.MaxLines = 1
+				return l.Layout(gtx)
+			}),
+		)
+	}
+	queueActions := func(gtx C) D {
+		return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
+			layout.Rigid(func(gtx C) D {
+				return a.smallButton(gtx, &a.btnPlayAlbum, "Play", false)
+			}),
+			layout.Rigid(layout.Spacer{Width: 8}.Layout),
+			layout.Rigid(func(gtx C) D {
+				return a.smallButton(gtx, &a.btnAlbumNext, "Play next", false)
+			}),
+			layout.Rigid(layout.Spacer{Width: 8}.Layout),
+			layout.Rigid(func(gtx C) D {
+				return a.smallButton(gtx, &a.btnAlbumAdd, "Add to queue", false)
+			}),
+		)
+	}
+
 	return layout.Inset{Top: 4, Bottom: 14, Left: 20, Right: 20}.Layout(gtx, func(gtx C) D {
+		// The action row next to a 104 dp cover has about 250 dp on a phone,
+		// which three buttons overflow and a fourth never entered — "Keep on
+		// this device" was simply off the screen. So below narrowBar the
+		// actions leave the cover's column: the queue actions take a full-width
+		// row under the header, and the keep offer a row under those. The keep
+		// button cannot share their row even at full width — its label is a
+		// sentence, and honestly counting ("Keep 7 on this device") makes it
+		// longer still.
+		if gtx.Constraints.Max.X < gtx.Dp(narrowBar) {
+			children := []layout.FlexChild{
+				layout.Rigid(func(gtx C) D {
+					return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+						layout.Rigid(func(gtx C) D { return a.cover(gtx, albumCoverPath(tracks), 104) }),
+						layout.Rigid(layout.Spacer{Width: 16}.Layout),
+						layout.Flexed(1, titles),
+					)
+				}),
+				layout.Rigid(layout.Spacer{Height: 10}.Layout),
+				layout.Rigid(queueActions),
+			}
+			if keep := a.albumKeepButton(tracks); keep != nil {
+				children = append(children,
+					layout.Rigid(layout.Spacer{Height: 8}.Layout),
+					layout.Rigid(keep),
+				)
+			}
+			return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
+		}
 		return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
 			layout.Rigid(func(gtx C) D { return a.cover(gtx, albumCoverPath(tracks), 104) }),
 			layout.Rigid(layout.Spacer{Width: 16}.Layout),
 			layout.Flexed(1, func(gtx C) D {
 				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-					layout.Rigid(func(gtx C) D {
-						l := material.H6(a.th, a.album.Title)
-						l.Color = colFg
-						l.MaxLines = 2
-						return l.Layout(gtx)
-					}),
-					layout.Rigid(func(gtx C) D {
-						l := material.Body2(a.th, a.album.ArtistName)
-						l.Color = colDim
-						l.MaxLines = 1
-						return l.Layout(gtx)
-					}),
-					layout.Rigid(layout.Spacer{Height: 6}.Layout),
-					layout.Rigid(func(gtx C) D {
-						l := material.Caption(a.th, meta)
-						l.Color = colDim
-						l.MaxLines = 1
-						return l.Layout(gtx)
-					}),
+					layout.Rigid(titles),
 					layout.Rigid(layout.Spacer{Height: 10}.Layout),
 					layout.Rigid(func(gtx C) D {
+						keep := a.albumKeepButton(tracks)
+						if keep == nil {
+							return queueActions(gtx)
+						}
 						return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
-							layout.Rigid(func(gtx C) D {
-								return a.smallButton(gtx, &a.btnPlayAlbum, "Play", false)
-							}),
+							layout.Rigid(queueActions),
 							layout.Rigid(layout.Spacer{Width: 8}.Layout),
-							layout.Rigid(func(gtx C) D {
-								return a.smallButton(gtx, &a.btnAlbumNext, "Play next", false)
-							}),
-							layout.Rigid(layout.Spacer{Width: 8}.Layout),
-							layout.Rigid(func(gtx C) D {
-								return a.smallButton(gtx, &a.btnAlbumAdd, "Add to queue", false)
-							}),
-							layout.Rigid(func(gtx C) D { return a.albumKeepButton(gtx, tracks) }),
+							layout.Rigid(keep),
 						)
 					}),
 				)
@@ -787,8 +831,10 @@ func (a *App) chevron(gtx C) D {
 }
 
 // albumKeepButton offers to keep the whole album, and only when some of it is
-// somewhere else. An album already on this device has nothing to keep.
-func (a *App) albumKeepButton(gtx C, tracks []*library.Track) D {
+// somewhere else — an album already on this device has nothing to keep, and
+// that is the nil return, so the caller can lay out nothing rather than an
+// empty widget's worth of spacing.
+func (a *App) albumKeepButton(tracks []*library.Track) layout.Widget {
 	remote := 0
 	for _, t := range tracks {
 		if a.keepable(t) {
@@ -796,7 +842,7 @@ func (a *App) albumKeepButton(gtx C, tracks []*library.Track) D {
 		}
 	}
 	if remote == 0 {
-		return D{}
+		return nil
 	}
 	a.mu.Lock()
 	busy := a.keeping
@@ -812,8 +858,5 @@ func (a *App) albumKeepButton(gtx C, tracks []*library.Track) D {
 	if busy {
 		label = "Keeping…"
 	}
-	return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
-		layout.Rigid(layout.Spacer{Width: 8}.Layout),
-		layout.Rigid(func(gtx C) D { return a.smallButton(gtx, &a.btnAlbumKeep, label, busy) }),
-	)
+	return func(gtx C) D { return a.smallButton(gtx, &a.btnAlbumKeep, label, busy) }
 }

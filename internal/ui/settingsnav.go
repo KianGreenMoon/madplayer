@@ -75,7 +75,7 @@ type settingsSection struct {
 var settingsSections = []settingsSection{
 	{page: pageFolders, title: "Music folders", state: (*App).folderState, rows: (*App).folderRows},
 	{page: pageAppearance, title: "Appearance", state: (*App).themeState, rows: onePage((*App).appearanceControls)},
-	{page: pageNetwork, title: "The madnetwork", state: (*App).networkState, rows: onePage((*App).meshControls)},
+	{page: pageNetwork, title: "The madnetwork", state: (*App).networkState, rows: onePage((*App).networkControls)},
 	{page: pagePairing, title: "Node pairing (test)", state: (*App).pairingSummary,
 		rows: onePage((*App).pairingControls), hidden: func(*App) bool { return !pairingEnabled }},
 	{page: pageKeep, title: "Music kept from the network", state: (*App).keepState, rows: onePage((*App).keepControls)},
@@ -264,19 +264,26 @@ func (a *App) themeState() string {
 // line and it is competing with six other rows for a glance.
 func (a *App) networkState() string {
 	a.mu.Lock()
+	peers := len(a.cfg.MeshPeers)
 	wanted := a.cfg.Mesh
 	a.mu.Unlock()
 
+	var s string
 	_, up := a.be.Mesh()
 	switch {
 	case a.be.MeshProblem() != "":
 		return a.be.MeshProblem()
 	case up:
-		return "On"
+		s = "On"
 	case wanted:
-		return "On when madplayer restarts"
+		s = "On when madplayer restarts"
+	default:
+		s = "Off"
 	}
-	return "Off"
+	if peers > 0 {
+		s += " · " + plural(peers, "peer") + " typed"
+	}
+	return s
 }
 
 // pairingSummary counts friendships, and says nothing at all until the table

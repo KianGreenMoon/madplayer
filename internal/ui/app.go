@@ -126,10 +126,15 @@ type App struct {
 	// notice is the one-line transient message above the player bar, and
 	// noticeAt is when it was set — a message about something that happened is
 	// only worth the line it costs for as long as it is news (see noticeLine).
-	notice    string
-	noticeAt  time.Time
-	srvBusy   bool
-	srvMsg    string
+	notice   string
+	noticeAt time.Time
+	srvBusy  bool
+	srvMsg   string
+	// peerMsg is the peer list's own status line: what the last add or remove
+	// did. It belongs to that section rather than the player bar for the same
+	// reason the cache page keeps its own — somebody who just typed an address
+	// is looking at the box they typed it into.
+	peerMsg   string
 	cacheUsed int64
 	// seedCount and seedUsed are the OTHER cache: what this device seeds back to
 	// the household, measured when the cache page is opened (see refreshSeedUsage).
@@ -209,12 +214,18 @@ type App struct {
 	// else the experiment owns lives in the one struct, for easy removal.
 	pairEd  widget.Editor
 	pairing pairingState
+	// peerEd and its buttons are the underlay peer list (peers.go): the third
+	// way onto the mesh, for a device whose server publishes no peering and
+	// whose network has none to discover.
+	peerEd     widget.Editor
+	btnAddPeer widget.Clickable
+	rmPeer     []widget.Clickable
 	// The clipboard buttons, one pair per settings text box — the only way to
 	// paste into one on a phone (clipboard.go). The search box and the download
 	// limit deliberately have none, and a test counts these against the editor
 	// fields so a new box cannot quietly arrive without them.
 	clipFolder, clipKeepDir      clipButtons
-	clipCard                     clipButtons
+	clipCard, clipPeer           clipButtons
 	clipAddr, clipUser, clipPass clipButtons
 	// Settings is an index of pages rather than one scroll (settingsnav.go).
 	// settingsPage is which one is open, settingsBtn one clickable per index

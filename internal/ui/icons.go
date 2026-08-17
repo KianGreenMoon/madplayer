@@ -62,6 +62,8 @@ var (
 	// draws most literally.
 	iconCopy  = mustIcon(icons.ContentContentCopy)
 	iconPaste = mustIcon(icons.ContentContentPaste)
+	// iconAddPeer adds an underlay peer: a link, which is what a peering is.
+	iconAddPeer = mustIcon(icons.ContentAddCircleOutline)
 )
 
 func mustIcon(data []byte) *widget.Icon {

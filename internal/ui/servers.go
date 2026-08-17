@@ -144,6 +144,21 @@ func (a *App) serverRow(gtx C, s prefs.Server, rm *widget.Clickable) D {
 	})
 }
 
+// networkControls is the madnetwork page: the switch, what it is doing, and the
+// peers this device dials when nothing else offers it a way onto the underlay.
+//
+// The two belong on one page because they are one question asked twice. The
+// switch decides whether this device is a node; the peers decide whether a node
+// that is on can reach anybody — and a mesh that is on with no way in looks
+// exactly like a mesh that is off (madshare's own config warns about that case,
+// config.go: mesh enabled with neither peers nor listeners).
+func (a *App) networkControls(gtx C) D {
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		layout.Rigid(a.meshControls),
+		layout.Rigid(a.peerControls),
+	)
+}
+
 // meshControls is the madnetwork switch and what it is currently doing.
 //
 // It exists because the switch was otherwise unreachable: prefs.Mesh and

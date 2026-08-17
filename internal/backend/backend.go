@@ -135,6 +135,27 @@ func Open(ctx context.Context, dataDir string, lg *log.Logger, opts Options) (*B
 // Mesh is this device's madnetwork surface, and whether it is running.
 func (b *Backend) Mesh() (app.Network, bool) { return b.net, b.net != nil }
 
+// AddPeer dials an underlay peering URI now, rather than at the next start.
+//
+// It exists so that a peer typed into Settings is a thing that either connects
+// or says why, in front of the person who typed it — the alternative is a
+// restart before anybody learns whether the address was even the right shape.
+// madshare's AddPeer is idempotent, so re-adding one already dialled is not a
+// second link and needs no bookkeeping here.
+//
+// A mesh that is off is not an error to report as one: the setting is still
+// worth saving, and the madnetwork section above it already says the mesh is
+// off. Hence the bool rather than an error nobody should show.
+func (b *Backend) AddPeer(uri string) (dialled bool, err error) {
+	if b == nil || b.net == nil {
+		return false, nil
+	}
+	if err := b.net.AddPeer(uri); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // MeshProblem says why the madnetwork is not running, or "" when it is (or was
 // never asked for).
 //

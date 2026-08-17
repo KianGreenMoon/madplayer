@@ -220,3 +220,25 @@ func mustEval(t *testing.T, path string) string {
 	}
 	return real
 }
+
+// A peer typed into Settings on a device whose mesh is OFF must be a saved
+// setting and not an error: there is no node to dial with, the madnetwork
+// section says so a few lines above the box, and the address is still worth
+// keeping for the launch that does have one.
+//
+// The nil node is the case that matters — it is the default install, and it is
+// where a call straight through to madshare would panic rather than answer.
+func TestAddingAPeerWithNoMeshIsNotAnError(t *testing.T) {
+	be := open(t, t.TempDir())
+	if _, up := be.Mesh(); up {
+		t.Fatal("a mesh-off backend produced a node — this test is no longer the empty case")
+	}
+
+	dialled, err := be.AddPeer("tls://example.org:7743")
+	if err != nil {
+		t.Errorf("AddPeer on a device with no mesh: %v", err)
+	}
+	if dialled {
+		t.Error("a device with no madnetwork claimed to have dialled a peer")
+	}
+}

@@ -935,6 +935,20 @@ discipline, not luck:
   go — out of a settings page, out of a panel, up the drill — and deliberately
   left unclaimed at the top of the library, which is the one place where closing
   the app *is* what back means.
+- **The underlay peer list is the third way onto the mesh, and it is a setting
+  now** (2026-08-18). A device normally reaches the madnetwork by signing in — a
+  server publishes its peering at `GET /api/madnetwork/peering` and the enrolment
+  loop dials it — or over the local network by multicast. `prefs.MeshPeers` was
+  the fallback for somebody with neither, and it was read from the day it was
+  written while **nothing ever set it**: reachable only by hand-editing
+  `config.json`, which is the same shape as the mesh switch before 2026-08-09 and
+  indistinguishable from a feature that does not work. A typed peer is **dialled
+  now**, through the facade's `AddPeer`, rather than at the next start — an
+  address that either connects or says why, while its typist is still looking at
+  it — and saved, because the dial does not survive a restart. Removal is the
+  honest asymmetry: madshare can add a link at runtime and has no surface to drop
+  one, so forgetting a peer stops it being dialled at the next start and says so
+  rather than implying a disconnection that did not happen.
 - **Touch has no Ctrl+V either, so every settings box carries its own clipboard
   buttons** (2026-08-18). Gio reaches the clipboard *only* through keyboard
   shortcuts — `widget.Editor` answers Ctrl+C/V/X and draws no selection toolbar,

@@ -2,7 +2,9 @@ package ui
 
 import (
 	"image"
+	"image/color"
 
+	"gioui.org/f32"
 	"gioui.org/layout"
 	"gioui.org/op/clip"
 	"gioui.org/op/paint"
@@ -47,9 +49,6 @@ var (
 	// iconLoading stands on the play button while a download is what is
 	// actually happening — the bar's subtitle names the server it comes from.
 	iconLoading = mustIcon(icons.ActionHourglassEmpty)
-	// iconQueue opens the queue panel from the bar, the web UI's #btnQueue —
-	// the same playlist-play glyph its SVG draws.
-	iconQueue = mustIcon(icons.AVPlaylistPlay)
 
 	// The Settings panel's actions.
 	iconAddFolder = mustIcon(icons.FileCreateNewFolder)
@@ -99,6 +98,18 @@ func (a *App) iconButton(gtx C, click *widget.Clickable, ic *widget.Icon, size u
 // that gains a circle on hover and holds the accent while its mode is on —
 // which is how shuffle and repeat say they are engaged without a word.
 func (a *App) ctrlButton(gtx C, click *widget.Clickable, ic *widget.Icon, size unit.Dp, active bool) D {
+	var draw func(C, color.NRGBA) D
+	if ic != nil {
+		draw = ic.Layout
+	}
+	return a.ctrlFrame(gtx, click, size, active, draw)
+}
+
+// ctrlFrame is the shell every transport control shares — the hover circle and
+// the state colouring — with the glyph drawing handed in, so a control whose
+// glyph the Material set does not carry (the queue button) wears the same
+// frame as its siblings.
+func (a *App) ctrlFrame(gtx C, click *widget.Clickable, size unit.Dp, active bool, draw func(C, color.NRGBA) D) D {
 	px := gtx.Dp(size)
 	return click.Layout(gtx, func(gtx C) D {
 		gtx.Constraints = layout.Exact(image.Pt(px, px))
@@ -106,7 +117,7 @@ func (a *App) ctrlButton(gtx C, click *widget.Clickable, ic *widget.Icon, size u
 			circle := clip.Ellipse{Max: image.Pt(px, px)}
 			paint.FillShape(gtx.Ops, colSel, circle.Op(gtx.Ops))
 		}
-		if ic == nil {
+		if draw == nil {
 			return D{Size: image.Pt(px, px)}
 		}
 		return layout.Center.Layout(gtx, func(gtx C) D {
@@ -118,9 +129,37 @@ func (a *App) ctrlButton(gtx C, click *widget.Clickable, ic *widget.Icon, size u
 			case click.Hovered():
 				col = colFg
 			}
-			return ic.Layout(gtx, col)
+			return draw(gtx, col)
 		})
 	})
+}
+
+// queueGlyph is the web UI's #btnQueue icon, transcribed from its SVG path
+// (`M3 10h11v2H3zm0-4h11v2H3zm0 8h7v2H3zm13-1v8l6-4z`, 24×24 viewBox). The
+// Material set Gio ships only has the older cut of playlist-play — lines
+// nearly the full box wide with a short triangle — which sits beside the web
+// UI's like a squashed stranger, so this one is drawn by hand.
+func queueGlyph(gtx C, col color.NRGBA) D {
+	sz := gtx.Constraints.Min
+	s := float32(sz.X) / 24
+	var p clip.Path
+	p.Begin(gtx.Ops)
+	line := func(x0, y0, x1, y1 float32) {
+		p.MoveTo(f32.Pt(x0*s, y0*s))
+		p.LineTo(f32.Pt(x1*s, y0*s))
+		p.LineTo(f32.Pt(x1*s, y1*s))
+		p.LineTo(f32.Pt(x0*s, y1*s))
+		p.Close()
+	}
+	line(3, 6, 14, 8)
+	line(3, 10, 14, 12)
+	line(3, 14, 10, 16)
+	p.MoveTo(f32.Pt(16*s, 13*s))
+	p.LineTo(f32.Pt(16*s, 21*s))
+	p.LineTo(f32.Pt(22*s, 17*s))
+	p.Close()
+	paint.FillShape(gtx.Ops, col, clip.Outline{Path: p.End()}.Op())
+	return D{Size: sz}
 }
 
 // primaryButton is the play/pause control, the web UI's .ctrl-btn.primary: an

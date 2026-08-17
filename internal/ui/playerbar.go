@@ -190,7 +190,7 @@ func (a *App) nowPlaying(gtx C) D {
 		layout.Rigid(func(gtx C) D {
 			// The queue lives on the bar like the web UI's #btnQueue: right of
 			// the transport, holding the accent while its panel is open.
-			return a.ctrlButton(gtx, &a.btnQueue, iconQueue, 36, a.view == viewQueue)
+			return a.ctrlFrame(gtx, &a.btnQueue, 36, a.view == viewQueue, queueGlyph)
 		}),
 	}
 

@@ -123,6 +123,10 @@ type App struct {
 	scanning bool
 	loading  bool
 	status   string
+	// wantSettings is a background goroutine ASKING for the Settings panel,
+	// applied by update on the UI goroutine. a.view itself is read unlocked all
+	// over the layout code, so nothing but that goroutine may write it.
+	wantSettings bool
 	// notice is the one-line transient message above the player bar, and
 	// noticeAt is when it was set — a message about something that happened is
 	// only worth the line it costs for as long as it is news (see noticeLine).
@@ -523,12 +527,20 @@ func (a *App) start(adopt []string) {
 	// Nothing to play from at all — no folders and no server — opens the panel
 	// that fixes it. A person who plays only from a server has no folders on
 	// purpose, and must not be sent to add one every launch.
+	//
+	// It ASKS rather than switching the view itself, and that is a correctness
+	// fix rather than a style: a.view belongs to the UI goroutine, which reads
+	// it unlocked in body, update, escape and the header, so writing it from
+	// here — a background goroutine — was a data race with any frame that
+	// happened to be laying out. It needed a first run with an empty library to
+	// land, which is exactly the run this branch exists for (found 2026-08-18
+	// while chasing its twin in the tests; see .issues/open-issues.md).
 	a.mu.Lock()
 	none := len(a.folders) == 0 && len(a.cfg.Servers) == 0
 	a.mu.Unlock()
 	if none {
 		a.mu.Lock()
-		a.view = viewSettings
+		a.wantSettings = true
 		a.status = "Add a music folder to get started, or sign in to a server."
 		a.mu.Unlock()
 		a.win.Invalidate()
@@ -968,6 +980,16 @@ func (a *App) problemBanner(gtx C) D {
 // update handles every control before anything is laid out, so a click and the
 // frame it affects are the same frame.
 func (a *App) update(gtx C) {
+	// A view change asked for by a background goroutine is applied HERE, on the
+	// goroutine that owns a.view and reads it unlocked everywhere else (see
+	// start). One place to apply it, and it is a frame boundary.
+	a.mu.Lock()
+	if a.wantSettings {
+		a.wantSettings = false
+		a.view = viewSettings
+	}
+	a.mu.Unlock()
+
 	if a.btnSettings.Clicked(gtx) {
 		// Pressing Settings from inside one of its pages goes back to the index,
 		// the way pressing an already-active tab returns it to its root

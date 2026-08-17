@@ -48,7 +48,7 @@ func TestAskingForACoverNeverBlocks(t *testing.T) {
 // surface this host cannot click, same as Settings.
 func TestAlbumHeaderLaysOut(t *testing.T) {
 	a := testApp(t)
-	a.album = &library.Album{Title: "Metamorphoses", ArtistName: "JMJ", Year: 1978}
+	underLock(a, func() { a.album = &library.Album{Title: "Metamorphoses", ArtistName: "JMJ", Year: 1978} })
 	tracks := []*library.Track{
 		{Title: "One", Duration: 264, Copies: []library.Copy{{Path: "/music/a/01.mp3"}}},
 		{Title: "Two", Duration: 429, Copies: []library.Copy{{Path: "/music/a/02.mp3"}}},
@@ -64,19 +64,19 @@ func TestComingBackUpRestoresTheScrollPosition(t *testing.T) {
 	a := testApp(t)
 
 	a.list.Position.First = 340
-	a.setLevel(levelAlbums)
+	underLock(a, func() { a.setLevel(levelAlbums) })
 	if a.list.Position.First != 0 {
 		t.Errorf("drilling in kept the previous list's offset (%d) — new content starts at the top", a.list.Position.First)
 	}
 
 	a.list.Position.First = 7
-	a.setLevel(levelArtists)
+	underLock(a, func() { a.setLevel(levelArtists) })
 	if a.list.Position.First != 340 {
 		t.Errorf("came back to row %d, want 340", a.list.Position.First)
 	}
 
 	// And forward again is the album list's own place, not the artist list's.
-	a.setLevel(levelAlbums)
+	underLock(a, func() { a.setLevel(levelAlbums) })
 	if a.list.Position.First != 0 {
 		t.Errorf("drilling in again landed at %d, want the top", a.list.Position.First)
 	}

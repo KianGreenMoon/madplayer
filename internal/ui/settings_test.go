@@ -68,6 +68,23 @@ func testApp(t *testing.T) *App {
 	return newApp(new(app.Window), pl, be, &prefs.Store{Dir: dir})
 }
 
+// underLock mutates the browse position the way the PROGRAM does: holding
+// App.mu.
+//
+// Not a nicety. newApp starts the first library load on its own goroutine
+// (app.go, `go a.start(...)`), and reload() reads level/artist/album under that
+// lock while it runs — which is why drillArtist and the breadcrumb handlers take
+// it to write them. A test that assigns them bare races the startup it just
+// triggered, and `go test -race ./internal/...` catches it about one run in
+// thirty, blaming whichever test happens to be executing when the loader gets
+// there (2026-08-18: TestAlbumHeaderLaysOut, write at cover_test.go:51, read at
+// app.go:542).
+func underLock(a *App, f func()) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	f()
+}
+
 // headless is a layout context with no window behind it.
 func headless() layout.Context {
 	return layout.Context{
@@ -188,9 +205,11 @@ func TestTheServerListSurvivesHavingNoMeshToTellYet(t *testing.T) {
 func TestOnlyLocalGoesBackToTheTopOfTheList(t *testing.T) {
 	a := testApp(t)
 	a.lib.SetServers([]library.Server{{Base: "https://one.example", Label: "one", Client: madshare.New("https://one.example", "tok")}})
-	a.artist = &library.Artist{Name: "Kain Vinosec"}
-	a.album = &library.Album{Title: "Other"}
-	a.setLevel(levelTracks)
+	underLock(a, func() {
+		a.artist = &library.Artist{Name: "Kain Vinosec"}
+		a.album = &library.Album{Title: "Other"}
+		a.setLevel(levelTracks)
+	})
 
 	a.toggleScope(headless())
 

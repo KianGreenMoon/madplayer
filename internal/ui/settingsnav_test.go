@@ -175,7 +175,7 @@ func TestBackGoesSomewhereExactlyWhenItSaysItWill(t *testing.T) {
 		},
 		{
 			name:   "an album",
-			enter:  func() { a.view = viewBrowse; a.search.SetText(""); a.setLevel(levelTracks) },
+			enter:  func() { a.view = viewBrowse; a.search.SetText(""); underLock(a, func() { a.setLevel(levelTracks) }) },
 			landed: func() bool { return a.level == levelAlbums },
 			want:   "that artist's albums",
 		},

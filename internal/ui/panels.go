@@ -125,7 +125,7 @@ func (a *App) queuePanel(gtx C) D {
 // silently-ignored typo looks exactly like an empty library.
 //
 // These are PREFERENCES, not an account: there is no password here and nothing
-// to sign in to (docs/ui/madplayer.md §"There is no local account"). The one
+// to sign in to (docs/design.md §"There is no local account"). The one
 // thing that looks like a server setting — the download limit — is exactly that:
 // madshare's own runtime setting, read from the backend embedded in this
 // process.

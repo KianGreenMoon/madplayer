@@ -23,7 +23,7 @@ func openTestBackend(t *testing.T, opts Options) *Backend {
 	return be
 }
 
-// Becoming a node (docs/ui/madplayer.md §"Level 2b"). The mesh is the one part
+// Becoming a node (docs/design.md §"Level 2b"). The mesh is the one part
 // of this backend that is optional, so these are about the switch: what it turns
 // on, and what happens when it cannot be honoured.
 

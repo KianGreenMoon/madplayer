@@ -1,8 +1,13 @@
 # madplayer
 
-A native music player in Go, for desktop and mobile. Design and rationale live in
-madshare's `docs/ui/madplayer.md` — that doc is a **cross-client contract** and
-stays there on purpose; this file covers how to work on the code.
+A native music player in Go, for desktop and mobile. Design and rationale live
+in **`docs/design.md`** (moved here from madshare's `docs/ui/madplayer.md` on
+2026-08-17). What stays in madshare is the cross-client contract: the
+behavioural docs both UIs follow (`docs/ui/library-page.md`,
+`player-and-queue.md`, `artists-and-performers.md`, `madnetwork-page.md`) and
+the trimmed `docs/ui/madplayer.md`, which keeps the basics plus the
+server-computed rules no client may re-derive. This file covers how to work on
+the code.
 
 **It is an offline player first.** Point it at your music folders and it scans,
 indexes and plays them — no server, no account, no network, nothing to sign in
@@ -18,7 +23,7 @@ keys and fills the desktop's media widget.
 Level 2b — the mesh — is **built**: the device can become a madnetwork node,
 keeps its standing with each home server, **plays network tracks off the swarm
 with the relay as the fallback**, and **keeps them on this device** as ordinary
-files in a folder it manages. The three questions `docs/ui/madplayer.md`
+files in a folder it manages. The three questions `docs/design.md`
 §"Where the bytes live" left open were settled by the owner on 2026-08-15 and
 are written into that doc.
 
@@ -106,7 +111,7 @@ lists that each arrived ordered do not concatenate into an ordered list — and 
 sorts by the server's own keys.
 
 **Three kinds of library, not two.** Signing in to a server buys its own library
-*and* the madnetwork it can see — `docs/ui/madplayer.md` §"Federation: madplayer
+*and* the madnetwork it can see — `docs/design.md` §"Federation: madplayer
 is a listener node" said so from the start, and only the first half was built
 until 2026-08-15. So each server contributes two sources, separate because they
 fail separately: an account without `madnetwork.access` gets the library and a
@@ -158,7 +163,7 @@ legitimately has one, and the bytes come from whoever has them.
 
 ## Keeping network music
 
-`docs/ui/madplayer.md` §"Where the bytes live" settled this on 2026-08-15, and
+`docs/design.md` §"Where the bytes live" settled this on 2026-08-15, and
 the shape is one idea rather than three answers: **the destination is a folder
 madplayer manages** — `<music dir>/madplayer` by default, overridable in
 Settings — laid out `Artist/Album/NN - Title.ext`. That answers "which of the

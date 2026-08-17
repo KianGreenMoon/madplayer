@@ -1,7 +1,7 @@
 // Package materialize decides where music pulled off the network is kept, and
 // what it is called there.
 //
-// The rule it implements is docs/ui/madplayer.md §"Where the bytes live",
+// The rule it implements is docs/design.md §"Where the bytes live",
 // settled 2026-08-15: the destination is a folder madplayer MANAGES —
 // `<music dir>/madplayer` by default — laid out `Artist/Album/NN - Title.ext`
 // from the tags. That answers "which of the scanned folders does it go in?" by

@@ -6,8 +6,8 @@
 // library engine and this package only fetches what it decides and shapes it for
 // the screen. Which names are artists, what belongs to an album, what order any
 // of it comes in, and which file a track plays are all answered in SQL — see
-// docs/ui/madplayer.md §"What the server already computes", which is also the
-// list of things a client must never re-derive.
+// madshare's docs/ui/madplayer.md §"What the server already computes", which is
+// also the list of things a client must never re-derive.
 //
 // What is left here is genuinely the client's: the shape the widgets read, the
 // local path a decoder can open, the disc headers (a display rule the server has

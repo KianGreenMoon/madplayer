@@ -25,7 +25,7 @@ import (
 // This is deliberately SHORTER than the scanner's accepted list. m4a/mp4/aac and
 // opus are indexed — the server accepts them, so a library full of them should
 // not look empty — but nothing here decodes them yet: they need cgo bindings or
-// ffmpeg, which docs/ui/madplayer.md lists under the native client's own
+// ffmpeg, which docs/design.md lists under the native client's own
 // burdens. Showing such a track and saying it cannot be played is honest;
 // hiding it would look like the file is missing.
 // The decoders disagree about their parameter type — mp3 and vorbis take an

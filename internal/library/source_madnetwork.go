@@ -12,7 +12,7 @@ import (
 //
 // It is a second source per server, not a replacement for the first. Signing in
 // buys two different things — that server's own library, and the madnetwork it
-// can see (docs/ui/madplayer.md §"Federation: madplayer is a listener node") —
+// can see (docs/design.md §"Federation: madplayer is a listener node") —
 // and they are separate sources here because they answer separately: one can be
 // empty, or forbidden, or slow, without the other.
 //

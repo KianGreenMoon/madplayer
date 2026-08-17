@@ -30,7 +30,7 @@ import (
 // advertises, so fetching over the swarm is also what makes this device useful
 // to the household. The caller copies them into its playback cache, which is
 // where a name a decoder can read gets attached; the two copies are the two
-// caches docs/ui/madplayer.md §"A remote track is a download" already describes,
+// caches docs/design.md §"A remote track is a download" already describes,
 // each swept by its own enforcer under the same ceiling.
 //
 // size may be 0 when the caller does not know it; the manifest is the authority

@@ -20,7 +20,7 @@ import (
 // their music this device is willing to keep on disk.
 //
 // There is no "your account" section here and there will not be one for the
-// LOCAL library, because there is no local account (docs/ui/madplayer.md §"There
+// LOCAL library, because there is no local account (docs/design.md §"There
 // is no local account"). What appears once signed in belongs to the REMOTE
 // server: a username this device authenticates as, and a token that server can
 // revoke. Shipping the web UI's settings page wholesale would ask a person to

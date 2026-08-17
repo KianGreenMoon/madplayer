@@ -10,7 +10,7 @@ import (
 // own library.
 //
 // These are the endpoints behind the web UI's /madnetwork page, and what a
-// listener node gets for signing in: docs/ui/madplayer.md §"Federation:
+// listener node gets for signing in: docs/design.md §"Federation:
 // madplayer is a listener node" says the account buys "that server's library
 // plus madnetwork through it". The server has already pulled and merged every
 // friend's catalog into one deduplicated drill-down (docs/architecture/

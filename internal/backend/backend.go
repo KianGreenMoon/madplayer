@@ -8,7 +8,7 @@
 // There is no listener and no port. madplayer holds one person's music on their
 // own machine, so being reachable would add an attack surface in exchange for
 // nothing it needs; the facade's Serve half is simply never called. See
-// docs/architecture/embedding.md and docs/ui/madplayer.md.
+// docs/architecture/embedding.md and docs/design.md.
 package backend
 
 import (
@@ -53,7 +53,7 @@ type Backend struct {
 type Options struct {
 	// Mesh joins the madnetwork: this device becomes a node with its own key,
 	// fetches from the swarm and seeds back what it fetched
-	// (docs/ui/madplayer.md §"Level 2b"). Off by default — it costs bandwidth
+	// (docs/design.md §"Level 2b"). Off by default — it costs bandwidth
 	// and disk, and a player that only plays your own music should not quietly
 	// start talking to strangers.
 	Mesh bool
@@ -156,7 +156,7 @@ func (b *Backend) MeshProblem() string { return b.meshWhy }
 func playerConfig(dataDir string, opts Options) config.Config {
 	cfg := config.Default()
 	cfg.DataDir = dataDir
-	// No [[listen]]: nothing is served, ever (docs/ui/madplayer.md).
+	// No [[listen]]: nothing is served, ever (docs/design.md).
 	cfg.Listen = nil
 	// The person clicking "Add folder" is at the keyboard on their own machine,
 	// and there is no reachable surface for an allow-list to protect
@@ -408,7 +408,7 @@ func isDir(path string) bool {
 // --- the managed folder -----------------------------------------------------
 //
 // Network music kept on this device lands in a folder madplayer manages
-// (docs/ui/madplayer.md §"Where the bytes live"). These two calls are all
+// (docs/design.md §"Where the bytes live"). These two calls are all
 // internal/materialize needs from the library, and they are deliberately the
 // ORDINARY folder calls: a materialized file is an ordinary links-backed row in
 // an ordinary data source, so there is exactly one kind of library entry.

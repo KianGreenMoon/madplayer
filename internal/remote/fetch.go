@@ -11,7 +11,7 @@
 // them: the SWARM, which asks whoever holds the blob, and the RELAY, which asks
 // the one server that named it. The swarm is preferred and the relay is not a
 // degraded mode — it is level 1, it works with no mesh at all, and every reason
-// the swarm has to decline ends here (docs/ui/madplayer.md §"Level 2b,
+// the swarm has to decline ends here (docs/design.md §"Level 2b,
 // concretely").
 package remote
 
@@ -364,7 +364,7 @@ func (f *Fetcher) fromSwarm(ctx context.Context, srv library.Server, item *queue
 	// Who holds it is asked of the home server, every time.
 	//
 	// Since madplayer browses the madnetwork too (2026-08-15), some rows DO
-	// arrive carrying versions[].holders[] — docs/ui/madplayer.md offers those as
+	// arrive carrying versions[].holders[] — docs/design.md offers those as
 	// a cheaper source, and they are still not used. Two reasons, and the second
 	// is the load-bearing one: an ordinary library row has no holders at all, so
 	// the endpoint would be needed anyway; and a browse row is as old as the

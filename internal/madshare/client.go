@@ -4,9 +4,9 @@
 // could be re-derived here — which names are artists, which file to play, sort
 // order, disc grouping, availability — is decided server-side, and this package
 // carries the answer rather than second-guessing it. The list is in
-// docs/ui/madplayer.md §"What the server already computes"; re-deriving any of
-// it produces a client that quietly disagrees with the web UI about what the
-// library contains.
+// madshare's docs/ui/madplayer.md §"What the server already computes";
+// re-deriving any of it produces a client that quietly disagrees with the web
+// UI about what the library contains.
 //
 // The same client serves both levels of the client's ambition: against a remote
 // server it is level 1, against the embedded backend on loopback it is level 2.

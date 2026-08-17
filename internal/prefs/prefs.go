@@ -1,7 +1,7 @@
 // Package prefs stores the few settings that belong to this device.
 //
 // They are preferences, not an account: there is no password here and nothing to
-// sign in to (docs/ui/madplayer.md §"There is no local account"). The library
+// sign in to (docs/design.md §"There is no local account"). The library
 // itself lives in the embedded backend's data directory — this file is only what
 // the UI would otherwise forget between runs.
 package prefs
@@ -50,7 +50,7 @@ type Config struct {
 	// writes rather than a second copy that can disagree with it.
 
 	// Mesh joins the madnetwork: this device becomes a node of its own rather
-	// than a client of somebody else's (docs/ui/madplayer.md §"Level 2b").
+	// than a client of somebody else's (docs/design.md §"Level 2b").
 	//
 	// ON by default (owner, 2026-08-15), reversing the original decision. That
 	// decision — "the baseline product is a player for music you already have,

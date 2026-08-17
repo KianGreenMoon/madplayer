@@ -10,7 +10,7 @@ import (
 // remoteSource is somebody else's madshare, read over HTTP.
 //
 // This is the one thing the HTTP client is for: reaching a machine that is not
-// this one (docs/ui/madplayer.md §"Local is a function call"). Nothing here
+// this one (docs/design.md §"Local is a function call"). Nothing here
 // re-derives a rule — every row is rendered as it arrived.
 type remoteSource struct {
 	base  string

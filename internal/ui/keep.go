@@ -14,7 +14,7 @@ import (
 
 // Keeping network music on this device.
 //
-// The rule is docs/ui/madplayer.md §"Where the bytes live": a track pulled off
+// The rule is docs/design.md §"Where the bytes live": a track pulled off
 // the network is copied into a folder madplayer manages, laid out from its tags,
 // and handed to the library as an ordinary folder import — so it is the same
 // kind of row as the music that was always here.

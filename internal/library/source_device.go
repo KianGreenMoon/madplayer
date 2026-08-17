@@ -9,7 +9,7 @@ import (
 
 // deviceSource is the library on this machine, read through the embedded
 // backend's facade — direct Go calls, no listener and no port
-// (docs/ui/madplayer.md §"Local is a function call").
+// (docs/design.md §"Local is a function call").
 type deviceSource struct{ lib app.Library }
 
 // DeviceLabel is what this machine's library is called on screen.

@@ -154,7 +154,7 @@ func (a *App) artistList(gtx C) D {
 		case a.lib.Remote():
 			// A server answering with nothing is not the same as having nothing:
 			// an account without content.access gets the guest listing, same
-			// shape, no error (docs/ui/madplayer.md §"The browse endpoints
+			// shape, no error (docs/design.md §"The browse endpoints
 			// narrow, they do not refuse").
 			return a.emptyState(gtx, "Nothing to show. Your folders are empty, and the servers you are "+
 				"signed in to returned nothing your account may see.")

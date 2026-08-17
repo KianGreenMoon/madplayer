@@ -9,7 +9,7 @@ import (
 // The cache this device SEEDS from, as opposed to the one it plays from.
 //
 // A swarm fetch stores a blob twice, and the two copies are not redundant —
-// they are the two caches docs/ui/madplayer.md describes, each swept by its own
+// they are the two caches docs/design.md describes, each swept by its own
 // enforcer under the same ceiling:
 //
 //   - madshare's `cache/madnetwork/`, hash-named and extensionless. It is the

@@ -3,7 +3,7 @@
 // It is an offline music player first: it scans folders, indexes what it finds
 // and plays it, with no server, no account and no network. Reaching a madshare
 // server is a feature layered on top of that, never a precondition — see
-// docs/ui/madplayer.md.
+// docs/design.md.
 //
 // The browse behaviour follows docs/ui/library-page.md and
 // docs/ui/artists-and-performers.md, and the queue follows

@@ -3,7 +3,7 @@
 // It plays what is on this machine: point it at your music folders and it scans,
 // indexes and plays them, with no server, no account and no network. The library
 // engine is madshare, embedded in this process and called directly — same engine
-// as the server, entered from the other end (docs/ui/madplayer.md).
+// as the server, entered from the other end (docs/design.md).
 package main
 
 import (

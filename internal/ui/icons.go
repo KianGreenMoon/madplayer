@@ -47,6 +47,9 @@ var (
 	// iconLoading stands on the play button while a download is what is
 	// actually happening — the bar's subtitle names the server it comes from.
 	iconLoading = mustIcon(icons.ActionHourglassEmpty)
+	// iconQueue opens the queue panel from the bar, the web UI's #btnQueue —
+	// the same playlist-play glyph its SVG draws.
+	iconQueue = mustIcon(icons.AVPlaylistPlay)
 
 	// The Settings panel's actions.
 	iconAddFolder = mustIcon(icons.FileCreateNewFolder)

@@ -1144,10 +1144,6 @@ func (a *App) header(gtx C) D {
 	}
 	buttons := []layout.FlexChild{
 		layout.Rigid(func(gtx C) D {
-			return a.smallButton(gtx, &a.btnQueue, fmt.Sprintf("Queue (%d)", a.pl.QueueLen()), a.view == viewQueue)
-		}),
-		layout.Rigid(layout.Spacer{Width: 8}.Layout),
-		layout.Rigid(func(gtx C) D {
 			return a.smallButton(gtx, &a.btnCache, "Cache", a.view == viewCache)
 		}),
 		layout.Rigid(layout.Spacer{Width: 8}.Layout),
@@ -1161,12 +1157,12 @@ func (a *App) header(gtx C) D {
 	}
 	return bar(gtx, func(gtx C) D {
 		return layout.Inset{Top: 10, Bottom: 10, Left: 16, Right: 16}.Layout(gtx, func(gtx C) D {
-			// The one-row header needs the title, the search field and four
-			// buttons across; below narrowBar the buttons squeezed the search
-			// out of existence and pushed Servers off the screen. So the
-			// buttons take the first row, the search the second, and the
+			// The one-row header needs the title, the search field and the
+			// view buttons across; below narrowBar the buttons squeezed the
+			// search out of existence and pushed Servers off the screen. So
+			// the buttons take the first row, the search the second, and the
 			// wordmark is dropped: a phone names its apps in the launcher and
-			// the switcher, and the four buttons alone fill the row.
+			// the switcher, and the buttons alone fill the row.
 			if gtx.Constraints.Max.X < gtx.Dp(narrowBar) {
 				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 					layout.Rigid(func(gtx C) D {

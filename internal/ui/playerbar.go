@@ -186,6 +186,12 @@ func (a *App) nowPlaying(gtx C) D {
 			}
 			return a.ctrlButton(gtx, &a.btnRepeat, ic, 36, r != queue.RepeatOff)
 		}),
+		layout.Rigid(layout.Spacer{Width: 4}.Layout),
+		layout.Rigid(func(gtx C) D {
+			// The queue lives on the bar like the web UI's #btnQueue: right of
+			// the transport, holding the accent while its panel is open.
+			return a.ctrlButton(gtx, &a.btnQueue, iconQueue, 36, a.view == viewQueue)
+		}),
 	}
 
 	// One row on a desktop, two on a phone. Five rigid buttons beside a

@@ -55,6 +55,13 @@ var (
 	iconRescan    = mustIcon(icons.NavigationRefresh)
 	iconDelete    = mustIcon(icons.ActionDelete)
 	iconSave      = mustIcon(icons.ContentSave)
+	// The clipboard pair beside every settings text box (clipboard.go). These
+	// two are the exception to the rule above them: their worded twin is a
+	// keyboard shortcut, which is exactly what a phone does not have — so the
+	// glyphs carry the meaning alone, and they are the two the Material set
+	// draws most literally.
+	iconCopy  = mustIcon(icons.ContentContentCopy)
+	iconPaste = mustIcon(icons.ContentContentPaste)
 )
 
 func mustIcon(data []byte) *widget.Icon {

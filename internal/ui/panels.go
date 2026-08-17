@@ -175,19 +175,14 @@ func (a *App) settings(gtx C) D {
 			})
 		},
 		func(gtx C) D {
-			return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
-				layout.Flexed(1, func(gtx C) D {
-					ed := material.Editor(a.th, &a.folderEd, "/home/you/Music")
-					ed.Color, ed.HintColor = colFg, colDim
-					return filled(gtx, colSel, ed.Layout)
-				}),
-				layout.Rigid(layout.Spacer{Width: 8}.Layout),
-				// Add and rescan as icons; a running rescan holds the accent, and
-				// the status line below still says "Scanning…" in words.
+			// Add and rescan as icons; a running rescan holds the accent, and the
+			// status line below still says "Scanning…" in words. The clipboard
+			// pair in front of them is what makes the box usable on a phone,
+			// where a path is pasted from a file manager and never typed.
+			return a.clipRow(gtx, &a.clipFolder, &a.folderEd, "/home/you/Music", true,
 				layout.Rigid(func(gtx C) D {
 					return a.actionButton(gtx, &a.btnAddFolder, iconAddFolder, false)
 				}),
-				layout.Rigid(layout.Spacer{Width: 8}.Layout),
 				layout.Rigid(func(gtx C) D {
 					return a.actionButton(gtx, &a.btnRescan, iconRescan, scanning)
 				}),
@@ -519,13 +514,7 @@ func (a *App) keepControls(gtx C) D {
 			}),
 
 			layout.Rigid(func(gtx C) D {
-				return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
-					layout.Flexed(1, func(gtx C) D {
-						ed := material.Editor(a.th, &a.keepDirEd, root)
-						ed.Color, ed.HintColor = colFg, colDim
-						return filled(gtx, colSel, ed.Layout)
-					}),
-					layout.Rigid(layout.Spacer{Width: 8}.Layout),
+				return a.clipRow(gtx, &a.clipKeepDir, &a.keepDirEd, root, true,
 					layout.Rigid(func(gtx C) D {
 						return a.actionButton(gtx, &a.btnKeepDirSave, iconSave, false)
 					}),

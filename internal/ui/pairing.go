@@ -154,13 +154,11 @@ func (a *App) pairingControls(gtx C) D {
 
 	rows = append(rows, func(gtx C) D {
 		return layout.Inset{Top: 8}.Layout(gtx, func(gtx C) D {
-			return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
-				layout.Flexed(1, func(gtx C) D {
-					ed := material.Editor(a.th, &a.pairEd, `their card {"madshare_node_card":…} or public key`)
-					ed.Color, ed.HintColor = colFg, colDim
-					return filled(gtx, colSel, ed.Layout)
-				}),
-				layout.Rigid(layout.Spacer{Width: 8}.Layout),
+			// The paste button beside this box is the whole reason pairing can be
+			// done from a phone at all: the card is a few hundred characters of
+			// JSON that arrives in a message, and Gio offers no other way in.
+			return a.clipRow(gtx, &a.clipCard, &a.pairEd,
+				`their card {"madshare_node_card":…} or public key`, true,
 				layout.Rigid(func(gtx C) D {
 					label := "Pair"
 					if busy {

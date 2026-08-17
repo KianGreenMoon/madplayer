@@ -209,6 +209,13 @@ type App struct {
 	// else the experiment owns lives in the one struct, for easy removal.
 	pairEd  widget.Editor
 	pairing pairingState
+	// The clipboard buttons, one pair per settings text box — the only way to
+	// paste into one on a phone (clipboard.go). The search box and the download
+	// limit deliberately have none, and a test counts these against the editor
+	// fields so a new box cannot quietly arrive without them.
+	clipFolder, clipKeepDir      clipButtons
+	clipCard                     clipButtons
+	clipAddr, clipUser, clipPass clipButtons
 	// themeBtn is one clickable per entry of themes, in the same order.
 	themeBtn []widget.Clickable
 	rmFolder []widget.Clickable

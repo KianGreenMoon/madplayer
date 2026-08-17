@@ -78,27 +78,44 @@ func (a *App) serversPanel(gtx C) D {
 	})
 }
 
+// signInWidth is as wide as the stacked sign-in form is allowed to get.
+const signInWidth = 560
+
+// signInForm is one field per line, and the clipboard is why (2026-08-18).
+//
+// It was three boxes and a button on one row, which no width fits once each box
+// carries its paste button — and pasting is how a phone signs in: the address
+// out of a message, the password out of a manager, neither of them typed. A
+// desktop spends two more lines of a panel that has room; a phone gets the only
+// way in it had.
 func (a *App) signInForm(gtx C, busy bool) D {
-	field := func(ed *widget.Editor, hint string, weight float32) layout.FlexChild {
-		return layout.Flexed(weight, func(gtx C) D {
-			e := material.Editor(a.th, ed, hint)
-			e.Color, e.HintColor = colFg, colDim
-			return filled(gtx, colSel, e.Layout)
-		})
+	// A form is not a table. Stacked, the boxes would otherwise run the whole
+	// width of a desktop window, which makes "username" look like a mistake; a
+	// phone is narrower than this and never reaches the clamp.
+	if w := gtx.Dp(signInWidth); gtx.Constraints.Max.X > w {
+		gtx.Constraints.Max.X = w
+		gtx.Constraints.Min.X = min(gtx.Constraints.Min.X, w)
 	}
-	return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
-		field(&a.srvAddr, "music.example or 192.168.1.5:3000", 2),
-		layout.Rigid(layout.Spacer{Width: 8}.Layout),
-		field(&a.srvUser, "username", 1),
-		layout.Rigid(layout.Spacer{Width: 8}.Layout),
-		field(&a.srvPass, "password", 1),
-		layout.Rigid(layout.Spacer{Width: 8}.Layout),
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		layout.Rigid(func(gtx C) D {
-			label := "Sign in"
-			if busy {
-				label = "Signing in…"
-			}
-			return a.smallButton(gtx, &a.btnSignIn, label, busy)
+			return a.clipRow(gtx, &a.clipAddr, &a.srvAddr, "music.example or 192.168.1.5:3000", true)
+		}),
+		layout.Rigid(layout.Spacer{Height: 8}.Layout),
+		layout.Rigid(func(gtx C) D {
+			return a.clipRow(gtx, &a.clipUser, &a.srvUser, "username", true)
+		}),
+		layout.Rigid(layout.Spacer{Height: 8}.Layout),
+		layout.Rigid(func(gtx C) D {
+			// The password box gets no copy button — see clipRow.
+			return a.clipRow(gtx, &a.clipPass, &a.srvPass, "password", false,
+				layout.Rigid(func(gtx C) D {
+					label := "Sign in"
+					if busy {
+						label = "Signing in…"
+					}
+					return a.smallButton(gtx, &a.btnSignIn, label, busy)
+				}),
+			)
 		}),
 	)
 }

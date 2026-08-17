@@ -918,6 +918,22 @@ discipline, not luck:
   UI's answer to the same problem is the row's ⋯ menu — see
   `player-and-queue.md` §"Favorites & quick-add"; the native client prefers
   always-visible icons over a menu tap.)
+- **Touch has no Ctrl+V either, so every settings box carries its own clipboard
+  buttons** (2026-08-18). Gio reaches the clipboard *only* through keyboard
+  shortcuts — `widget.Editor` answers Ctrl+C/V/X and draws no selection toolbar,
+  and Android's long-press menu never reaches it because a Gio editor is not a
+  native text view. On a phone that made every box in Settings write-only by
+  hand, including the pairing box, which wants a few hundred characters of node
+  card that arrived in a message. The rule this breaks is the client's own, and
+  it was already written for the keyboard bindings: *nothing is reachable only by
+  key*. So a paste button (and a copy button, once there is something to copy)
+  sits beside each box at every width and on every platform — the desktop simply
+  ends up with two ways to do it. Two boxes are exempt and say so in the code:
+  the search box, which is typed, and the download limit, four digits on a full
+  row. A settings box holds one whole value, so pasting **replaces** it, trimmed,
+  rather than inserting at the caret the way an editor's own Ctrl+V does. The
+  cost falls on the sign-in form, which is now one field per line: three boxes
+  and their paste buttons do not share a row at any width.
 - **Offline is a first-class state, and one button already assumes it.**
   `/admin/cache`'s **Materialize** exists precisely for a madplayer with no
   connectivity adding a cached file to its own library: it makes no live claim

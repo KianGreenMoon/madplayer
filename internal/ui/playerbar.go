@@ -124,28 +124,32 @@ func (a *App) nowPlaying(gtx C) D {
 		}
 	}
 
-	return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
-		// The cover is the one place a player is expected to show one, and it is
-		// laid out even when there is none: a tile that appears and disappears
-		// would move the whole transport sideways every time a track changed.
-		layout.Rigid(func(gtx C) D { return a.cover(gtx, a.nowPlayingCoverPath(), 44) }),
-		layout.Rigid(layout.Spacer{Width: 12}.Layout),
-		layout.Flexed(1, func(gtx C) D {
-			return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-				layout.Rigid(func(gtx C) D {
-					l := material.Body1(a.th, title)
-					l.MaxLines = 1
-					l.Color = colFg
-					return l.Layout(gtx)
-				}),
-				layout.Rigid(func(gtx C) D {
-					l := material.Caption(a.th, sub)
-					l.MaxLines = 1
-					l.Color = colDim
-					return l.Layout(gtx)
-				}),
-			)
-		}),
+	info := func(gtx C) D {
+		return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+			// The cover is the one place a player is expected to show one, and it is
+			// laid out even when there is none: a tile that appears and disappears
+			// would move the whole transport sideways every time a track changed.
+			layout.Rigid(func(gtx C) D { return a.cover(gtx, a.nowPlayingCoverPath(), 44) }),
+			layout.Rigid(layout.Spacer{Width: 12}.Layout),
+			layout.Flexed(1, func(gtx C) D {
+				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+					layout.Rigid(func(gtx C) D {
+						l := material.Body1(a.th, title)
+						l.MaxLines = 1
+						l.Color = colFg
+						return l.Layout(gtx)
+					}),
+					layout.Rigid(func(gtx C) D {
+						l := material.Caption(a.th, sub)
+						l.MaxLines = 1
+						l.Color = colDim
+						return l.Layout(gtx)
+					}),
+				)
+			}),
+		)
+	}
+	buttons := []layout.FlexChild{
 		layout.Rigid(func(gtx C) D {
 			return a.smallButton(gtx, &a.btnShuffle, "Shuffle", a.pl.Shuffled())
 		}),
@@ -169,11 +173,35 @@ func (a *App) nowPlaying(gtx C) D {
 		}),
 		layout.Rigid(layout.Spacer{Width: 6}.Layout),
 		layout.Rigid(func(gtx C) D { return a.smallButton(gtx, &a.btnNext, "Next", false) }),
-	)
+	}
+
+	// One row on a desktop, two on a phone. Five rigid buttons beside a
+	// flexed title works out to the title losing: on a phone-wide window it
+	// was squeezed to its first glyph and Next was pushed off screen
+	// entirely, so below this width the buttons take a row of their own and
+	// the title gets the full width.
+	if gtx.Constraints.Max.X < gtx.Dp(narrowBar) {
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+			layout.Rigid(info),
+			layout.Rigid(layout.Spacer{Height: 8}.Layout),
+			layout.Rigid(func(gtx C) D {
+				gtx.Constraints.Min.X = gtx.Constraints.Max.X
+				return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle,
+					Spacing: layout.SpaceSides}.Layout(gtx, buttons...)
+			}),
+		)
+	}
+	row := append([]layout.FlexChild{layout.Flexed(1, info)}, buttons...)
+	return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx, row...)
 }
 
+// narrowBar is the width below which the player bar stops pretending to be on
+// a desktop: the buttons move under the title, and the volume slider yields
+// its space to the seek bar — a phone has volume keys on its edge.
+const narrowBar = 640
+
 func (a *App) transport(gtx C, elapsed, total float64) D {
-	return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+	children := []layout.FlexChild{
 		layout.Rigid(func(gtx C) D {
 			gtx.Constraints.Min.X = gtx.Dp(48)
 			l := material.Caption(a.th, clock(elapsed))
@@ -202,17 +230,22 @@ func (a *App) transport(gtx C, elapsed, total float64) D {
 			l.Alignment = text.End
 			return l.Layout(gtx)
 		}),
-		layout.Rigid(layout.Spacer{Width: 16}.Layout),
-		layout.Rigid(func(gtx C) D {
-			l := material.Caption(a.th, "Vol")
-			l.Color = colDim
-			return l.Layout(gtx)
-		}),
-		layout.Rigid(layout.Spacer{Width: 8}.Layout),
-		layout.Rigid(func(gtx C) D {
-			gtx.Constraints.Min.X = gtx.Dp(90)
-			gtx.Constraints.Max.X = gtx.Dp(90)
-			return material.Slider(a.th, &a.vol).Layout(gtx)
-		}),
-	)
+	}
+	if gtx.Constraints.Max.X >= gtx.Dp(narrowBar) {
+		children = append(children,
+			layout.Rigid(layout.Spacer{Width: 16}.Layout),
+			layout.Rigid(func(gtx C) D {
+				l := material.Caption(a.th, "Vol")
+				l.Color = colDim
+				return l.Layout(gtx)
+			}),
+			layout.Rigid(layout.Spacer{Width: 8}.Layout),
+			layout.Rigid(func(gtx C) D {
+				gtx.Constraints.Min.X = gtx.Dp(90)
+				gtx.Constraints.Max.X = gtx.Dp(90)
+				return material.Slider(a.th, &a.vol).Layout(gtx)
+			}),
+		)
+	}
+	return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx, children...)
 }

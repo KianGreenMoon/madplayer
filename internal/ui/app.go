@@ -775,6 +775,12 @@ func (a *App) Run() error {
 	}
 	go a.queueSaver()
 
+	// Android paints the system bars itself, and its default is white — a
+	// glaring strip over a dark player. Both bars take the bar color: the
+	// status bar sits on the header, the navigation bar under the player bar,
+	// and those two are the same color already. A no-op on the desktop.
+	a.win.Option(app.StatusColor(colBar), app.NavigationColor(colBar))
+
 	var ops op.Ops
 	tick := time.NewTicker(a.pl.Tick())
 	defer tick.Stop()
@@ -1092,37 +1098,62 @@ func (a *App) drillUp() bool {
 }
 
 func (a *App) header(gtx C) D {
+	title := func(gtx C) D {
+		l := material.H6(a.th, "madplayer")
+		l.Color = colFg
+		return l.Layout(gtx)
+	}
+	search := func(gtx C) D {
+		ed := material.Editor(a.th, &a.search, "Search artists, albums, tracks…")
+		ed.Color, ed.HintColor = colFg, colDim
+		return filled(gtx, colSel, ed.Layout)
+	}
+	buttons := []layout.FlexChild{
+		layout.Rigid(func(gtx C) D {
+			return a.smallButton(gtx, &a.btnQueue, fmt.Sprintf("Queue (%d)", a.pl.QueueLen()), a.view == viewQueue)
+		}),
+		layout.Rigid(layout.Spacer{Width: 8}.Layout),
+		layout.Rigid(func(gtx C) D {
+			return a.smallButton(gtx, &a.btnCache, "Cache", a.view == viewCache)
+		}),
+		layout.Rigid(layout.Spacer{Width: 8}.Layout),
+		layout.Rigid(func(gtx C) D {
+			return a.smallButton(gtx, &a.btnSettings, "Settings", a.view == viewSettings)
+		}),
+		layout.Rigid(layout.Spacer{Width: 8}.Layout),
+		layout.Rigid(func(gtx C) D {
+			return a.smallButton(gtx, &a.btnServers, a.serversLabel(), a.view == viewServers)
+		}),
+	}
 	return bar(gtx, func(gtx C) D {
 		return layout.Inset{Top: 10, Bottom: 10, Left: 16, Right: 16}.Layout(gtx, func(gtx C) D {
-			return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
-				layout.Rigid(func(gtx C) D {
-					l := material.H6(a.th, "madplayer")
-					l.Color = colFg
-					return l.Layout(gtx)
-				}),
+			// The one-row header needs the title, the search field and four
+			// buttons across; below narrowBar the buttons squeezed the search
+			// out of existence and pushed Servers off the screen. So the
+			// buttons take the first row, the search the second, and the
+			// wordmark is dropped: a phone names its apps in the launcher and
+			// the switcher, and the four buttons alone fill the row.
+			if gtx.Constraints.Max.X < gtx.Dp(narrowBar) {
+				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+					layout.Rigid(func(gtx C) D {
+						gtx.Constraints.Min.X = gtx.Constraints.Max.X
+						return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle,
+							Spacing: layout.SpaceBetween}.Layout(gtx, buttons...)
+					}),
+					layout.Rigid(layout.Spacer{Height: 8}.Layout),
+					layout.Rigid(func(gtx C) D {
+						gtx.Constraints.Min.X = gtx.Constraints.Max.X
+						return search(gtx)
+					}),
+				)
+			}
+			row := append([]layout.FlexChild{
+				layout.Rigid(title),
 				layout.Rigid(layout.Spacer{Width: 16}.Layout),
-				layout.Flexed(1, func(gtx C) D {
-					ed := material.Editor(a.th, &a.search, "Search artists, albums, tracks…")
-					ed.Color, ed.HintColor = colFg, colDim
-					return filled(gtx, colSel, ed.Layout)
-				}),
+				layout.Flexed(1, search),
 				layout.Rigid(layout.Spacer{Width: 8}.Layout),
-				layout.Rigid(func(gtx C) D {
-					return a.smallButton(gtx, &a.btnQueue, fmt.Sprintf("Queue (%d)", a.pl.QueueLen()), a.view == viewQueue)
-				}),
-				layout.Rigid(layout.Spacer{Width: 8}.Layout),
-				layout.Rigid(func(gtx C) D {
-					return a.smallButton(gtx, &a.btnCache, "Cache", a.view == viewCache)
-				}),
-				layout.Rigid(layout.Spacer{Width: 8}.Layout),
-				layout.Rigid(func(gtx C) D {
-					return a.smallButton(gtx, &a.btnSettings, "Settings", a.view == viewSettings)
-				}),
-				layout.Rigid(layout.Spacer{Width: 8}.Layout),
-				layout.Rigid(func(gtx C) D {
-					return a.smallButton(gtx, &a.btnServers, a.serversLabel(), a.view == viewServers)
-				}),
-			)
+			}, buttons...)
+			return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx, row...)
 		})
 	})
 }

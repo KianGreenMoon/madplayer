@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"daemonlord.ygg/madshare/app"
 	"daemonlord.ygg/madshare/auth"
@@ -154,6 +155,55 @@ func (b *Backend) AddPeer(uri string) (dialled bool, err error) {
 		return false, err
 	}
 	return true, nil
+}
+
+// UnderlayPeer is one yggdrasil peering as it stands right now — the answer
+// AddPeer cannot give.
+//
+// It is this package's own shape rather than madshare's, like every other type
+// crossing this boundary, and it is narrower on purpose: the traffic counters
+// and the remote key belong to a server's admin page, and a person looking at a
+// phone is asking one question, which is whether this address is working.
+type UnderlayPeer struct {
+	URI string
+	Up  bool
+	// Inbound is a peering somebody dialled to US. A device behind a router has
+	// none, so it is worth saying when there is one.
+	Inbound bool
+	Uptime  time.Duration
+	Latency time.Duration
+	// Problem is the last connection error and ProblemAge how long ago it was.
+	// A down link that has never connected carries one; so does a link that is
+	// up again, where it is history rather than news — hence the age.
+	Problem    string
+	ProblemAge time.Duration
+}
+
+// UnderlayPeers reports every peering this node holds: the ones typed into
+// settings, the ones a home server published, the ones multicast found on the
+// local network, and anything that dialled in. Down links come first.
+//
+// It is a snapshot for a screen, not a subscription, and it BLOCKS on the
+// yggdrasil core's link actor — the same actor the dial loop runs on — so it
+// belongs on a timer off the UI goroutine and never in a layout function.
+func (b *Backend) UnderlayPeers() []UnderlayPeer {
+	if b == nil || b.net == nil {
+		return nil
+	}
+	live := b.net.UnderlayPeers()
+	out := make([]UnderlayPeer, 0, len(live))
+	for _, p := range live {
+		out = append(out, UnderlayPeer{
+			URI:        p.URI,
+			Up:         p.Up,
+			Inbound:    p.Inbound,
+			Uptime:     time.Duration(p.UptimeSec) * time.Second,
+			Latency:    time.Duration(p.LatencyMs * float64(time.Millisecond)),
+			Problem:    p.LastError,
+			ProblemAge: time.Duration(p.LastErrorAgeSec) * time.Second,
+		})
+	}
+	return out
 }
 
 // MeshProblem says why the madnetwork is not running, or "" when it is (or was

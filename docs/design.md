@@ -943,12 +943,24 @@ discipline, not luck:
   written while **nothing ever set it**: reachable only by hand-editing
   `config.json`, which is the same shape as the mesh switch before 2026-08-09 and
   indistinguishable from a feature that does not work. A typed peer is **dialled
-  now**, through the facade's `AddPeer`, rather than at the next start — an
-  address that either connects or says why, while its typist is still looking at
-  it — and saved, because the dial does not survive a restart. Removal is the
-  honest asymmetry: madshare can add a link at runtime and has no surface to drop
-  one, so forgetting a peer stops it being dialled at the next start and says so
+  now**, through the facade's `AddPeer`, rather than at the next start — and
+  saved, because the dial does not survive a restart. Removal is the honest
+  asymmetry: madshare can add a link at runtime and has no surface to drop one,
+  so forgetting a peer stops it being dialled at the next start and says so
   rather than implying a disconnection that did not happen.
+
+  **Each peer says what it is doing**, which needed a madshare change and got one
+  (`Network.UnderlayPeers`, v0.8.12, owner's call). `AddPeer` returns as soon as
+  the link is *configured* — the dial runs on the core's own goroutine with
+  backoff — so a URI that will never connect returns exactly the same `nil` as
+  one that connects in a millisecond, and without the other half a peer list can
+  only ever report what somebody typed. The four states are now distinguishable:
+  connected with its latency and uptime, not connecting with the dial's own
+  error, still trying, and not dialled at all because the madnetwork is off.
+  Peerings **nobody typed here** are listed too — what a home server published,
+  what multicast found, what dialled in — because they are the evidence for this
+  page's own claim that the list is *usually empty*, and the answer to "the
+  madnetwork says On, so what is it connected to?".
 - **Touch has no Ctrl+V either, so every settings box carries its own clipboard
   buttons** (2026-08-18). Gio reaches the clipboard *only* through keyboard
   shortcuts — `widget.Editor` answers Ctrl+C/V/X and draws no selection toolbar,

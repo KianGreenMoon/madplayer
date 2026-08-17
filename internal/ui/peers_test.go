@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"daemonlord.ygg/madplayer/internal/backend"
 )
 
 // The peer list is the third way onto the mesh, and the one a person types by
@@ -117,5 +119,94 @@ func waitForPeers(t *testing.T, a *App, want int) []string {
 			t.Fatalf("the peer list never reached the settings file (want %d, err %v)", want, err)
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// What a peer row SAYS is the whole point of reaching into the mesh for it. The
+// four states were indistinguishable before madshare's facade grew
+// UnderlayPeers (v0.8.12): a wrong address, an unreachable one, one still
+// trying and one working all read the same, because AddPeer returns nil for
+// every one of them.
+func TestAPeerRowSaysWhichOfTheFourStatesItIsIn(t *testing.T) {
+	cases := []struct {
+		name string
+		live *backend.UnderlayPeer
+		want string
+		warn bool
+	}{
+		{
+			name: "not dialled at all",
+			live: nil,
+			want: "madnetwork is off",
+		},
+		{
+			name: "connected",
+			live: &backend.UnderlayPeer{URI: "tls://a:1", Up: true, Latency: 12 * time.Millisecond, Uptime: 4 * time.Minute},
+			want: "Connected",
+		},
+		{
+			name: "refusing, with the reason",
+			live: &backend.UnderlayPeer{URI: "tls://a:1", Problem: "connection refused", ProblemAge: 9 * time.Second},
+			want: "connection refused",
+			warn: true,
+		},
+		{
+			name: "trying, nothing to report yet",
+			live: &backend.UnderlayPeer{URI: "tls://a:1"},
+			want: "Connecting",
+		},
+	}
+	for _, c := range cases {
+		got, warn := underlayStateText(c.live)
+		if !strings.Contains(got, c.want) {
+			t.Errorf("%s: %q does not say %q", c.name, got, c.want)
+		}
+		if warn != c.warn {
+			t.Errorf("%s: warn=%v, want %v — only a failure earns the warning colour", c.name, warn, c.warn)
+		}
+	}
+
+	// A connected peer's line carries the numbers somebody uses to judge it.
+	up, _ := underlayStateText(&backend.UnderlayPeer{Up: true, Latency: 12 * time.Millisecond, Uptime: 4 * time.Minute})
+	for _, want := range []string{"12ms", "up 4m"} {
+		if !strings.Contains(up, want) {
+			t.Errorf("a connected peer says %q, missing %q", up, want)
+		}
+	}
+}
+
+// A peer typed with a query — ?key=, ?password=, ?maxbackoff= — must still find
+// its own state. Yggdrasil keys a link by the URI with the query stripped
+// (urlForLinkInfo), so a naive match leaves such a peer permanently reading as
+// "not dialled" while it is connected.
+func TestAPeerWithAQueryStillFindsItsOwnState(t *testing.T) {
+	live := []backend.UnderlayPeer{{URI: "tls://example.org:7743", Up: true}}
+
+	if got := underlayFor(live, "tls://example.org:7743?key=abc123"); got == nil {
+		t.Fatal("a peer typed with ?key= did not match its own peering")
+	} else if !got.Up {
+		t.Error("matched the wrong peering")
+	}
+	// And it must not then be listed a second time as somebody else's.
+	if extra := undeclaredPeers(live, []string{"tls://example.org:7743?key=abc123"}); len(extra) != 0 {
+		t.Errorf("the same peering was also listed as undeclared: %+v", extra)
+	}
+}
+
+// Peerings this device never typed — a home server's published peer, a
+// multicast neighbour, an inbound link — belong on the page: they are the
+// answer to "the list is empty and the madnetwork says On, so what is it
+// connected to?".
+func TestPeeringsNobodyTypedAreStillShown(t *testing.T) {
+	live := []backend.UnderlayPeer{
+		{URI: "tls://typed.example:7743"},
+		{URI: "tcp://[fe80::1]:41657", Up: true, Inbound: true},
+	}
+	extra := undeclaredPeers(live, []string{"tls://typed.example:7743"})
+	if len(extra) != 1 || extra[0].URI != "tcp://[fe80::1]:41657" {
+		t.Fatalf("undeclared peerings = %+v", extra)
+	}
+	if s, _ := underlayStateText(&extra[0]); !strings.Contains(s, "dialled this device") {
+		t.Errorf("an inbound peering reads as %q, which does not say who dialled whom", s)
 	}
 }

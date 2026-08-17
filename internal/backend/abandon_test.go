@@ -82,10 +82,11 @@ func (n stubNet) RemoveHome(context.Context, string) error              { return
 func (n stubNet) Homes(context.Context) ([]federation.ExternalNode, error) {
 	return nil, nil
 }
-func (n stubNet) Holdings() []string                   { return nil }
-func (n stubNet) EvictCached(string) error             { return nil }
-func (n stubNet) AddPeer(string) error                 { return nil }
-func (n stubNet) PublishNothing(context.Context) error { return nil }
+func (n stubNet) Holdings() []string                       { return nil }
+func (n stubNet) EvictCached(string) error                 { return nil }
+func (n stubNet) AddPeer(string) error                     { return nil }
+func (n stubNet) UnderlayPeers() []federation.UnderlayPeer { return nil }
+func (n stubNet) PublishNothing(context.Context) error     { return nil }
 func (n stubNet) Fetch(context.Context, string, int64, []string) (federation.Transfer, error) {
 	return n.t, nil
 }

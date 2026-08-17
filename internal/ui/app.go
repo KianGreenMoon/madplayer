@@ -134,8 +134,14 @@ type App struct {
 	// did. It belongs to that section rather than the player bar for the same
 	// reason the cache page keeps its own — somebody who just typed an address
 	// is looking at the box they typed it into.
-	peerMsg   string
-	cacheUsed int64
+	peerMsg string
+	// underlay is what every yggdrasil peering is doing, re-read on a timer
+	// while the madnetwork page is open (peers.go). It is held rather than asked
+	// per frame because the read blocks on the core's link actor.
+	underlay        []backend.UnderlayPeer
+	underlayAt      time.Time
+	underlayLoading bool
+	cacheUsed       int64
 	// seedCount and seedUsed are the OTHER cache: what this device seeds back to
 	// the household, measured when the cache page is opened (see refreshSeedUsage).
 	seedCount int

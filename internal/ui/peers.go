@@ -4,10 +4,13 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"time"
 
 	"gioui.org/layout"
 	"gioui.org/widget"
 	"gioui.org/widget/material"
+
+	"daemonlord.ygg/madplayer/internal/backend"
 )
 
 // Underlay peers: how this device reaches the mesh when nothing else offers a
@@ -44,12 +47,36 @@ import (
 // worth re-typing.
 var peerSchemes = []string{"tls", "tcp", "quic", "ws", "wss", "socks", "sockstls", "unix"}
 
-// peerControls is the peer list and the box that adds to it.
+// peerRefresh is how stale the peering states may be while the page is open.
+//
+// A link coming up is the interesting moment and it happens on the network's
+// clock rather than on a click, so the states re-read themselves at this cadence
+// — but never in the layout function. The read blocks on the yggdrasil core's
+// link actor (backend.UnderlayPeers), which is the actor the dial loop runs on,
+// and this program has already learned once what blocking a Gio frame on
+// something that can park costs (internal/player/buffered.go).
+const peerRefresh = 3 * time.Second
+
+// peerControls is the peer list, the box that adds to it, and what every
+// peering is actually doing.
 func (a *App) peerControls(gtx C) D {
+	// A device with no node has no peerings, so nothing is polled for them —
+	// the same gate the pairing section uses, and for the same reason: work
+	// whose answer is known is work not worth a goroutine.
+	_, meshUp := a.be.Mesh()
+
 	a.mu.Lock()
 	peers := append([]string(nil), a.cfg.MeshPeers...)
 	msg := a.peerMsg
+	live := a.underlay
+	stale := meshUp && !a.underlayLoading && time.Since(a.underlayAt) > peerRefresh
+	if stale {
+		a.underlayLoading = true
+	}
 	a.mu.Unlock()
+	if stale {
+		go a.refreshUnderlay()
+	}
 
 	if a.btnAddPeer.Clicked(gtx) {
 		a.addPeer(a.peerEd.Text())
@@ -86,12 +113,75 @@ func (a *App) peerControls(gtx C) D {
 		})
 	}
 	for i, p := range peers {
-		rows = append(rows, a.peerLine(i, p))
+		rows = append(rows, a.peerLine(i, p, underlayFor(live, p)))
+	}
+	// Everything else the node is peered with: what a home server published,
+	// what multicast found on this network, whatever dialled in. It is the
+	// answer to "the list is empty and the madnetwork says On — to what?", and
+	// it is the evidence for the claim the paragraph above makes.
+	for _, p := range undeclaredPeers(live, peers) {
+		rows = append(rows, a.discoveredPeerLine(p))
 	}
 
 	return layout.Inset{Top: 18}.Layout(gtx, func(gtx C) D {
 		return layout.Flex{Axis: layout.Vertical}.Layout(gtx, rigidAll(rows)...)
 	})
+}
+
+// refreshUnderlay re-reads the peering states off the UI goroutine.
+func (a *App) refreshUnderlay() {
+	live := a.be.UnderlayPeers()
+	a.mu.Lock()
+	a.underlay, a.underlayAt, a.underlayLoading = live, time.Now(), false
+	a.mu.Unlock()
+	a.win.Invalidate()
+}
+
+// underlayFor is the live state of a typed address, or nil when the core knows
+// nothing of it.
+//
+// Matching drops the query string, because the core does: yggdrasil keys a link
+// by its URI with the query removed (urlForLinkInfo), so a peer typed with a
+// ?key= or ?password= would otherwise never match its own state and would
+// permanently read as "not dialled".
+func underlayFor(live []backend.UnderlayPeer, uri string) *backend.UnderlayPeer {
+	want := withoutQuery(uri)
+	for i := range live {
+		if withoutQuery(live[i].URI) == want {
+			return &live[i]
+		}
+	}
+	return nil
+}
+
+// undeclaredPeers is every peering that is not one of the typed ones.
+func undeclaredPeers(live []backend.UnderlayPeer, typed []string) []backend.UnderlayPeer {
+	out := make([]backend.UnderlayPeer, 0, len(live))
+	for _, p := range live {
+		if !listedPeer(typed, p.URI) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// listedPeer reports whether one of the typed addresses is this peering, on
+// the same query-stripped comparison underlayFor uses.
+func listedPeer(typed []string, uri string) bool {
+	want := withoutQuery(uri)
+	for _, t := range typed {
+		if withoutQuery(t) == want {
+			return true
+		}
+	}
+	return false
+}
+
+func withoutQuery(uri string) string {
+	if i := strings.IndexByte(uri, '?'); i >= 0 {
+		return uri[:i]
+	}
+	return uri
 }
 
 // peerBlurb says what this list is for, and says "usually empty" out loud —
@@ -108,23 +198,110 @@ func peerBlurb(n int) string {
 	return s
 }
 
-// peerLine is one configured peer and the button that forgets it.
-func (a *App) peerLine(i int, uri string) layout.Widget {
+// peerLine is one typed peer: the address, what it is doing, and the button
+// that forgets it.
+func (a *App) peerLine(i int, uri string, live *backend.UnderlayPeer) layout.Widget {
 	return func(gtx C) D {
-		return layout.Inset{Top: 8}.Layout(gtx, func(gtx C) D {
-			return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
-				layout.Flexed(1, func(gtx C) D {
-					l := material.Body2(a.th, uri)
-					l.Color = colFg
-					l.MaxLines = 1
-					return l.Layout(gtx)
-				}),
-				layout.Rigid(func(gtx C) D {
-					return a.actionButton(gtx, &a.rmPeer[i], iconDelete, false)
-				}),
-			)
+		return a.peerRowLayout(gtx, uri, live, func(gtx C) D {
+			return a.actionButton(gtx, &a.rmPeer[i], iconDelete, false)
 		})
 	}
+}
+
+// discoveredPeerLine is a peering nobody typed here. It has no remove button on
+// purpose: this list does not own it, and a button that removed it from a
+// setting it was never in would be a lie about what happened.
+func (a *App) discoveredPeerLine(p backend.UnderlayPeer) layout.Widget {
+	return func(gtx C) D {
+		return a.peerRowLayout(gtx, p.URI, &p, nil)
+	}
+}
+
+func (a *App) peerRowLayout(gtx C, uri string, live *backend.UnderlayPeer, action layout.Widget) D {
+	return layout.Inset{Top: 8}.Layout(gtx, func(gtx C) D {
+		return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+			layout.Flexed(1, func(gtx C) D {
+				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+					layout.Rigid(func(gtx C) D {
+						l := material.Body2(a.th, uri)
+						l.Color = colFg
+						l.MaxLines = 1
+						return l.Layout(gtx)
+					}),
+					layout.Rigid(func(gtx C) D {
+						text, warn := underlayStateText(live)
+						l := material.Caption(a.th, text)
+						l.Color = colDim
+						if warn {
+							l.Color = colWarn
+						}
+						// Two lines, unlike the address above it: this line's
+						// worst case is a dial error, and "connect: connectio…"
+						// is the half of the sentence that says nothing. The
+						// address can be cut — it is the one you typed.
+						l.MaxLines = 2
+						return l.Layout(gtx)
+					}),
+				)
+			}),
+			layout.Rigid(func(gtx C) D {
+				if action == nil {
+					return D{}
+				}
+				return action(gtx)
+			}),
+		)
+	})
+}
+
+// peerStateText is one peering in the words of somebody waiting on it, and
+// whether that is bad news.
+//
+// The four cases are genuinely different and used to be indistinguishable,
+// which is the whole reason this reaches into the mesh at all: connected,
+// trying and failing with a reason, trying with nothing to report yet, and not
+// being dialled at all. A saved peer on a device whose madnetwork is off is the
+// last one, and it is not a fault.
+func underlayStateText(p *backend.UnderlayPeer) (string, bool) {
+	if p == nil {
+		return "Not dialled — the madnetwork is off", false
+	}
+	if p.Up {
+		s := "Connected"
+		if p.Inbound {
+			s = "Connected — they dialled this device"
+		}
+		if p.Latency > 0 {
+			s += " · " + p.Latency.Round(time.Millisecond).String()
+		}
+		if p.Uptime > 0 {
+			s += " · up " + shortDuration(p.Uptime)
+		}
+		return s, false
+	}
+	if p.Problem != "" {
+		s := "Not connecting: " + p.Problem
+		if p.ProblemAge > 0 {
+			s += " (" + shortDuration(p.ProblemAge) + " ago)"
+		}
+		return s, true
+	}
+	return "Connecting…", false
+}
+
+// shortDuration is a span at the precision a person reads it: seconds for the
+// first minute, then minutes, then hours. A peering that has been up for three
+// hours does not need its seconds.
+func shortDuration(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	}
+	return fmt.Sprintf("%dd", int(d.Hours()/24))
 }
 
 // checkPeer is the shape check, and it answers in a sentence.

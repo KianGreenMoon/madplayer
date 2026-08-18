@@ -86,9 +86,17 @@ type Speaker struct {
 	mu     sync.Mutex
 	mixer  beep.Mixer
 	player *oto.Player
+	reader *streamReader
 	rate   beep.SampleRate
 	inited bool
 	stats  *streamStats
+
+	// pmu guards the pair (paused, the oto player's own state), which two
+	// callers can reach at once: the UI pausing, and a track change clearing.
+	// They must not interleave, or a cleared sink restarts a player the user
+	// paused — which plays.
+	pmu    sync.Mutex
+	paused bool
 }
 
 // New returns an unopened speaker.
@@ -130,7 +138,7 @@ func (s *Speaker) Init(rate beep.SampleRate, _ int) (beep.SampleRate, error) {
 		s.rate = rate
 		stats := &streamStats{}
 		s.stats = stats
-		s.player = ctx.NewPlayer(&streamReader{
+		s.reader = &streamReader{
 			mu:   &s.mu,
 			src:  &s.mixer,
 			rate: rate,
@@ -154,7 +162,8 @@ func (s *Speaker) Init(rate beep.SampleRate, _ int) (beep.SampleRate, error) {
 					exec.Round(time.Millisecond), audio.Round(time.Millisecond), readDeadline)
 			},
 			stats: stats,
-		})
+		}
+		s.player = ctx.NewPlayer(s.reader)
 		s.player.SetBufferSize(rate.N(poolDuration) * frameBytes)
 		s.player.Play()
 		go logStats(stats, s.player, rate)
@@ -279,10 +288,38 @@ func (s *Speaker) Unlock() {
 	}
 }
 
+// SetPaused holds the DEVICE rather than feeding it silence.
+//
+// A mixer pause (beep.Ctrl) stops the music at the top of the chain, and
+// everything already handed over plays first: the pool, oto's C++ fifo, the
+// HAL's own buffer. That tail is what a deep pool costs a listener — press
+// pause, keep hearing music — and it is why the pool could not simply be made
+// deeper. Pausing the PLAYER stops the pull instead, so the tail is only what
+// lies below this process (about 0.2 s here) whatever the pool holds.
+//
+// The pooled audio is kept, not dropped: a resume continues exactly where it
+// stopped, with nothing re-decoded and no gap. Only the reader's starvation
+// model has to be told, or the stopped clock reads as a dry pool.
+func (s *Speaker) SetPaused(paused bool) {
+	if !s.inited {
+		return
+	}
+	s.pmu.Lock()
+	defer s.pmu.Unlock()
+	s.paused = paused
+	if paused {
+		s.player.Pause()
+		return
+	}
+	s.reader.restart()
+	s.player.Play()
+}
+
 // Clear stops everything currently playing, including what is already mixed
 // into the pool — a track change or a seek should not play a quarter second
 // of the old audio first. Reset also pauses the oto player, so it is started
-// again in the same breath.
+// again in the same breath — unless the user is holding it paused, in which
+// case starting it would play the next track under a Play button.
 func (s *Speaker) Clear() {
 	if !s.inited {
 		return
@@ -290,8 +327,13 @@ func (s *Speaker) Clear() {
 	s.mu.Lock()
 	s.mixer.Clear()
 	s.mu.Unlock()
+	s.pmu.Lock()
 	s.player.Reset()
-	s.player.Play()
+	if !s.paused {
+		s.player.Play()
+	}
+	s.pmu.Unlock()
+	s.reader.restart()
 	// Pooled audio just went in the bin: it was handed over and will never
 	// play, which is indistinguishable from silence inserted below us. Say so
 	// rather than let a track change read as a dropout.

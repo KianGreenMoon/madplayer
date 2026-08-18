@@ -57,6 +57,13 @@ type Sink interface {
 	Play(s beep.Streamer)
 	Lock()
 	Unlock()
+	// SetPaused tells the sink the user's pause, which is NOT the same as
+	// feeding it silence. A sink that buffers deeply plays everything already
+	// handed to it before a mixer pause is heard; one that can hold its device
+	// stops within its own hardware latency instead, and keeps what is pooled
+	// so a resume needs nothing re-decoded. The mixer pause below stays either
+	// way — this is the sink's chance to be quicker about it.
+	SetPaused(paused bool)
 	// Clear stops everything currently playing.
 	Clear()
 	Close() error
@@ -441,7 +448,9 @@ func (p *Player) Toggle() {
 	}
 	p.sink.Lock()
 	p.ctrl.Paused = !p.ctrl.Paused
+	paused := p.ctrl.Paused
 	p.sink.Unlock()
+	p.sink.SetPaused(paused)
 	p.mu.Unlock()
 	p.changed()
 }
@@ -864,6 +873,11 @@ func (p *Player) playCurrent() {
 		p.seekCancel = nil
 	}
 	p.sink.Clear()
+	// The hold goes with the ctrl that carried it. load() builds the new
+	// control from whatever ctrl says at the moment it installs it, and that
+	// is nil from here — so a track started while the last one was paused
+	// plays, and a sink still holding its device would answer it with silence.
+	p.sink.SetPaused(false)
 	p.src.Close()
 	p.src, p.ctrl, p.vol, p.srcPath = nil, nil, nil, ""
 	p.gen++
@@ -1097,6 +1111,9 @@ func (p *Player) stop() {
 		p.seekCancel = nil
 	}
 	p.sink.Clear()
+	// A stopped player is not a paused one: the next track must make sound
+	// without anyone pressing play, so the sink's hold is released here too.
+	p.sink.SetPaused(false)
 	p.src.Close()
 	p.src, p.ctrl, p.vol, p.srcPath = nil, nil, nil, ""
 	p.gen++

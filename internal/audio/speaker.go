@@ -64,6 +64,14 @@ func (s *Speaker) Unlock() {
 	}
 }
 
+// SetPaused does nothing here, and the Android sink explains why it exists:
+// there, a pause that only stops the mixer is still heard for as long as the
+// pool is deep, so the device is held instead. beep's speaker offers no such
+// hold — and needs none. Its buffer is the one the player asks for, tens of
+// milliseconds, and the desktop mixers below it (PipeWire, PulseAudio) are not
+// fed a quarter of a second ahead.
+func (s *Speaker) SetPaused(bool) {}
+
 func (s *Speaker) Clear() {
 	if s.inited {
 		speaker.Clear()

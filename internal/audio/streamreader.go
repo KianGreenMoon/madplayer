@@ -55,7 +55,17 @@ type streamReader struct {
 	level    time.Duration
 	lastRead time.Time
 	slowAt   time.Time
+
+	// restarting is the sink saying the feed was stopped from outside — a
+	// device-level pause, a cleared mixer. The wall clock since the last read
+	// then measures the STOP, not a pool draining, and reading it as
+	// starvation would put a false alarm in the very log a crackle report is
+	// read from. Set from another goroutine, consumed by the next Read.
+	restarting atomic.Bool
 }
+
+// restart tells the model to take the pool as full and the clock from here.
+func (r *streamReader) restart() { r.restarting.Store(true) }
 
 // streamStats is the between-logs accumulator behind the sink's periodic
 // stats line. One goroutine writes (oto's reader), one takes and resets (the
@@ -110,6 +120,9 @@ func peak(a *atomic.Int64, v int64) {
 func (r *streamReader) Read(p []byte) (int, error) {
 	nFrames := len(p) / frameBytes
 	now := time.Now()
+	if r.restarting.Swap(false) {
+		r.level, r.lastRead = r.pool, now
+	}
 	var gap time.Duration
 	if !r.lastRead.IsZero() {
 		gap = now.Sub(r.lastRead)

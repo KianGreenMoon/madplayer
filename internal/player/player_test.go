@@ -18,9 +18,10 @@ import (
 // advancing, repeat, error recovery, seeking — is testable through it on a
 // machine with no sound card, which is the reason Sink is an interface.
 type fakeSink struct {
-	mu   sync.Mutex
-	s    beep.Streamer
-	rate beep.SampleRate
+	mu     sync.Mutex
+	s      beep.Streamer
+	rate   beep.SampleRate
+	paused bool // the device-level hold, which is not the mixer's Ctrl
 }
 
 // rate, when set, is what the fake device claims to run at — the way a phone
@@ -45,6 +46,18 @@ func (f *fakeSink) Clear() {
 	f.mu.Lock()
 	f.s = nil
 	f.mu.Unlock()
+}
+
+func (f *fakeSink) SetPaused(paused bool) {
+	f.mu.Lock()
+	f.paused = paused
+	f.mu.Unlock()
+}
+
+func (f *fakeSink) held() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.paused
 }
 
 // pump pulls samples the way a real device would, until the stream ends or the
@@ -391,5 +404,58 @@ func TestALocalTrackSeeksThroughTheRing(t *testing.T) {
 	}
 	if got < 4410-512 || got > 4410+512 {
 		t.Fatalf("pumped %d samples after seeking to 0.4 of 0.5s, want ~4410 — the seek did not reach the decoder", got)
+	}
+}
+
+// TestTheSinkHearsThePauseAndIsReleasedByEveryOtherPath pins the invariant a
+// device-level hold rests on: the sink is held exactly while a paused ctrl
+// exists. Get it wrong in the releasing direction and the pause is merely as
+// slow as it always was; get it wrong the other way and the next track plays
+// to a held device — silence, with a Pause button on screen and every counter
+// in the program insisting it is playing.
+func TestTheSinkHearsThePauseAndIsReleasedByEveryOtherPath(t *testing.T) {
+	dir := t.TempDir()
+	a := writeWAV(t, dir, "a.wav", 5)
+	b := writeWAV(t, dir, "b.wav", 5)
+
+	sink := &fakeSink{}
+	p, err := New(sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+
+	p.SetQueue([]*queue.Item{{Path: a}, {Path: b}}, 0)
+	waitPlaying(t, p)
+	if sink.held() {
+		t.Fatal("the sink is held while playback is running")
+	}
+
+	p.Pause()
+	if !sink.held() {
+		t.Fatal("the sink was not told about the pause")
+	}
+	p.Play()
+	if sink.held() {
+		t.Fatal("the sink is still held after resuming")
+	}
+
+	// Starting another track while paused: load() builds a control that is
+	// NOT paused, so the hold has to go with the old one.
+	p.Pause()
+	if !sink.held() {
+		t.Fatal("the sink was not told about the second pause")
+	}
+	p.SetQueue([]*queue.Item{{Path: b}}, 0)
+	waitPlaying(t, p)
+	if sink.held() {
+		t.Fatal("a track started while paused would play to a held device")
+	}
+
+	// And the end of the queue, which is a stop rather than a pause.
+	p.Pause()
+	p.Stop()
+	if sink.held() {
+		t.Fatal("a stopped player left the device held")
 	}
 }

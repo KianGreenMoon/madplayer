@@ -168,6 +168,27 @@ const (
 	playerClosed
 )
 
+// PoolStats is what one player's buffer looked like to the DEVICE between two
+// calls of TakePoolStats.
+//
+// LOCAL PATCH (madplayer). Nothing else in this package can see the one way a
+// mux fails: ReadFloat32s zero-fills what a player cannot supply, so a buffer
+// that is short by the time the device asks becomes silence in the mix, with
+// no error, no short read and no counter anywhere above it. These five numbers
+// are that blind spot, and they are collected under the lock the read already
+// holds.
+//
+// LowWater is the margin: the fewest bytes left after a read. It says how close
+// the buffer came to the cliff even when it never went over, which is what
+// sizing it needs and what a crackle report cannot otherwise carry.
+type PoolStats struct {
+	Reads      int // device-side reads served
+	MaxRead    int // bytes wanted by the largest of them
+	LowWater   int // fewest bytes left in the buffer after a read
+	Shorts     int // reads the buffer could not fill — silence went out instead
+	ShortBytes int // how much silence that came to
+}
+
 type playerImpl struct {
 	mux        *Mux
 	src        io.Reader
@@ -178,6 +199,8 @@ type playerImpl struct {
 	buf        []byte
 	eof        bool
 	bufferSize int
+	pool       PoolStats
+	poolSeen   bool // LowWater is only meaningful once a read has happened
 
 	m sync.Mutex
 }
@@ -434,6 +457,20 @@ func (p *playerImpl) BufferedSize() int {
 	return len(p.buf)
 }
 
+// TakePoolStats returns what the device saw of this player's buffer since the
+// last call, and starts a fresh window. LOCAL PATCH (madplayer).
+func (p *Player) TakePoolStats() PoolStats {
+	return p.p.takePoolStats()
+}
+
+func (p *playerImpl) takePoolStats() PoolStats {
+	p.m.Lock()
+	defer p.m.Unlock()
+	s := p.pool
+	p.pool, p.poolSeen = PoolStats{}, false
+	return s
+}
+
 func (p *Player) Close() error {
 	p.cleanup.Stop()
 	return p.p.Close()
@@ -509,6 +546,20 @@ func (p *playerImpl) readBufferAndAdd(buf []float32) int {
 
 	copy(p.buf, p.buf[n*bitDepthInBytes:])
 	p.buf = p.buf[:len(p.buf)-n*bitDepthInBytes]
+
+	// LOCAL PATCH (madplayer): the margin, and whether it ran out. See
+	// PoolStats.
+	p.pool.Reads++
+	if want := len(buf) * bitDepthInBytes; want > p.pool.MaxRead {
+		p.pool.MaxRead = want
+	}
+	if short := (len(buf) - n) * bitDepthInBytes; short > 0 {
+		p.pool.Shorts++
+		p.pool.ShortBytes += short
+	}
+	if left := len(p.buf); !p.poolSeen || left < p.pool.LowWater {
+		p.pool.LowWater, p.poolSeen = left, true
+	}
 
 	if p.eof && len(p.buf) == 0 {
 		p.returnBufferToPool()

@@ -63,6 +63,34 @@ func (p *Player) BufferedSize() int {
 	return p.player.BufferedSize()
 }
 
+// PoolStats is what the DEVICE saw of a player's buffer over one window: how
+// many reads it served, the largest it was asked for, the fewest bytes it had
+// left after one (the margin), and whether it ever came up short — which is
+// not an error anywhere in this package, because a short buffer is mixed as
+// SILENCE and the caller is never told.
+//
+// LOCAL PATCH (madplayer) — see third_party/oto/MADPLAYER-PATCH.md.
+type PoolStats struct {
+	Reads      int
+	MaxRead    int
+	LowWater   int
+	Shorts     int
+	ShortBytes int
+}
+
+// TakePoolStats returns the window since the last call and starts a new one.
+// LOCAL PATCH (madplayer).
+func (p *Player) TakePoolStats() PoolStats {
+	s := p.player.TakePoolStats()
+	return PoolStats{
+		Reads:      s.Reads,
+		MaxRead:    s.MaxRead,
+		LowWater:   s.LowWater,
+		Shorts:     s.Shorts,
+		ShortBytes: s.ShortBytes,
+	}
+}
+
 // Err returns an error if this player has an error.
 func (p *Player) Err() error {
 	if err := p.player.Err(); err != nil {

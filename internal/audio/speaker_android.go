@@ -157,7 +157,7 @@ func (s *Speaker) Init(rate beep.SampleRate, _ int) (beep.SampleRate, error) {
 		})
 		s.player.SetBufferSize(rate.N(poolDuration) * frameBytes)
 		s.player.Play()
-		go logStats(stats)
+		go logStats(stats, s.player, rate)
 		s.inited = true
 	})
 	return s.rate, err
@@ -171,21 +171,51 @@ func (s *Speaker) Init(rate beep.SampleRate, _ int) (beep.SampleRate, error) {
 // cached-app freezer, which no in-process counter can record while it
 // happens. The ring in logbuf keeps hours of these; logcat on the diagnosing
 // phone kept ten minutes.
-func logStats(st *streamStats) {
+func logStats(st *streamStats, pl *oto.Player, rate beep.SampleRate) {
 	const period = 30 * time.Second
+	// The pool is polled far more often than the line is printed, because a
+	// short read is an audible click and a 30 s window would only say that one
+	// happened somewhere in it. Polling puts a timestamp on it, which is what
+	// makes "I heard it at 20:14" answerable.
+	const poll = time.Second
 	var m runtime.MemStats
 	var lastGC uint32
 	var lastPause uint64
 	prev := time.Now()
 	var lag time.Duration // audio owed to the wall clock since the last reset
+	var pool oto.PoolStats
+	lowWater := -1 // bytes; -1 until a device read has happened
+	audioTime := func(bytes int) time.Duration { return rate.D(bytes / frameBytes) }
 	for {
-		time.Sleep(period)
+		time.Sleep(poll)
+		if p := pl.TakePoolStats(); p.Reads > 0 {
+			pool.Reads += p.Reads
+			pool.Shorts += p.Shorts
+			pool.ShortBytes += p.ShortBytes
+			pool.MaxRead = max(pool.MaxRead, p.MaxRead)
+			if lowWater < 0 || p.LowWater < lowWater {
+				lowWater = p.LowWater
+			}
+			if p.Shorts > 0 {
+				// The one failure oto cannot report: the device asked for more
+				// than the pool held, and the difference went out as silence.
+				// Nothing else in this process can see it — not the reads, not
+				// the gaps, not AudioFlinger, which counts the track as fed.
+				log.Printf("audio: the device read past the pool — %v of silence mixed into %d read(s) of up to %v; the refill was late",
+					audioTime(p.ShortBytes).Round(time.Millisecond), p.Shorts,
+					audioTime(p.MaxRead).Round(time.Millisecond))
+			}
+		}
+		if time.Since(prev) < period {
+			continue
+		}
 		reads, worstExec, worstGap, starved, audio := st.take()
 		interval := time.Since(prev)
 		prev = time.Now()
 		reset := st.restarted.Swap(false)
 		if reads == 0 {
 			lag = 0 // idle time is not lag; start the accounting over
+			pool, lowWater = oto.PoolStats{}, -1
 			continue
 		}
 		// The device's clock against ours. Anything below this program that
@@ -207,10 +237,24 @@ func logStats(st *streamStats) {
 			worstExec.Round(time.Millisecond), worstGap.Round(time.Millisecond),
 			audio.Round(time.Millisecond), lag.Round(time.Millisecond),
 			m.HeapAlloc>>20, gc, time.Duration(pause).Round(time.Millisecond), runtime.NumGoroutine())
+		// The pool's own numbers, from inside oto: how deep the device's read
+		// is (a grant this side never gets told) and how little was left after
+		// the worst of them. The margin is the interesting half — it says how
+		// close the feed came to the cliff on a run that never went over.
+		if pool.Reads > 0 {
+			line += fmt.Sprintf("; pool low %v of %v over %d device read(s) of up to %v",
+				audioTime(lowWater).Round(time.Millisecond), poolDuration,
+				pool.Reads, audioTime(pool.MaxRead).Round(time.Millisecond))
+		}
 		if starved > 0 {
 			line += fmt.Sprintf(" — STARVED %d×", starved)
 		}
+		if pool.Shorts > 0 {
+			line += fmt.Sprintf(" — PADDED %d× (%v of silence)", pool.Shorts,
+				audioTime(pool.ShortBytes).Round(time.Millisecond))
+		}
 		log.Print(line)
+		pool, lowWater = oto.PoolStats{}, -1
 	}
 }
 

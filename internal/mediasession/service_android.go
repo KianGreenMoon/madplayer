@@ -64,6 +64,7 @@ import (
 	"log"
 	"runtime"
 	"sync/atomic"
+	"time"
 	"unsafe"
 
 	"gioui.org/app"
@@ -84,6 +85,12 @@ const (
 // is welded to the JNI export name in export_android.go and to the manifest
 // entry android/build-apk.sh writes.
 const serviceClass = "ygg.daemonlord.madplayer.PlaybackService"
+
+// shutdownLinger is how long an inactive snapshot must persist before the
+// service is stopped — long enough to outlast playCurrent's open-a-local-
+// track blip by orders of magnitude, short enough that a genuine stop takes
+// the notification down before anybody wonders about it.
+const shutdownLinger = 2 * time.Second
 
 // commands is what nativeCommand dispatches to. Package-level because a JNI
 // static native carries no Go receiver.
@@ -159,6 +166,17 @@ func (s *Service) loop() {
 
 	started := false
 	var last snapshot
+	// quiet delays acting on an inactive snapshot. A LOCAL track being
+	// opened has no ctrl and no loading flag for a few milliseconds
+	// (player.playCurrent nils everything before its load goroutine runs,
+	// and only a download sets loading), so every advance onto a local
+	// track publishes one inactive snapshot. Acting on it flapped the
+	// service — shutdown, then start on the very next snapshot — and the
+	// restart is FATAL with the app in the background: Android refuses
+	// startForegroundService there and the refusal is an exception (three
+	// crashes in one day's log, each at a screen-off track boundary,
+	// 2026-08-18). A real stop stays inactive and outlives the linger.
+	var quiet <-chan time.Time
 	for {
 		select {
 		case <-s.done:
@@ -166,6 +184,16 @@ func (s *Service) loop() {
 				j.shutdown()
 			}
 			return
+		case <-quiet:
+			quiet = nil
+			if snap := s.latest.Load(); snap != nil && snap.active {
+				continue // it came back before the linger ran out
+			}
+			if started {
+				j.shutdown()
+				started, last = false, snapshot{}
+			}
+			continue
 		case <-s.kick:
 		}
 		snap := s.latest.Load()
@@ -173,12 +201,12 @@ func (s *Service) loop() {
 			continue
 		}
 		if !snap.active {
-			if started {
-				j.shutdown()
-				started, last = false, snapshot{}
+			if started && quiet == nil {
+				quiet = time.After(shutdownLinger)
 			}
 			continue
 		}
+		quiet = nil
 		if !started {
 			j.start()
 			started = true

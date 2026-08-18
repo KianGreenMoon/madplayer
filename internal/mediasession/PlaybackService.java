@@ -84,6 +84,7 @@ public final class PlaybackService extends Service {
     private static final Object lock = new Object();
     private static PlaybackService instance;
     private static boolean wanted;
+    private static Context appCtx;
     private static String title = "";
     private static String artist = "";
     private static String album = "";
@@ -100,22 +101,49 @@ public final class PlaybackService extends Service {
     public static void start(final Context ctx) {
         synchronized (lock) {
             wanted = true;
+            appCtx = ctx.getApplicationContext();
         }
         main.post(new Runnable() {
             public void run() {
-                synchronized (lock) {
-                    if (!wanted || instance != null) {
-                        return;
-                    }
-                }
-                Intent i = new Intent(ctx, PlaybackService.class);
-                if (Build.VERSION.SDK_INT >= 26) {
-                    ctx.startForegroundService(i);
-                } else {
-                    ctx.startService(i);
-                }
+                tryStart();
             }
         });
+    }
+
+    // tryStart asks Android for the service and SURVIVES being told no.
+    // Android forbids startForegroundService from the background outside a
+    // few allowlisted windows, and delivers the refusal as an exception on
+    // the main thread — uncaught, a track change with the screen off took
+    // the whole program down (ForegroundServiceStartNotAllowedException at
+    // exactly this call; three crashes in the log of one day, 2026-08-18).
+    // The refusal leaves `wanted` standing, and every later state push
+    // retries while the service is missing (see setState/setMetadata), so
+    // the first attempt made inside an allowed window — the app coming to
+    // the foreground, a media-button callback — brings it back.
+    // Main thread only.
+    private static void tryStart() {
+        Context ctx;
+        synchronized (lock) {
+            if (!wanted || instance != null || appCtx == null) {
+                return;
+            }
+            ctx = appCtx;
+        }
+        Intent i = new Intent(ctx, PlaybackService.class);
+        try {
+            if (Build.VERSION.SDK_INT >= 26) {
+                ctx.startForegroundService(i);
+            } else {
+                ctx.startService(i);
+            }
+        } catch (IllegalStateException e) {
+            // ForegroundServiceStartNotAllowedException is the API 31+ name,
+            // and it extends this; catching the parent also covers the
+            // pre-31 form of the same refusal and keeps the class compilable
+            // against older framework jars.
+            android.util.Log.w("madplayer",
+                    "foreground service refused; keeping state, will retry on the next push: " + e);
+        }
     }
 
     public static void setMetadata(String t, String ar, String al, long durMs, String art) {
@@ -130,6 +158,8 @@ public final class PlaybackService extends Service {
             public void run() {
                 if (instance != null) {
                     instance.apply(true);
+                } else {
+                    tryStart(); // a refused start retries on every push
                 }
             }
         });
@@ -149,6 +179,8 @@ public final class PlaybackService extends Service {
                     // button has to change face; a position update alone goes
                     // to the session, which clients interpolate from.
                     instance.apply(flipped);
+                } else {
+                    tryStart(); // a refused start retries on every push
                 }
             }
         });

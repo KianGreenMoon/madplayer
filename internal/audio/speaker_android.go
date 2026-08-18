@@ -18,6 +18,7 @@
 package audio
 
 import (
+	"log"
 	"sync"
 	"time"
 
@@ -48,20 +49,35 @@ type Speaker struct {
 	mu     sync.Mutex
 	mixer  beep.Mixer
 	player *oto.Player
+	rate   beep.SampleRate
 	inited bool
 }
 
 // New returns an unopened speaker.
 func New() *Speaker { return &Speaker{} }
 
-// Init opens the device. oto's context is a process-global that cannot be
-// created twice, so this is guarded like the desktop speaker's.
+// Init opens the device — at the DEVICE's rate, not the requested one, when
+// the two differ. oto never surfaces this, but its oboe layer opens the
+// stream at the phone's native rate regardless and quietly converts whatever
+// rate it was asked for with an 8-tap resampler (Medium quality, its
+// default; measured on a Pixel 7 Pro 2026-08-18: sink fed 44.1 kHz, the
+// AudioFlinger track ran at 48 kHz). Asking for the native rate up front
+// makes that hidden stage a pass-through, and the player aims its own,
+// better resampler at the true rate instead — the returned value is how it
+// finds out.
+//
+// oto's context is a process-global that cannot be created twice, so this is
+// guarded like the desktop speaker's.
 //
 // The bufferSize argument is ignored: it was sized for ALSA, and on Android
 // the sizes that matter are the two above.
-func (s *Speaker) Init(rate beep.SampleRate, _ int) error {
+func (s *Speaker) Init(rate beep.SampleRate, _ int) (beep.SampleRate, error) {
 	var err error
 	s.once.Do(func() {
+		if native := nativeOutputSampleRate(); native > 0 && native != int(rate) {
+			log.Printf("audio: device rate %d Hz (requested %d) — opening native", native, rate)
+			rate = beep.SampleRate(native)
+		}
 		ctx, ready, e := oto.NewContext(&oto.NewContextOptions{
 			SampleRate:   int(rate),
 			ChannelCount: 2,
@@ -73,12 +89,28 @@ func (s *Speaker) Init(rate beep.SampleRate, _ int) error {
 			return
 		}
 		<-ready
-		s.player = ctx.NewPlayer(&streamReader{mu: &s.mu, src: &s.mixer})
+		s.rate = rate
+		s.player = ctx.NewPlayer(&streamReader{
+			mu:   &s.mu,
+			src:  &s.mixer,
+			rate: rate,
+			pool: poolDuration,
+			// The pool absorbs feed lateness up to its depth; past that oto
+			// pads the mix with zeros — a gap the ear reads as crackle and
+			// AudioFlinger's counters cannot see (the track still looks
+			// fed). warn is slack for the driver's bursty triple-reads, so
+			// what gets logged is real starvation, with its depth, as the
+			// evidence a crackle report needs from logcat.
+			warn: 3 * driverBuffer,
+			late: func(gap time.Duration) {
+				log.Printf("audio: feed starved ~%v past the %v pool — audible gap likely", gap.Round(time.Millisecond), poolDuration)
+			},
+		})
 		s.player.SetBufferSize(rate.N(poolDuration) * frameBytes)
 		s.player.Play()
 		s.inited = true
 	})
-	return err
+	return s.rate, err
 }
 
 func (s *Speaker) Play(st beep.Streamer) {

@@ -3,6 +3,7 @@ package audio
 import (
 	"math"
 	"sync"
+	"time"
 
 	"github.com/gopxl/beep/v2"
 )
@@ -21,13 +22,45 @@ const frameBytes = 8
 // every Stream call happens inside it. It is taken per chunk rather than per
 // Read — a Read can cover hundreds of milliseconds of audio, and a UI thread
 // asking for the playhead should not wait out a whole decode.
+//
+// rate/pool/warn/late are the starvation alarm. oto's mixer never blocks on
+// this reader: when the pool it fills runs dry, the device mix is padded with
+// zeros — an audible gap that no downstream counter records, because the
+// device stays fed (with silence). The only observable is right here, so the
+// reader models the pool: each Read tops it up by the audio it delivers
+// (capped at pool), and the wall clock drains it. A deficit deeper than warn
+// — slack for the driver reading in bursts — means zeros were mixed, and
+// late is called with roughly how much. A sink that wants the evidence sets
+// all four; left zero, Read is exactly what it always was.
 type streamReader struct {
-	mu  *sync.Mutex
-	src beep.Streamer
+	mu   *sync.Mutex
+	src  beep.Streamer
+	rate beep.SampleRate
+	pool time.Duration
+	warn time.Duration
+	late func(gap time.Duration)
+
+	level    time.Duration
+	lastRead time.Time
 }
 
 func (r *streamReader) Read(p []byte) (int, error) {
 	nFrames := len(p) / frameBytes
+	if r.late != nil && r.rate > 0 {
+		now := time.Now()
+		if !r.lastRead.IsZero() {
+			r.level -= now.Sub(r.lastRead)
+			if r.level < -r.warn {
+				r.late(-r.level)
+				r.level = 0 // one dry spell, one report
+			}
+		}
+		r.lastRead = now
+		r.level += r.rate.D(nFrames)
+		if r.level > r.pool {
+			r.level = r.pool
+		}
+	}
 	var tmp [512][2]float64
 	for done := 0; done < nFrames; {
 		n := min(len(tmp), nFrames-done)

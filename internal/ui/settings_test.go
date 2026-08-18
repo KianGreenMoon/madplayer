@@ -36,7 +36,7 @@ import (
 // silentSink is player.Sink with no device behind it.
 type silentSink struct{}
 
-func (silentSink) Init(beep.SampleRate, int) error { return nil }
+func (silentSink) Init(rate beep.SampleRate, _ int) (beep.SampleRate, error) { return rate, nil }
 func (silentSink) Play(beep.Streamer)              {}
 func (silentSink) Lock()                           {}
 func (silentSink) Unlock()                         {}

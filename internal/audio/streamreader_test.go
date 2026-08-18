@@ -4,6 +4,7 @@ import (
 	"math"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/gopxl/beep/v2"
 )
@@ -76,6 +77,54 @@ func TestStreamReaderClampsOutOfRange(t *testing.T) {
 	}
 	if got := decode(buf[4:]); got != -1 {
 		t.Fatalf("hot right sample = %v, want clamped -1", got)
+	}
+}
+
+// TestStreamReaderReportsStarvation pins the alarm: a pause between Reads
+// longer than the pool plus the warn slack means oto mixed zeros, and that —
+// and only that — calls late with the deficit. The clock is simulated by
+// backdating lastRead; ordinary back-to-back Reads must stay quiet.
+func TestStreamReaderReportsStarvation(t *testing.T) {
+	var mu sync.Mutex
+	var gaps []time.Duration
+	r := &streamReader{
+		mu:   &mu,
+		src:  &counting{},
+		rate: 44100,
+		pool: 100 * time.Millisecond,
+		warn: 25 * time.Millisecond,
+		late: func(gap time.Duration) { gaps = append(gaps, gap) },
+	}
+	buf := make([]byte, 512*frameBytes)
+
+	// Prime, then read again immediately: a full pool and no gap.
+	for i := 0; i < 2; i++ {
+		if _, err := r.Read(buf); err != nil {
+			t.Fatalf("Read: %v", err)
+		}
+	}
+	if len(gaps) != 0 {
+		t.Fatalf("late called %d times on healthy reads", len(gaps))
+	}
+
+	// A second of silence on the wire: far past pool+warn, one report.
+	r.lastRead = time.Now().Add(-time.Second)
+	if _, err := r.Read(buf); err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if len(gaps) != 1 {
+		t.Fatalf("late called %d times after a 1s stall, want 1", len(gaps))
+	}
+	if gaps[0] < 700*time.Millisecond || gaps[0] > time.Second {
+		t.Fatalf("reported deficit %v, want roughly 1s minus the %v pool", gaps[0], r.pool)
+	}
+
+	// The report reset the model: the next quiet read stays quiet.
+	if _, err := r.Read(buf); err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if len(gaps) != 1 {
+		t.Fatalf("late called again (%d) without a new stall", len(gaps))
 	}
 }
 

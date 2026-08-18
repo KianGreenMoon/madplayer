@@ -42,9 +42,14 @@ type Fetcher interface {
 // driven by a silent test double, and keeps the one package that needs ALSA at
 // the very edge of the program.
 type Sink interface {
-	// Init prepares the device at a fixed sample rate. Everything is resampled
-	// to it, because a device cannot change rate between tracks without a gap.
-	Init(rate beep.SampleRate, bufferSize int) error
+	// Init prepares the device and answers with the rate it actually runs at.
+	// Everything is resampled to that answer, because a device cannot change
+	// rate between tracks without a gap. The request is a preference, not a
+	// contract: a phone's audio path has one native rate (48 kHz on most),
+	// and feeding it anything else buys a hidden mid-quality resample inside
+	// the driver — the sink that knows its device's rate returns it instead,
+	// and the player aims the one resample it controls at the true target.
+	Init(rate beep.SampleRate, bufferSize int) (beep.SampleRate, error)
 	// Play starts a streamer. Lock/Unlock guard mutation while it is running.
 	Play(s beep.Streamer)
 	Lock()
@@ -54,14 +59,18 @@ type Sink interface {
 	Close() error
 }
 
-// SampleRate is the device rate everything resamples to. 44.1 kHz is the rate
-// most music is already in, so the common case resamples by a factor of one.
+// SampleRate is the rate REQUESTED of the device. 44.1 kHz is the rate most
+// music is already in — but the device answers with its own rate (Sink.Init),
+// and that answer, not this constant, is what playback resamples to.
 const SampleRate beep.SampleRate = 44100
 
-// resampleQuality is beep's filter width. 4 is its documented "good enough for
-// music" setting; higher costs CPU for a difference nobody hears on a resample
-// that is usually a no-op anyway.
-const resampleQuality = 4
+// resampleQuality is beep's interpolation width (quality*2 points). It was 4
+// while the resample was "usually a no-op"; on a 48 kHz device it is the rule
+// instead — every 44.1 kHz track crosses it — and it replaced the 8-tap
+// converter oto's driver used to hide behind the sink, so it has to beat that
+// converter or the native-rate change is a wash. 8 (16 points) does, for a
+// cost only paid on rate-mismatched tracks.
+const resampleQuality = 8
 
 // Player owns playback AND the queue.
 //
@@ -76,6 +85,10 @@ const resampleQuality = 4
 // Every queue operation therefore goes through a method here.
 type Player struct {
 	sink Sink
+	// rate is what the device answered at Init — the rate every source is
+	// resampled to. On the desktop it is SampleRate; on a phone it is the
+	// device's native rate, so a track already in it passes through untouched.
+	rate beep.SampleRate
 
 	// qmu guards the queue. It is never held while taking mu, so the two
 	// cannot deadlock against each other.
@@ -141,11 +154,16 @@ type Player struct {
 
 // New returns a player writing to sink.
 func New(sink Sink) (*Player, error) {
-	if err := sink.Init(SampleRate, int(SampleRate/10)); err != nil {
+	rate, err := sink.Init(SampleRate, int(SampleRate/10))
+	if err != nil {
 		return nil, err
+	}
+	if rate <= 0 {
+		rate = SampleRate
 	}
 	p := &Player{
 		sink:   sink,
+		rate:   rate,
 		q:      queue.New(),
 		volume: 1,
 		ended:  make(chan uint64, 4),
@@ -685,8 +703,8 @@ func (p *Player) seekStream(seconds float64) {
 		p.src, p.srcPath = src, path
 		p.cancel = cancel
 		streamer := beep.Streamer(src.streamer)
-		if src.format.SampleRate != SampleRate {
-			streamer = beep.Resample(resampleQuality, src.format.SampleRate, SampleRate, streamer)
+		if src.format.SampleRate != p.rate {
+			streamer = beep.Resample(resampleQuality, src.format.SampleRate, p.rate, streamer)
 		}
 		p.ctrl = &beep.Ctrl{Streamer: streamer, Paused: paused}
 		p.vol = &effects.Volume{Streamer: p.ctrl, Base: 2, Volume: volumeToDB(p.volume), Silent: p.volume == 0}
@@ -936,8 +954,8 @@ func (p *Player) load(ctx context.Context, gen uint64, item *queue.Item) {
 	delete(p.failed, item.RowKey()) // it played this time
 
 	streamer := beep.Streamer(src.streamer)
-	if src.format.SampleRate != SampleRate {
-		streamer = beep.Resample(resampleQuality, src.format.SampleRate, SampleRate, streamer)
+	if src.format.SampleRate != p.rate {
+		streamer = beep.Resample(resampleQuality, src.format.SampleRate, p.rate, streamer)
 	}
 	p.ctrl = &beep.Ctrl{Streamer: streamer}
 	p.vol = &effects.Volume{Streamer: p.ctrl, Base: 2, Volume: volumeToDB(p.volume), Silent: p.volume == 0}

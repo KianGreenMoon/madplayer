@@ -18,11 +18,19 @@ import (
 // advancing, repeat, error recovery, seeking — is testable through it on a
 // machine with no sound card, which is the reason Sink is an interface.
 type fakeSink struct {
-	mu sync.Mutex
-	s  beep.Streamer
+	mu   sync.Mutex
+	s    beep.Streamer
+	rate beep.SampleRate
 }
 
-func (f *fakeSink) Init(beep.SampleRate, int) error { return nil }
+// rate, when set, is what the fake device claims to run at — the way a phone
+// answers 48000 to a 44100 request.
+func (f *fakeSink) Init(rate beep.SampleRate, _ int) (beep.SampleRate, error) {
+	if f.rate != 0 {
+		return f.rate, nil
+	}
+	return rate, nil
+}
 func (f *fakeSink) Lock()                           { f.mu.Lock() }
 func (f *fakeSink) Unlock()                         { f.mu.Unlock() }
 func (f *fakeSink) Close() error                    { return nil }
@@ -128,6 +136,51 @@ func TestUnsupportedFormatIsItsOwnError(t *testing.T) {
 	var unsup *ErrUnsupported
 	if !errors.As(err, &unsup) {
 		t.Errorf("err = %v, want ErrUnsupported", err)
+	}
+}
+
+// TestPlaybackRunsAtTheDeviceRate pins the native-rate contract: when the
+// device answers a different rate than requested, playback is resampled to
+// the ANSWER — a 44.1 kHz track on an 88.2 kHz device must deliver twice its
+// samples. Before this contract the player resampled everything to its own
+// constant and the device's driver silently resampled AGAIN, with a mid-
+// quality converter nobody chose (heard on the phone as worse-than-browser
+// sound).
+func TestPlaybackRunsAtTheDeviceRate(t *testing.T) {
+	dir := t.TempDir()
+	path := writeWAV(t, dir, "a.wav", 0.5) // 22050 samples at 44.1 kHz
+
+	sink := &fakeSink{rate: 88200}
+	p, err := New(sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+
+	p.SetQueue([]*queue.Item{{Path: path}}, 0)
+	waitPlaying(t, p)
+
+	got := 0
+	buf := make([][2]float64, 512)
+	for i := 0; i < 1000; i++ {
+		sink.mu.Lock()
+		s := sink.s
+		if s == nil {
+			sink.mu.Unlock()
+			break
+		}
+		n, ok := s.Stream(buf)
+		sink.mu.Unlock()
+		got += n
+		if !ok {
+			break
+		}
+	}
+	// Half a second at the device's 88.2 kHz. The resampler's edges wobble by
+	// a chunk, so the bound is loose — what matters is 2×, not 1×.
+	want := 44100
+	if got < want-1024 || got > want+1024 {
+		t.Fatalf("track delivered %d samples at the device rate, want ~%d (2x its own)", got, want)
 	}
 }
 

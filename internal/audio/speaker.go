@@ -29,18 +29,21 @@ type Speaker struct {
 // New returns an unopened speaker.
 func New() *Speaker { return &Speaker{} }
 
-// Init opens the device.
+// Init opens the device at the requested rate, which is also the answer:
+// ALSA's plug layer takes any rate, and the desktop mixers behind it (Pipe-
+// Wire, PulseAudio) resample well — there is no native rate worth chasing
+// here the way there is on Android.
 //
 // beep's speaker is a process-global that panics if initialised twice, so this
 // is guarded — a second player in the same process (a test, a restart after a
 // device change) must not take the program down.
-func (s *Speaker) Init(rate beep.SampleRate, bufferSize int) error {
+func (s *Speaker) Init(rate beep.SampleRate, bufferSize int) (beep.SampleRate, error) {
 	var err error
 	s.once.Do(func() {
 		err = speaker.Init(rate, bufferSize)
 		s.inited = err == nil
 	})
-	return err
+	return rate, err
 }
 
 func (s *Speaker) Play(st beep.Streamer) {

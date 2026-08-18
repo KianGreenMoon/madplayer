@@ -82,7 +82,7 @@ func (s *scripted) feed(n int) {
 // playhead on every frame.
 func TestADryRingPadsWithSilenceImmediately(t *testing.T) {
 	inner := newScripted(0)
-	b := newBuffered(inner, SampleRate, false)
+	b := newBuffered(inner, SampleRate, SampleRate, false)
 	defer func() { close(inner.ch); <-b.exited }()
 
 	buf := make([][2]float64, 64)
@@ -119,7 +119,7 @@ func TestADryRingPadsWithSilenceImmediately(t *testing.T) {
 // counts; the decoder finishing ends the stream after the last of them.
 func TestTheRingDeliversAndCountsOnlyRealAudio(t *testing.T) {
 	inner := newScripted(0)
-	b := newBuffered(inner, SampleRate, false)
+	b := newBuffered(inner, SampleRate, SampleRate, false)
 
 	const fed = 100
 	go func() {
@@ -155,7 +155,7 @@ func TestTheRingDeliversAndCountsOnlyRealAudio(t *testing.T) {
 // would shear every mid-stream seek by the primed amount.
 func TestTheRingStartsAtTheDecodersPosition(t *testing.T) {
 	inner := newScripted(4200)
-	b := newBuffered(inner, SampleRate, false)
+	b := newBuffered(inner, SampleRate, SampleRate, false)
 	defer func() { close(inner.ch); <-b.exited }()
 
 	if got := b.Position(); got != 4200 {
@@ -180,7 +180,7 @@ func TestTheRingStartsAtTheDecodersPosition(t *testing.T) {
 // fill still closes the decoder on its way out.
 func TestCloseDoesNotWaitForAParkedFill(t *testing.T) {
 	inner := newScripted(0)
-	b := newBuffered(inner, SampleRate, false)
+	b := newBuffered(inner, SampleRate, SampleRate, false)
 	// The fill is (or soon will be) parked inside inner.Stream with nothing
 	// fed — the shape of a download that has gone quiet.
 
@@ -222,7 +222,7 @@ func TestCloseDoesNotWaitForAParkedFill(t *testing.T) {
 func TestADrySpellIsOneGapNotACrackle(t *testing.T) {
 	inner := newScripted(0)
 	// A tiny rate keeps the numbers readable: ring 800, rearm 50.
-	b := newBuffered(inner, 100, false)
+	b := newBuffered(inner, 100, 100, false)
 	defer func() { close(inner.ch); <-b.exited }()
 	if b.rearm != 50 {
 		t.Fatalf("rearm = %d, want 50 at rate 100", b.rearm)
@@ -291,7 +291,7 @@ func TestADrySpellIsOneGapNotACrackle(t *testing.T) {
 // exactly zero, so the silence continues it seamlessly.
 func TestPaddingEdgesAreRamped(t *testing.T) {
 	inner := newScripted(0)
-	b := newBuffered(inner, 100, false)
+	b := newBuffered(inner, 100, 100, false)
 	defer func() { close(inner.ch); <-b.exited }()
 
 	go inner.feed(4)
@@ -436,7 +436,7 @@ func (m *memfile) seekLog() []int {
 // audio, not a note of what the ring held before.
 func TestASeekFlushesTheRingAndMovesTheDecoder(t *testing.T) {
 	inner := &memfile{n: 10000}
-	b := newBuffered(inner, 100, true) // ring 800, rearm 50
+	b := newBuffered(inner, 100, 100, true) // ring 800, rearm 50
 	defer func() { b.Close(); <-b.exited }()
 
 	waitFor(t, "the fill to buffer the opening", func() bool {
@@ -480,7 +480,7 @@ func TestASeekFlushesTheRingAndMovesTheDecoder(t *testing.T) {
 // revisited.)
 func TestADrainedFileRevivesForABackwardSeek(t *testing.T) {
 	inner := &memfile{n: 100}
-	b := newBuffered(inner, 100, true)
+	b := newBuffered(inner, 100, 100, true)
 	defer func() { b.Close(); <-b.exited }()
 
 	waitFor(t, "the fill to drain the file", func() bool {
@@ -514,7 +514,7 @@ func TestBufferAheadWrapsLocalFilesToo(t *testing.T) {
 		format:   beep.Format{SampleRate: 100, NumChannels: 2, Precision: 2},
 		seekable: true,
 	}
-	s.bufferAhead()
+	s.bufferAhead(100)
 	if s.buf == nil {
 		t.Fatal("bufferAhead left a seekable source unwrapped — its decode still runs inside the audio pull")
 	}
@@ -526,9 +526,65 @@ func TestBufferAheadWrapsLocalFilesToo(t *testing.T) {
 		t.Errorf("Seek through the wrap: %v", err)
 	}
 
-	stream := newBuffered(newScripted(0), 100, false)
+	stream := newBuffered(newScripted(0), 100, 100, false)
 	defer func() { stream.Close(); <-stream.exited }()
 	if err := stream.Seek(10); err == nil {
 		t.Error("Seek on a wrapped stream returned nil, want the guard error")
+	}
+}
+
+// The resampler lives in the fill since the second 2026-08-18 field report
+// (quality-8 interpolation alone ate half of realtime on the phone's little
+// core): the ring holds DEVICE-rate samples, while Position, Len and Seek
+// keep speaking the decoder's units — the player divides by the source's
+// format rate everywhere, and this seam is where the conversion happens.
+func TestTheRingResamplesInTheFill(t *testing.T) {
+	inner := &memfile{n: 1000}
+	b := newBuffered(inner, 100, 200, true) // source 100 Hz, device 200 Hz
+	defer func() { b.Close(); <-b.exited }()
+
+	waitFor(t, "the fill to convert the opening", func() bool {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		return b.count >= 100
+	})
+	buf := make([][2]float64, 100)
+	if n, ok := b.Stream(buf); n != 100 || !ok {
+		t.Fatalf("Stream = (%d, %v), want (100, true)", n, ok)
+	}
+	// 100 device samples are 50 of the decoder's; the ramp's values say the
+	// conversion really interpolated rather than duplicated (sample 98 sits
+	// near source 49, nowhere near 98).
+	if got := b.Position(); got < 49 || got > 51 {
+		t.Fatalf("Position after 100 device samples = %d, want ~50 source samples", got)
+	}
+	if v := buf[98][0]; v < 40 || v > 60 {
+		t.Fatalf("device sample 98 = %v, want ~49 — the ring is not converting", v)
+	}
+	if got := b.Len(); got != 1000 {
+		t.Fatalf("Len = %d, want the decoder's 1000", got)
+	}
+
+	// Seek speaks source units too, and the fill restarts its resampler at
+	// the target: what comes out next is the target's audio at device rate.
+	if err := b.Seek(500); err != nil {
+		t.Fatalf("Seek: %v", err)
+	}
+	if got := b.Position(); got != 500 {
+		t.Fatalf("Position right after Seek = %d, want 500", got)
+	}
+	waitFor(t, "the fill to land the seek and refill", func() bool {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		return b.count >= b.rearm
+	})
+	if n, ok := b.Stream(buf); n != 100 || !ok {
+		t.Fatalf("post-seek Stream = (%d, %v), want (100, true)", n, ok)
+	}
+	if v := buf[50][0]; v < 500 || v > 540 {
+		t.Fatalf("post-seek device sample 50 = %v, want ~525 — the resampler did not restart at the target", v)
+	}
+	if got := b.Position(); got != 550 {
+		t.Errorf("Position = %d after 100 post-seek device samples, want 550", got)
 	}
 }

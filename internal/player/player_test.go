@@ -160,6 +160,17 @@ func TestPlaybackRunsAtTheDeviceRate(t *testing.T) {
 	p.SetQueue([]*queue.Item{{Path: path}}, 0)
 	waitPlaying(t, p)
 
+	// Let the fill finish the track first: the resampler runs in the ring's
+	// fill now, and this loop pumps orders of magnitude faster than any real
+	// device — unpaced, it would burn its budget on the ring's padding before
+	// the fill has converted a single chunk.
+	b := p.src.buf
+	waitFor(t, "the fill to convert the whole track", func() bool {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		return b.done
+	})
+
 	got := 0
 	buf := make([][2]float64, 512)
 	for i := 0; i < 1000; i++ {

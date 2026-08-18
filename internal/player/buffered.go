@@ -50,6 +50,7 @@ package player
 
 import (
 	"errors"
+	"math"
 	"sync"
 	"time"
 
@@ -102,6 +103,20 @@ type buffered struct {
 	// it on the way out — Close from another goroutine racing a Stream call in
 	// progress is exactly the kind of decoder-internal race this avoids.
 	inner beep.StreamSeekCloser
+
+	// rate is the decoder's sample rate; out is the ring's, which is the
+	// DEVICE's. When they differ, the fill decodes through the resampler
+	// (reader), so the ring holds ready-to-play samples and the audio pull is
+	// a copy — the second field report of 2026-08-18 measured the quality-8
+	// resampler alone at 125–183ms per 250ms of audio on the phone's
+	// downclocked little core, more than half of realtime spent in the one
+	// place with a deadline. In the fill it costs the same CPU and no
+	// deadline. The SEAM this creates: the ring's own bookkeeping (pos, rearm,
+	// ring size) runs in OUTPUT samples, while everything the player sees —
+	// Position, Len, Seek — stays in SOURCE samples, converted at the edge,
+	// because the player's math divides by the source's format rate
+	// everywhere.
+	rate, out beep.SampleRate
 
 	// mu guards the ring and the flags. It is only ever held for memory
 	// copies — the whole point — so anyone may take it from any goroutine
@@ -158,27 +173,63 @@ type buffered struct {
 }
 
 // newBuffered wraps a decoder and starts its fill. From this moment the
-// decoder belongs to the fill goroutine.
-func newBuffered(inner beep.StreamSeekCloser, rate beep.SampleRate, canSeek bool) *buffered {
-	n := rate.N(aheadWindow)
+// decoder belongs to the fill goroutine. out is the rate the ring plays at —
+// the device's answer — and rate the decoder's own; when they differ the fill
+// resamples on its way into the ring.
+func newBuffered(inner beep.StreamSeekCloser, rate, out beep.SampleRate, canSeek bool) *buffered {
+	if out <= 0 {
+		out = rate
+	}
+	n := out.N(aheadWindow)
 	if n <= 0 {
 		n = int(SampleRate) * 2
 	}
 	b := &buffered{
 		inner:   inner,
+		rate:    rate,
+		out:     out,
 		ring:    make([][2]float64, n),
 		length:  inner.Len(),
-		pos:     int64(inner.Position()),
 		canSeek: canSeek,
 		exited:  make(chan struct{}),
 	}
-	b.rearm = rate.N(rearmWindow)
+	b.pos = b.toOut(inner.Position())
+	b.rearm = out.N(rearmWindow)
 	if b.rearm <= 0 || b.rearm > n/2 {
 		b.rearm = n / 2
 	}
 	b.cond = sync.NewCond(&b.mu)
 	go b.fill()
 	return b
+}
+
+// toOut and fromOut convert between the decoder's samples and the ring's.
+// Rounding costs at most one sample of playhead truth, which no progress bar
+// can show anyway.
+func (b *buffered) toOut(n int) int64 {
+	if b.rate == b.out || b.rate <= 0 {
+		return int64(n)
+	}
+	return int64(math.Round(float64(n) * float64(b.out) / float64(b.rate)))
+}
+
+func (b *buffered) fromOut(n int64) int {
+	if b.rate == b.out || b.out <= 0 {
+		return int(n)
+	}
+	return int(math.Round(float64(n) * float64(b.rate) / float64(b.out)))
+}
+
+// reader is what the fill decodes through: the decoder itself when the ring
+// runs at the decoder's rate, or the resampler that converts to the device's.
+// Rebuilt after every seek — a resampler carries interpolation state from
+// where it last read, and audio from before a seek has no business shaping
+// the first samples after it.
+func (b *buffered) reader() beep.Streamer {
+	if b.rate == b.out {
+		return b.inner
+	}
+	return beep.Resample(resampleQuality, b.rate, b.out, b.inner)
 }
 
 // fill runs the decoder into the ring until the track ends or Close asks it
@@ -194,6 +245,7 @@ func (b *buffered) fill() {
 	}()
 
 	buf := make([][2]float64, fillChunk)
+	cur := b.reader()
 	for {
 		b.mu.Lock()
 		// Park while there is nothing to do: ring full, or the decoder drained
@@ -212,6 +264,7 @@ func (b *buffered) fill() {
 			b.seekPending = false
 			b.mu.Unlock()
 			err := b.inner.Seek(target)
+			cur = b.reader() // fresh resampler state at the target
 			b.mu.Lock()
 			// A later seek supersedes this one, outcome included.
 			if err != nil && b.gen == gen {
@@ -229,7 +282,7 @@ func (b *buffered) fill() {
 
 		// Space only grows while the lock is down — the fill is the sole
 		// producer — so want is still available when the samples come back.
-		got, ok := b.inner.Stream(buf[:want])
+		got, ok := cur.Stream(buf[:want])
 
 		b.mu.Lock()
 		if b.gen != gen {
@@ -335,11 +388,12 @@ func fadeOut(s [][2]float64) {
 	}
 }
 
-// Position is the playhead in samples — see buffered.pos for what counts.
+// Position is the playhead in the DECODER's samples — see buffered.pos for
+// what counts, and the rate/out seam for why the units convert here.
 func (b *buffered) Position() int {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return int(b.pos)
+	return b.fromOut(b.pos)
 }
 
 // Len is the total the decoder knew at wrap time, and 0-or-less when it knew
@@ -378,7 +432,7 @@ func (b *buffered) Seek(n int) error {
 	b.seekTo, b.seekPending = n, true
 	b.gen++
 	b.count = 0
-	b.pos = int64(n)
+	b.pos = b.toOut(n)
 	b.done, b.err = false, nil
 	b.mu.Unlock()
 	b.cond.Broadcast() // the fill may be parked on a full ring or a drained decoder
@@ -412,10 +466,14 @@ func (b *buffered) Close() error {
 // Local files are wrapped too, since 2026-08-18: "reads from a finished file
 // on disk" turned out to mean "runs a FLAC decode on whichever core the
 // phone felt like", and that was the crackle — see the file comment.
-func (s *source) bufferAhead() {
+//
+// out is the rate the sink runs at. Passing it here is what moves the
+// resampler into the fill: the ring holds device-rate samples, and the
+// player installs s.streamer with no further conversion.
+func (s *source) bufferAhead(out beep.SampleRate) {
 	if s == nil || s.buf != nil {
 		return
 	}
-	s.buf = newBuffered(s.streamer, s.format.SampleRate, s.seekable)
+	s.buf = newBuffered(s.streamer, s.format.SampleRate, out, s.seekable)
 	s.streamer = s.buf
 }

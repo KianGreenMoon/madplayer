@@ -15,6 +15,7 @@ import (
 	"gioui.org/app"
 	"gioui.org/unit"
 
+	"daemonlord.ygg/madplayer/internal/about"
 	"daemonlord.ygg/madplayer/internal/audio"
 	"daemonlord.ygg/madplayer/internal/backend"
 	"daemonlord.ygg/madplayer/internal/logbuf"
@@ -39,6 +40,11 @@ func run() error {
 	// Gio's Android log redirect (an init in gioui.org/app) is already in
 	// place to be teed into.
 	logbuf.Install()
+	// The build identifies itself as the log's first line: a pasted excerpt
+	// of a Debugging page has answered "which build is this?" with silence
+	// once already (2026-08-18), and that question decides what a slow-pull
+	// line even means.
+	log.Printf("madplayer %s", about.Current().BuildLine())
 
 	pl, err := player.New(audio.New())
 	if err != nil {

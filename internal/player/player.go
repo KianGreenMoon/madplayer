@@ -676,7 +676,7 @@ func (p *Player) seekStream(seconds float64) {
 			// Same rule as load: the ring goes on when the source is about to
 			// reach the sink, and only then (openItemAt's discardTo counted
 			// real samples through the raw decoder to land this seek).
-			src.bufferAhead()
+			src.bufferAhead(p.rate)
 		}
 		p.mu.Lock()
 		// p.src can be nil here (Stop won the race): a seek of a stopped player
@@ -705,11 +705,8 @@ func (p *Player) seekStream(seconds float64) {
 		old, oldCancel := p.src, p.cancel
 		p.src, p.srcPath = src, path
 		p.cancel = cancel
-		streamer := beep.Streamer(src.streamer)
-		if src.format.SampleRate != p.rate {
-			streamer = beep.Resample(resampleQuality, src.format.SampleRate, p.rate, streamer)
-		}
-		p.ctrl = &beep.Ctrl{Streamer: streamer, Paused: paused}
+		// No resample wrap: the ring already plays at the sink's rate.
+		p.ctrl = &beep.Ctrl{Streamer: src.streamer, Paused: paused}
 		p.vol = &effects.Volume{Streamer: p.ctrl, Base: 2, Volume: volumeToDB(p.volume), Silent: p.volume == 0}
 		p.sink.Clear()
 		p.sink.Play(beep.Seq(p.vol, beep.Callback(func() {
@@ -919,8 +916,10 @@ func (p *Player) load(ctx context.Context, gen uint64, item *queue.Item) {
 		// sink must never run a decoder that can block on the network, nor one
 		// that cannot keep realtime on a phone's little cores (the 2026-08-18
 		// crackle). After openItemAt, on purpose — its seek work needs the raw
-		// decoder.
-		src.bufferAhead()
+		// decoder. The ring plays at the SINK's rate: the resampler lives in
+		// its fill, off the pull, since the same phone measured quality-8
+		// interpolation alone at over half of realtime on a little core.
+		src.bufferAhead(p.rate)
 	}
 
 	p.mu.Lock()
@@ -959,11 +958,8 @@ func (p *Player) load(ctx context.Context, gen uint64, item *queue.Item) {
 	delete(p.failed, item.RowKey()) // it played this time
 	logTrackOpen(path, src.format, p.rate)
 
-	streamer := beep.Streamer(src.streamer)
-	if src.format.SampleRate != p.rate {
-		streamer = beep.Resample(resampleQuality, src.format.SampleRate, p.rate, streamer)
-	}
-	p.ctrl = &beep.Ctrl{Streamer: streamer}
+	// No resample wrap: the ring already plays at the sink's rate.
+	p.ctrl = &beep.Ctrl{Streamer: src.streamer}
 	p.vol = &effects.Volume{Streamer: p.ctrl, Base: 2, Volume: volumeToDB(p.volume), Silent: p.volume == 0}
 
 	// Handing to the sink while still holding mu is deliberate: two loads can

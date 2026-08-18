@@ -228,6 +228,11 @@ func logStats(st *streamStats, pl *oto.Player, rate beep.SampleRate) {
 				// than the pool held, and the difference went out as silence.
 				// Nothing else in this process can see it — not the reads, not
 				// the gaps, not AudioFlinger, which counts the track as fed.
+				//
+				// Read it against the timestamps either side: one landing in
+				// the same breath as a track change or a scrub is the pool
+				// being dropped on purpose (Flush), and the boundary is silent
+				// anyway. One in the middle of a track is the bug.
 				log.Printf("audio: the device read past the pool — %v of silence mixed into %d read(s) of up to %v; the refill was late",
 					audioTime(p.ShortBytes).Round(time.Millisecond), p.Shorts,
 					audioTime(p.MaxRead).Round(time.Millisecond))
@@ -264,13 +269,15 @@ func logStats(st *streamStats, pl *oto.Player, rate beep.SampleRate) {
 			worstExec.Round(time.Millisecond), worstGap.Round(time.Millisecond),
 			audio.Round(time.Millisecond), lag.Round(time.Millisecond),
 			m.HeapAlloc>>20, gc, time.Duration(pause).Round(time.Millisecond), runtime.NumGoroutine())
-		// The pool's own numbers, from inside oto: how deep the device's read
-		// is (a grant this side never gets told) and how little was left after
-		// the worst of them. The margin is the interesting half — it says how
-		// close the feed came to the cliff on a run that never went over.
+		// The pool's own numbers, from inside oto, and they are meant to be
+		// read against each other: the device's read is what has to FIT in
+		// what is left, so a low-water mark drifting down towards the read
+		// size is the crackle coming, and one below it is the crackle. The
+		// read size is knowable no other way — it is 3× a grant this side is
+		// never told.
 		if pool.Reads > 0 {
-			line += fmt.Sprintf("; pool low %v of %v over %d device read(s) of up to %v",
-				audioTime(lowWater).Round(time.Millisecond), poolDuration,
+			line += fmt.Sprintf("; pool low %v against %d device read(s) of up to %v",
+				audioTime(lowWater).Round(time.Millisecond),
 				pool.Reads, audioTime(pool.MaxRead).Round(time.Millisecond))
 		}
 		if starved > 0 {

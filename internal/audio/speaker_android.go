@@ -69,6 +69,7 @@ type Speaker struct {
 	player *oto.Player
 	rate   beep.SampleRate
 	inited bool
+	stats  *streamStats
 }
 
 // New returns an unopened speaker.
@@ -109,6 +110,7 @@ func (s *Speaker) Init(rate beep.SampleRate, _ int) (beep.SampleRate, error) {
 		<-ready
 		s.rate = rate
 		stats := &streamStats{}
+		s.stats = stats
 		s.player = ctx.NewPlayer(&streamReader{
 			mu:   &s.mu,
 			src:  &s.mixer,
@@ -156,20 +158,35 @@ func logStats(st *streamStats) {
 	var lastGC uint32
 	var lastPause uint64
 	prev := time.Now()
+	var lag time.Duration // audio owed to the wall clock since the last reset
 	for {
 		time.Sleep(period)
-		reads, worstExec, worstGap, starved := st.take()
+		reads, worstExec, worstGap, starved, audio := st.take()
 		interval := time.Since(prev)
 		prev = time.Now()
+		reset := st.restarted.Swap(false)
 		if reads == 0 {
-			continue // paused or idle: an empty line every 30s is noise
+			lag = 0 // idle time is not lag; start the accounting over
+			continue
+		}
+		// The device's clock against ours. Anything below this program that
+		// runs dry plays silence in its place, and the audio handed over
+		// falls behind the wall clock by that much, for good — so a lag that
+		// GROWS is a glitch nothing here can otherwise see. A track change or
+		// a seek throws pooled audio away, which looks exactly the same, so
+		// the accounting starts over whenever the sink is cleared.
+		if reset {
+			lag = 0
+		} else {
+			lag += interval - audio
 		}
 		runtime.ReadMemStats(&m)
 		gc, pause := m.NumGC-lastGC, m.PauseTotalNs-lastPause
 		lastGC, lastPause = m.NumGC, m.PauseTotalNs
-		line := fmt.Sprintf("audio: stats %v: %d reads, worst pull %v, worst gap %v; heap %dMB, %d gc (%v paused), %d goroutines",
+		line := fmt.Sprintf("audio: stats %v: %d reads, worst pull %v, worst gap %v, %v of audio (lag %v); heap %dMB, %d gc (%v paused), %d goroutines",
 			interval.Round(time.Second), reads,
 			worstExec.Round(time.Millisecond), worstGap.Round(time.Millisecond),
+			audio.Round(time.Millisecond), lag.Round(time.Millisecond),
 			m.HeapAlloc>>20, gc, time.Duration(pause).Round(time.Millisecond), runtime.NumGoroutine())
 		if starved > 0 {
 			line += fmt.Sprintf(" — STARVED %d×", starved)
@@ -212,6 +229,12 @@ func (s *Speaker) Clear() {
 	s.mu.Unlock()
 	s.player.Reset()
 	s.player.Play()
+	// Pooled audio just went in the bin: it was handed over and will never
+	// play, which is indistinguishable from silence inserted below us. Say so
+	// rather than let a track change read as a dropout.
+	if s.stats != nil {
+		s.stats.restarted.Store(true)
+	}
 }
 
 // Close releases the player. The oto context has no Close and outlives it,

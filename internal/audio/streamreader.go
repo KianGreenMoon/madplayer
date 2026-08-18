@@ -66,13 +66,39 @@ type streamStats struct {
 	worstExec atomic.Int64 // ns, longest single Read
 	worstGap  atomic.Int64 // ns, longest wait between Reads
 	starved   atomic.Int64 // late-callback firings
+	// audio is how much PLAYING TIME has been handed over since the last
+	// take. Against the wall clock it is the one measurement in this program
+	// that can see a glitch nobody here caused.
+	//
+	// Everything else watches this process feeding the device. Below the
+	// device's Go-side pool sit oto's C++ fifo, oboe's OpenSL stream,
+	// AudioFlinger's mixer, the HAL — and when any of those runs dry, what
+	// reaches the ear is silence THIS PROGRAM never produced and no counter
+	// here records. But the samples are not thrown away: they play late. So
+	// the audio handed over falls behind the wall clock by exactly the
+	// silence that was inserted, and it keeps falling behind, one gap at a
+	// time. Thirty seconds of reads carrying 29.8 s of audio is 200 ms of
+	// something below us — invisible everywhere else, including in a
+	// worst-gap figure, because the fifo absorbs the lateness that caused it.
+	//
+	// The noise floor is the two clocks disagreeing: a device crystal is
+	// good to about 100 ppm, which is 3 ms per 30 s and drifts steadily in
+	// one direction. Dropouts do not drift, they JUMP — so read the trend,
+	// and treat anything under a few tens of milliseconds as the crystal.
+	audio atomic.Int64 // ns of playing time delivered
+
+	// restarted is the sink saying it threw pooled audio away — a track
+	// change, a seek, a stop. That audio was delivered and never played, so
+	// it would read as lag; the accounting starts over instead.
+	restarted atomic.Bool
 }
 
-func (s *streamStats) take() (reads int64, worstExec, worstGap time.Duration, starved int64) {
+func (s *streamStats) take() (reads int64, worstExec, worstGap time.Duration, starved int64, audio time.Duration) {
 	return s.reads.Swap(0),
 		time.Duration(s.worstExec.Swap(0)),
 		time.Duration(s.worstGap.Swap(0)),
-		s.starved.Swap(0)
+		s.starved.Swap(0),
+		time.Duration(s.audio.Swap(0))
 }
 
 func peak(a *atomic.Int64, v int64) {
@@ -123,6 +149,7 @@ func (r *streamReader) Read(p []byte) (int, error) {
 		r.stats.reads.Add(1)
 		peak(&r.stats.worstExec, int64(exec))
 		peak(&r.stats.worstGap, int64(gap))
+		r.stats.audio.Add(int64(r.rate.D(nFrames)))
 	}
 	if r.slow != nil && r.rate > 0 {
 		audio := r.rate.D(nFrames)

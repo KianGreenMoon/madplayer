@@ -161,7 +161,7 @@ func TestStreamReaderReportsSlowPulls(t *testing.T) {
 	if slow[0] < 12*time.Millisecond {
 		t.Fatalf("reported exec %v, want at least the source's 12ms sleep", slow[0])
 	}
-	reads, worstExec, worstGap, starved := stats.take()
+	reads, worstExec, worstGap, starved, audio := stats.take()
 	if reads != 3 {
 		t.Fatalf("stats counted %d reads, want 3", reads)
 	}
@@ -174,7 +174,13 @@ func TestStreamReaderReportsSlowPulls(t *testing.T) {
 	if starved != 0 {
 		t.Fatalf("stats counted %d starvations with no late callback wired", starved)
 	}
-	if reads2, _, _, _ := stats.take(); reads2 != 0 {
+	// Three reads of the same buffer, so the playing time delivered is three
+	// times what one buffer holds. It is what the sink weighs the wall clock
+	// against, and a wrong figure there would invent lag out of arithmetic.
+	if want := 3 * r.rate.D(len(buf)/frameBytes); audio != want {
+		t.Fatalf("stats counted %v of audio over three reads, want %v", audio, want)
+	}
+	if reads2, _, _, _, _ := stats.take(); reads2 != 0 {
 		t.Fatalf("take did not reset: %d reads left behind", reads2)
 	}
 

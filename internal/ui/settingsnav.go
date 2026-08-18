@@ -46,6 +46,7 @@ const (
 	pagePairing
 	pageKeep
 	pageKeyboard
+	pageDebug
 	pageAbout
 )
 
@@ -80,6 +81,7 @@ var settingsSections = []settingsSection{
 		rows: onePage((*App).pairingControls), hidden: func(*App) bool { return !pairingEnabled }},
 	{page: pageKeep, title: "Music kept from the network", state: (*App).keepState, rows: onePage((*App).keepControls)},
 	{page: pageKeyboard, title: "Keyboard", state: (*App).keyboardState, rows: onePage((*App).shortcutHelp)},
+	{page: pageDebug, title: "Debugging", state: (*App).debugState, rows: (*App).debugRows},
 	{page: pageAbout, title: "About madplayer", state: (*App).aboutState, rows: onePage((*App).aboutControls)},
 }
 

@@ -17,6 +17,7 @@ import (
 
 	"daemonlord.ygg/madplayer/internal/audio"
 	"daemonlord.ygg/madplayer/internal/backend"
+	"daemonlord.ygg/madplayer/internal/logbuf"
 	"daemonlord.ygg/madplayer/internal/player"
 	"daemonlord.ygg/madplayer/internal/prefs"
 	"daemonlord.ygg/madplayer/internal/ui"
@@ -33,6 +34,12 @@ func main() {
 }
 
 func run() error {
+	// First, before the sink opens: its "device rate" line is the one the
+	// Debugging page must be able to show. From main rather than an init, so
+	// Gio's Android log redirect (an init in gioui.org/app) is already in
+	// place to be teed into.
+	logbuf.Install()
+
 	pl, err := player.New(audio.New())
 	if err != nil {
 		// No audio device is fatal for a music player, and saying so plainly

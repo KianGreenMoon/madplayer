@@ -54,23 +54,41 @@ const (
 	// there, and oto's own fifo is 3× the granted capacity on top.
 	driverBuffer = 25 * time.Millisecond
 
-	// poolDuration sizes the Go-side buffer those reads drain. It must
-	// exceed 3× the granted stream buffer or the silence-padding above
-	// comes back, and the grant is the device's call — hence a generous
-	// margin over 3× the request rather than a tight one. The price is
-	// heard on pause: a pause mixes silence from that moment on, but what
-	// is already pooled still plays, up to this long. Clear() does not pay
-	// it — it drops the pool.
-	poolDuration = 250 * time.Millisecond
+	// poolDuration sizes the Go-side buffer those reads drain, and it is the
+	// ONLY thing standing between a late refill and an audible hole. Measured,
+	// not reasoned (third_party/oto/internal/mux/madplayer_pool_test.go, which
+	// drives the real mux): oto refills a player only when its buffer falls
+	// BELOW this and then tops it up by a whole one, so the level sawtooths
+	// between one and two of them and the worst moment to stall in leaves
+	// poolDuration minus one device read. A refill that lands later than that
+	// is answered with silence.
+	//
+	//   pool 250 ms → a refill may be 240 ms late; a 120 ms read then holes
+	//   pool 500 ms → 480 ms
+	//
+	// The size of the device's read does not change that time — only how big
+	// the hole is when it runs out — so raising driverBuffer alone makes this
+	// WORSE, because the read is three times the grant. 500 ms is here
+	// because the phone's refill goroutine is visibly jittery: 60 ms of slop
+	// on the read cadence in an ordinary window, GC pauses of tens of ms, and
+	// an OS that freezes the whole process when it feels like it. Whether
+	// 240 ms was ever actually breached is now a question the log answers —
+	// the "pool low" figure on the stats line is the margin, and PADDED is it
+	// running out.
+	//
+	// The price a listener would pay for the depth is paid elsewhere instead:
+	// a pause holds the device (SetPaused) rather than waiting the pool out,
+	// and a scrub drops it (Flush).
+	poolDuration = 500 * time.Millisecond
 
 	// poolCapacity is what oto REALLY holds, and it is not poolDuration.
 	// Its mux refills a player when the buffer falls BELOW bufferSize, and
 	// the refill reads a whole bufferSize and appends it (mux.go
 	// canReadSourceToBuffer + readSourceToBuffer), so the level swings
 	// between one and nearly two of them. The starvation model below has to
-	// use this figure or it reports a dry pool while up to 250 ms of audio
-	// is still queued — a false alarm on a healthy build, which is worse
-	// than no alarm at all.
+	// use this figure or it reports a dry pool while a whole poolDuration of
+	// audio is still queued — a false alarm on a healthy build, which is
+	// worse than no alarm at all.
 	poolCapacity = 2 * poolDuration
 
 	// readDeadline is how long one Read may take before zeros are CERTAIN:

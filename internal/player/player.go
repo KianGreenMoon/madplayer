@@ -67,14 +67,6 @@ type Sink interface {
 // and that answer, not this constant, is what playback resamples to.
 const SampleRate beep.SampleRate = 44100
 
-// resampleQuality is beep's interpolation width (quality*2 points). It was 4
-// while the resample was "usually a no-op"; on a 48 kHz device it is the rule
-// instead — every 44.1 kHz track crosses it — and it replaced the 8-tap
-// converter oto's driver used to hide behind the sink, so it has to beat that
-// converter or the native-rate change is a wash. 8 (16 points) does, for a
-// cost only paid on rate-mismatched tracks.
-const resampleQuality = 8
-
 // Player owns playback AND the queue.
 //
 // It is the Go counterpart of the web UI's player-controller.js singleton and
@@ -991,7 +983,7 @@ func logTrackOpen(path string, f beep.Format, out beep.SampleRate) {
 	}
 	way := "no resample"
 	if f.SampleRate != out {
-		way = fmt.Sprintf("resample %d → %d Hz, quality %d", f.SampleRate, out, resampleQuality)
+		way = fmt.Sprintf("resample %d → %d Hz, kaiser sinc", f.SampleRate, out)
 	}
 	log.Printf("player: %s: %d Hz, %d ch, %d-bit — %s", name, f.SampleRate, f.NumChannels, f.Precision*8, way)
 }

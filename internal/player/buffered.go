@@ -235,14 +235,14 @@ func (b *buffered) fromOut(n int64) int {
 
 // reader is what the fill decodes through: the decoder itself when the ring
 // runs at the decoder's rate, or the resampler that converts to the device's.
-// Rebuilt after every seek — a resampler carries interpolation state from
-// where it last read, and audio from before a seek has no business shaping
-// the first samples after it.
+// Rebuilt after every seek — a resampler carries filter state from where it
+// last read, and audio from before a seek has no business shaping the first
+// samples after it.
 func (b *buffered) reader() beep.Streamer {
 	if b.rate == b.out {
 		return b.inner
 	}
-	return beep.Resample(resampleQuality, b.rate, b.out, b.inner)
+	return newResampler(b.inner, b.rate, b.out)
 }
 
 // fill runs the decoder into the ring until the track ends or Close asks it

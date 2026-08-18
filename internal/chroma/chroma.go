@@ -26,18 +26,26 @@
 // is viable — but it is a budget, not a licence. See the package tests, which
 // measure against the real binary when it is installed.
 //
-// Two places where agreement is earned rather than assumed: the resampler (see
-// resample.go) and the decoder, since a codec's own rounding is not ours to
-// match. Both are measured, neither is asserted.
+// Two places where agreement is earned rather than assumed: the resampler
+// (internal/resample, built to swresample's design and shared with playback)
+// and the decoder, since a codec's own rounding is not ours to match. Both are
+// measured, neither is asserted.
 package chroma
 
 import (
 	"context"
 	"errors"
 	"math"
+
+	"daemonlord.ygg/madplayer/internal/resample"
 )
 
 const (
+	// targetRate is Chromaprint's sample rate, and the rate the resampler
+	// converts every input to. Not a choice — the note table, the frame size
+	// and every trained classifier threshold assume it.
+	targetRate = 11025
+
 	// frameSize and hop are Chromaprint's frame geometry: 4096 samples at
 	// 11025 Hz (371 ms) advancing by a third of that.
 	frameSize = 4096
@@ -66,7 +74,7 @@ var ErrTooShort = errors.New("chroma: audio too short to fingerprint")
 // One fingerprint per instance: Finish drains buffered state and the zero value
 // is not usable. Create one with New.
 type Fingerprinter struct {
-	resampler *resampler
+	resampler *resample.Resampler
 	fft       *fft
 
 	window   []float64
@@ -100,7 +108,7 @@ func New(sampleRate int, maxSeconds float64) (*Fingerprinter, error) {
 		return nil, errors.New("chroma: sample rate must be positive")
 	}
 	f := &Fingerprinter{
-		resampler: newResampler(sampleRate),
+		resampler: resample.New(sampleRate, targetRate),
 		fft:       newFFT(frameSize),
 		window:    hammingWindow(frameSize),
 		frame:     make([]float64, frameSize),
@@ -161,7 +169,7 @@ func (f *Fingerprinter) Write(samples [][2]float64) {
 	for i, s := range samples {
 		f.mono[i] = (s[0] + s[1]) / 2
 	}
-	f.scratch = f.resampler.write(f.mono, f.scratch[:0])
+	f.scratch = f.resampler.Write(f.mono, f.scratch[:0])
 	f.consume(f.scratch)
 }
 
@@ -269,7 +277,7 @@ func (f *Fingerprinter) subfingerprint(offset int) uint32 {
 // in the same order and packing fpcalc's -raw output uses.
 func (f *Fingerprinter) Finish() ([]uint32, error) {
 	if !f.Done() {
-		f.scratch = f.resampler.flush(f.scratch[:0])
+		f.scratch = f.resampler.Flush(f.scratch[:0])
 		f.consume(f.scratch)
 	}
 	if len(f.print) == 0 {

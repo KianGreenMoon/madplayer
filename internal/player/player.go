@@ -64,6 +64,11 @@ type Sink interface {
 	// so a resume needs nothing re-decoded. The mixer pause below stays either
 	// way — this is the sink's chance to be quicker about it.
 	SetPaused(paused bool)
+	// Flush drops audio already handed over but not yet heard, keeping the
+	// mixer and everything playing in it. It is what a seek collects on: a
+	// sink that buffers deeply would otherwise answer a scrub with up to a
+	// second of the position the listener just left.
+	Flush()
 	// Clear stops everything currently playing.
 	Clear()
 	Close() error
@@ -629,10 +634,20 @@ func (p *Player) Seek(seconds float64) {
 	if n := p.src.streamer.Len(); target >= n {
 		target = n - 1
 	}
+	moved := false
 	if target >= 0 {
 		_ = p.src.streamer.Seek(target)
+		moved = true
 	}
 	p.sink.Unlock()
+	if moved {
+		// What the sink already holds is the OLD position — up to a second of
+		// it on a phone. The ring is empty for a moment after a seek either
+		// way (it refills from the decoder), so dropping the stale audio does
+		// not add a gap; it moves the one that was going to happen anyway to
+		// where the listener asked for it.
+		p.sink.Flush()
+	}
 	p.mu.Unlock()
 }
 

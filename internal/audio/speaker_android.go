@@ -315,11 +315,33 @@ func (s *Speaker) SetPaused(paused bool) {
 	s.player.Play()
 }
 
+// Flush drops the pool — half a second of audio that was handed over and will
+// never be heard. Reset also pauses the oto player, so it is started again in
+// the same breath, unless the user is holding it paused: starting it there
+// would play the next track under a Play button.
+func (s *Speaker) Flush() {
+	if !s.inited {
+		return
+	}
+	s.pmu.Lock()
+	s.player.Reset()
+	if !s.paused {
+		s.player.Play()
+	}
+	s.pmu.Unlock()
+	// The two models that measure this feed both just lost their footing. The
+	// reader's pool model would count the dropped audio as still buffered;
+	// the lag accounting would count it as playing time that never played,
+	// which is exactly the shape of a dropout below us. Say so instead.
+	s.reader.restart()
+	if s.stats != nil {
+		s.stats.restarted.Store(true)
+	}
+}
+
 // Clear stops everything currently playing, including what is already mixed
-// into the pool — a track change or a seek should not play a quarter second
-// of the old audio first. Reset also pauses the oto player, so it is started
-// again in the same breath — unless the user is holding it paused, in which
-// case starting it would play the next track under a Play button.
+// into the pool — a track change should not play a quarter second of the old
+// audio first.
 func (s *Speaker) Clear() {
 	if !s.inited {
 		return
@@ -327,19 +349,7 @@ func (s *Speaker) Clear() {
 	s.mu.Lock()
 	s.mixer.Clear()
 	s.mu.Unlock()
-	s.pmu.Lock()
-	s.player.Reset()
-	if !s.paused {
-		s.player.Play()
-	}
-	s.pmu.Unlock()
-	s.reader.restart()
-	// Pooled audio just went in the bin: it was handed over and will never
-	// play, which is indistinguishable from silence inserted below us. Say so
-	// rather than let a track change read as a dropout.
-	if s.stats != nil {
-		s.stats.restarted.Store(true)
-	}
+	s.Flush()
 }
 
 // Close releases the player. The oto context has no Close and outlives it,

@@ -72,6 +72,11 @@ func (s *Speaker) Unlock() {
 // fed a quarter of a second ahead.
 func (s *Speaker) SetPaused(bool) {}
 
+// Flush is a no-op for the same reason as SetPaused: beep's speaker holds only
+// the buffer the player asked for, and offers no way to drop it that does not
+// also drop the streamers.
+func (s *Speaker) Flush() {}
+
 func (s *Speaker) Clear() {
 	if s.inited {
 		speaker.Clear()

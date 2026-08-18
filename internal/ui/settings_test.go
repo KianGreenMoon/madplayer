@@ -42,6 +42,7 @@ func (silentSink) Lock()                           {}
 func (silentSink) Unlock()                         {}
 func (silentSink) Clear()                          {}
 func (silentSink) SetPaused(bool)                  {}
+func (silentSink) Flush()                          {}
 func (silentSink) Close() error                    { return nil }
 
 func testApp(t *testing.T) *App {

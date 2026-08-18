@@ -20,8 +20,9 @@ import (
 type fakeSink struct {
 	mu     sync.Mutex
 	s      beep.Streamer
-	rate   beep.SampleRate
-	paused bool // the device-level hold, which is not the mixer's Ctrl
+	rate    beep.SampleRate
+	paused  bool // the device-level hold, which is not the mixer's Ctrl
+	flushes int  // times the pool was dropped without stopping playback
 }
 
 // rate, when set, is what the fake device claims to run at — the way a phone
@@ -46,6 +47,18 @@ func (f *fakeSink) Clear() {
 	f.mu.Lock()
 	f.s = nil
 	f.mu.Unlock()
+}
+
+func (f *fakeSink) Flush() {
+	f.mu.Lock()
+	f.flushes++
+	f.mu.Unlock()
+}
+
+func (f *fakeSink) flushed() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.flushes
 }
 
 func (f *fakeSink) SetPaused(paused bool) {
@@ -296,7 +309,11 @@ func TestSeekStaysInsideTheTrack(t *testing.T) {
 	waitPlaying(t, p)
 
 	// Scrubbing to the very end must not read as "the track ended" and skip on.
+	before := sink.flushed()
 	p.Seek(99)
+	if sink.flushed() == before {
+		t.Error("the seek left the sink's pool alone — the old position plays on for as long as it is deep")
+	}
 	elapsed, total := p.Position()
 	if total < 2.9 || total > 3.1 {
 		t.Errorf("total = %.2f, want ~3", total)

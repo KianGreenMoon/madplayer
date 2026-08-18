@@ -365,7 +365,7 @@ func (s *Speaker) Flush() {
 }
 
 // Clear stops everything currently playing, including what is already mixed
-// into the pool — a track change should not play a quarter second of the old
+// into the pool — a track change should not play half a second of the old
 // audio first.
 func (s *Speaker) Clear() {
 	if !s.inited {

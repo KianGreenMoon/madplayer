@@ -7,9 +7,12 @@ package player
 // audio that really played.
 
 import (
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/gopxl/beep/v2"
 
 	"daemonlord.ygg/madplayer/internal/queue"
 )
@@ -79,7 +82,7 @@ func (s *scripted) feed(n int) {
 // playhead on every frame.
 func TestADryRingPadsWithSilenceImmediately(t *testing.T) {
 	inner := newScripted(0)
-	b := newBuffered(inner, SampleRate)
+	b := newBuffered(inner, SampleRate, false)
 	defer func() { close(inner.ch); <-b.exited }()
 
 	buf := make([][2]float64, 64)
@@ -116,7 +119,7 @@ func TestADryRingPadsWithSilenceImmediately(t *testing.T) {
 // counts; the decoder finishing ends the stream after the last of them.
 func TestTheRingDeliversAndCountsOnlyRealAudio(t *testing.T) {
 	inner := newScripted(0)
-	b := newBuffered(inner, SampleRate)
+	b := newBuffered(inner, SampleRate, false)
 
 	const fed = 100
 	go func() {
@@ -152,7 +155,7 @@ func TestTheRingDeliversAndCountsOnlyRealAudio(t *testing.T) {
 // would shear every mid-stream seek by the primed amount.
 func TestTheRingStartsAtTheDecodersPosition(t *testing.T) {
 	inner := newScripted(4200)
-	b := newBuffered(inner, SampleRate)
+	b := newBuffered(inner, SampleRate, false)
 	defer func() { close(inner.ch); <-b.exited }()
 
 	if got := b.Position(); got != 4200 {
@@ -177,7 +180,7 @@ func TestTheRingStartsAtTheDecodersPosition(t *testing.T) {
 // fill still closes the decoder on its way out.
 func TestCloseDoesNotWaitForAParkedFill(t *testing.T) {
 	inner := newScripted(0)
-	b := newBuffered(inner, SampleRate)
+	b := newBuffered(inner, SampleRate, false)
 	// The fill is (or soon will be) parked inside inner.Stream with nothing
 	// fed — the shape of a download that has gone quiet.
 
@@ -219,7 +222,7 @@ func TestCloseDoesNotWaitForAParkedFill(t *testing.T) {
 func TestADrySpellIsOneGapNotACrackle(t *testing.T) {
 	inner := newScripted(0)
 	// A tiny rate keeps the numbers readable: ring 800, rearm 50.
-	b := newBuffered(inner, 100)
+	b := newBuffered(inner, 100, false)
 	defer func() { close(inner.ch); <-b.exited }()
 	if b.rearm != 50 {
 		t.Fatalf("rearm = %d, want 50 at rate 100", b.rearm)
@@ -288,7 +291,7 @@ func TestADrySpellIsOneGapNotACrackle(t *testing.T) {
 // exactly zero, so the silence continues it seamlessly.
 func TestPaddingEdgesAreRamped(t *testing.T) {
 	inner := newScripted(0)
-	b := newBuffered(inner, 100)
+	b := newBuffered(inner, 100, false)
 	defer func() { close(inner.ch); <-b.exited }()
 
 	go inner.feed(4)
@@ -380,4 +383,152 @@ func TestAStalledStreamLeavesThePlayerResponsive(t *testing.T) {
 	})
 	close(stopPump)
 	<-pumpDone
+}
+
+// memfile is a decoder stand-in for a LOCAL file: it never blocks, every
+// sample's value is its own index, and Seek works — the shape open() returns
+// for a track on disk, which the ring wraps since the 2026-08-18 crackle.
+type memfile struct {
+	mu     sync.Mutex
+	pos, n int
+	seeks  []int
+	closes atomic.Int32
+}
+
+func (m *memfile) Stream(out [][2]float64) (int, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	i := 0
+	for ; i < len(out) && m.pos < m.n; i++ {
+		out[i] = [2]float64{float64(m.pos), float64(m.pos)}
+		m.pos++
+	}
+	return i, i > 0
+}
+
+func (m *memfile) Err() error { return nil }
+func (m *memfile) Len() int   { return m.n }
+func (m *memfile) Position() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.pos
+}
+func (m *memfile) Seek(k int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.pos = k
+	m.seeks = append(m.seeks, k)
+	return nil
+}
+func (m *memfile) Close() error {
+	m.closes.Add(1)
+	return nil
+}
+
+func (m *memfile) seekLog() []int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]int(nil), m.seeks...)
+}
+
+// A seek moves everything at once from the caller's side — position, ring —
+// and the decoder catches up underneath: what plays next is the target's
+// audio, not a note of what the ring held before.
+func TestASeekFlushesTheRingAndMovesTheDecoder(t *testing.T) {
+	inner := &memfile{n: 10000}
+	b := newBuffered(inner, 100, true) // ring 800, rearm 50
+	defer func() { b.Close(); <-b.exited }()
+
+	waitFor(t, "the fill to buffer the opening", func() bool {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		return b.count >= 10
+	})
+	buf := make([][2]float64, 10)
+	if n, ok := b.Stream(buf); n != 10 || !ok || buf[0][0] != 0 {
+		t.Fatalf("opening Stream = (%d, %v) starting %v, want 10 samples from 0", n, ok, buf[0])
+	}
+
+	if err := b.Seek(500); err != nil {
+		t.Fatalf("Seek: %v", err)
+	}
+	if got := b.Position(); got != 500 {
+		t.Fatalf("Position right after Seek = %d, want the target 500 — the caller does not wait for the fill", got)
+	}
+	waitFor(t, "the ring to refill past rearm", func() bool {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		return b.count >= b.rearm
+	})
+	if n, ok := b.Stream(buf); n != 10 || !ok {
+		t.Fatalf("post-seek Stream = (%d, %v), want (10, true)", n, ok)
+	}
+	if buf[0][0] != 500 {
+		t.Fatalf("first post-seek sample = %v, want the target's audio 500 — pre-seek samples leaked through", buf[0])
+	}
+	if got := b.Position(); got != 510 {
+		t.Errorf("Position = %d after 10 post-seek samples, want 510", got)
+	}
+	if got := inner.seekLog(); len(got) != 1 || got[0] != 500 {
+		t.Errorf("decoder saw seeks %v, want exactly [500]", got)
+	}
+}
+
+// A drained local file is not a finished one: the fill must survive the
+// decoder running dry so a scrub backwards still has a decoder to move. (A
+// drained STREAM ends the goroutine as it always did — its bytes cannot be
+// revisited.)
+func TestADrainedFileRevivesForABackwardSeek(t *testing.T) {
+	inner := &memfile{n: 100}
+	b := newBuffered(inner, 100, true)
+	defer func() { b.Close(); <-b.exited }()
+
+	waitFor(t, "the fill to drain the file", func() bool {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		return b.done
+	})
+
+	if err := b.Seek(40); err != nil {
+		t.Fatalf("Seek: %v", err)
+	}
+	waitFor(t, "the fill to wake and refill from the target", func() bool {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		return b.count >= b.rearm
+	})
+	buf := make([][2]float64, 10)
+	if n, ok := b.Stream(buf); n != 10 || !ok {
+		t.Fatalf("post-revival Stream = (%d, %v), want (10, true)", n, ok)
+	}
+	if buf[0][0] != 40 {
+		t.Fatalf("first revived sample = %v, want 40", buf[0])
+	}
+}
+
+// The wrap covers local files now, and only the source that can seek gets a
+// Seek that works — on a stream it stays an error, never beep's mp3 panic.
+func TestBufferAheadWrapsLocalFilesToo(t *testing.T) {
+	s := &source{
+		streamer: &memfile{n: 100},
+		format:   beep.Format{SampleRate: 100, NumChannels: 2, Precision: 2},
+		seekable: true,
+	}
+	s.bufferAhead()
+	if s.buf == nil {
+		t.Fatal("bufferAhead left a seekable source unwrapped — its decode still runs inside the audio pull")
+	}
+	if s.streamer != s.buf {
+		t.Fatal("the source does not play through its ring")
+	}
+	defer func() { s.buf.Close(); <-s.buf.exited }()
+	if err := s.streamer.Seek(10); err != nil {
+		t.Errorf("Seek through the wrap: %v", err)
+	}
+
+	stream := newBuffered(newScripted(0), 100, false)
+	defer func() { stream.Close(); <-stream.exited }()
+	if err := stream.Seek(10); err == nil {
+		t.Error("Seek on a wrapped stream returned nil, want the guard error")
+	}
 }

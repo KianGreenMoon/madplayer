@@ -26,10 +26,27 @@ package player
 // delivery holds until rearmWindow is buffered again (a trickle is not
 // dribbled out with silence between), and both edges of the gap are ramped.
 //
-// Only a NON-SEEKABLE source is wrapped (source.bufferAhead), and only when
-// it is installed for playback: rangeseek's base calibration and openItemAt's
-// discardTo must talk to the raw decoder, because a ring that pads silence
-// would let a seek count padding as audio and land short of its target.
+// EVERY source is wrapped now (source.bufferAhead), and the two kinds are
+// wrapped for two different reasons. A streaming source, because its decoder
+// can block on the network — the ANR above. A LOCAL file, because decoding
+// is not free either: on the Pixel 7 Pro the audio feed goroutine lands on a
+// little core, where FLAC decode plus the quality-8 resample ran at barely
+// half of realtime — the Debugging page caught it on 2026-08-18 as a train
+// of "slow pull" lines ending in a starved feed, audible as the crackle the
+// owner had been reporting all along. Same disease as the network stall,
+// milder strain: work inside the pull. Same cure: the ring.
+//
+// The wrap still happens only when the source is installed for playback:
+// rangeseek's base calibration and openItemAt's discardTo must talk to the
+// raw decoder, because a ring that pads silence would let a seek count
+// padding as audio and land short of its target.
+//
+// A seekable source keeps its scrub: Seek works on the wrapper (the player
+// clamps against Len first, exactly as it did against the raw decoder). The
+// request is carried out by the fill goroutine, which owns the decoder — the
+// caller does not wait for it. Position answers the target immediately, the
+// ring is flushed, and a fill already mid-decode when the seek lands has its
+// samples discarded by a generation check rather than played out of place.
 
 import (
 	"errors"
@@ -111,6 +128,17 @@ type buffered struct {
 	rearm   int
 	starved bool
 
+	// canSeek is whether the inner decoder may be Seeked at all — beep's mp3
+	// decoder PANICS on a non-seekable reader, so this is a property of the
+	// source, snapshotted at wrap time. seekTo/seekPending is a request the
+	// fill goroutine carries out (it owns the decoder); gen counts seeks so a
+	// fill that was already mid-decode when one landed can recognise its
+	// samples as pre-seek audio and drop them.
+	canSeek     bool
+	seekTo      int
+	seekPending bool
+	gen         int
+
 	// pos is the playhead in samples: the decoder's position at wrap time plus
 	// every REAL sample delivered since. Padding does not count — silence the
 	// network owes is not audio that played — so a stalled track's bar stands
@@ -131,17 +159,18 @@ type buffered struct {
 
 // newBuffered wraps a decoder and starts its fill. From this moment the
 // decoder belongs to the fill goroutine.
-func newBuffered(inner beep.StreamSeekCloser, rate beep.SampleRate) *buffered {
+func newBuffered(inner beep.StreamSeekCloser, rate beep.SampleRate, canSeek bool) *buffered {
 	n := rate.N(aheadWindow)
 	if n <= 0 {
 		n = int(SampleRate) * 2
 	}
 	b := &buffered{
-		inner:  inner,
-		ring:   make([][2]float64, n),
-		length: inner.Len(),
-		pos:    int64(inner.Position()),
-		exited: make(chan struct{}),
+		inner:   inner,
+		ring:    make([][2]float64, n),
+		length:  inner.Len(),
+		pos:     int64(inner.Position()),
+		canSeek: canSeek,
+		exited:  make(chan struct{}),
 	}
 	b.rearm = rate.N(rearmWindow)
 	if b.rearm <= 0 || b.rearm > n/2 {
@@ -167,14 +196,35 @@ func (b *buffered) fill() {
 	buf := make([][2]float64, fillChunk)
 	for {
 		b.mu.Lock()
-		for b.count == len(b.ring) && !b.closed {
+		// Park while there is nothing to do: ring full, or the decoder drained
+		// on a source that can seek — where "drained" is not the end of the
+		// goroutine's life, because a scrub backwards would need it again.
+		for !b.closed && !b.seekPending && (b.count == len(b.ring) || b.done) {
 			b.cond.Wait()
 		}
 		if b.closed {
 			b.mu.Unlock()
 			return
 		}
+		if b.seekPending {
+			target := b.seekTo
+			gen := b.gen
+			b.seekPending = false
+			b.mu.Unlock()
+			err := b.inner.Seek(target)
+			b.mu.Lock()
+			// A later seek supersedes this one, outcome included.
+			if err != nil && b.gen == gen {
+				// Playing on from wherever the decoder ended up would put the
+				// audio somewhere the bar does not show; ending the track is
+				// the honest answer, and the queue carries on from it.
+				b.done, b.err = true, err
+			}
+			b.mu.Unlock()
+			continue
+		}
 		want := min(len(buf), len(b.ring)-b.count)
+		gen := b.gen
 		b.mu.Unlock()
 
 		// Space only grows while the lock is down — the fill is the sole
@@ -182,6 +232,12 @@ func (b *buffered) fill() {
 		got, ok := b.inner.Stream(buf[:want])
 
 		b.mu.Lock()
+		if b.gen != gen {
+			// A seek landed while the decoder was streaming: these samples are
+			// from before it, and the ring was already flushed of their kind.
+			b.mu.Unlock()
+			continue
+		}
 		for i := 0; i < got; {
 			at := (b.start + b.count) % len(b.ring)
 			n := min(got-i, len(b.ring)-at)
@@ -194,7 +250,13 @@ func (b *buffered) fill() {
 		}
 		closed := b.closed
 		b.mu.Unlock()
-		if !ok || closed {
+		if closed {
+			return
+		}
+		if !ok && !b.canSeek {
+			// A drained stream is truly over — its bytes cannot be revisited —
+			// so the goroutine's work is done. A drained FILE parks in the wait
+			// above instead, keeping the decoder alive for a scrub backwards.
 			return
 		}
 	}
@@ -291,11 +353,36 @@ func (b *buffered) Err() error {
 	return b.err
 }
 
-// Seek is structurally unreachable: only a non-seekable source is wrapped,
-// and the player answers scrubs on those with seekStream, never the
-// streamer's own Seek.
-func (b *buffered) Seek(int) error {
-	return errors.New("a buffered stream does not seek")
+// Seek asks the fill to move a seekable decoder, without waiting for it.
+//
+// The caller holds the sink lock (player.Seek), the fill may be mid-decode,
+// and the decoder belongs to the fill — so the request is flags, not a call.
+// Everything observable moves NOW: the position answers the target, the ring
+// forgets the audio it held (it is from the wrong place), and the generation
+// steps so a decode already in flight is discarded rather than delivered.
+// What plays until the fill lands the seek and refills is the same brief
+// silence the dry-spell path already knows how to pad.
+//
+// On a non-seekable source it stays what it always was — structurally
+// unreachable, answered with an error rather than beep's mp3 panic: the
+// player scrubs those with seekStream, never the streamer's own Seek.
+func (b *buffered) Seek(n int) error {
+	if !b.canSeek {
+		return errors.New("a buffered stream does not seek")
+	}
+	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		return nil
+	}
+	b.seekTo, b.seekPending = n, true
+	b.gen++
+	b.count = 0
+	b.pos = int64(n)
+	b.done, b.err = false, nil
+	b.mu.Unlock()
+	b.cond.Broadcast() // the fill may be parked on a full ring or a drained decoder
+	return nil
 }
 
 // Close asks the fill to stop and returns WITHOUT waiting for it. It is
@@ -316,18 +403,19 @@ func (b *buffered) Close() error {
 	return nil
 }
 
-// bufferAhead moves a streaming source's decode off the audio pull, onto a
-// ring a goroutine keeps full. Called exactly once, when the source is about
-// to be installed for playback — never earlier, because rangeseek's base
+// bufferAhead moves a source's decode off the audio pull, onto a ring a
+// goroutine keeps full. Called exactly once, when the source is about to be
+// installed for playback — never earlier, because rangeseek's base
 // calibration and openItemAt's discardTo need the raw decoder (a padding ring
 // would count silence as skipped audio and land a seek short).
 //
-// A seekable source is left alone: it reads from a finished file on disk,
-// which never blocks on anything the UI could end up waiting behind.
+// Local files are wrapped too, since 2026-08-18: "reads from a finished file
+// on disk" turned out to mean "runs a FLAC decode on whichever core the
+// phone felt like", and that was the crackle — see the file comment.
 func (s *source) bufferAhead() {
-	if s == nil || s.seekable || s.buf != nil {
+	if s == nil || s.buf != nil {
 		return
 	}
-	s.buf = newBuffered(s.streamer, s.format.SampleRate)
+	s.buf = newBuffered(s.streamer, s.format.SampleRate, s.seekable)
 	s.streamer = s.buf
 }

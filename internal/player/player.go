@@ -915,9 +915,11 @@ func (p *Player) load(ctx context.Context, gen uint64, item *queue.Item) {
 		src, path, err = p.openItem(ctx, item)
 	}
 	if err == nil {
-		// A still-arriving track plays through the decode-ahead ring from here
-		// on: the sink must never run a decoder that can block on the network.
-		// After openItemAt, on purpose — its seek work needs the raw decoder.
+		// EVERY track plays through the decode-ahead ring from here on: the
+		// sink must never run a decoder that can block on the network, nor one
+		// that cannot keep realtime on a phone's little cores (the 2026-08-18
+		// crackle). After openItemAt, on purpose — its seek work needs the raw
+		// decoder.
 		src.bufferAhead()
 	}
 

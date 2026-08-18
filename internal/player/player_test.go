@@ -320,3 +320,65 @@ func TestVolumeCurveAndBounds(t *testing.T) {
 		t.Errorf("unity gain = %v, want 0", volumeToDB(1))
 	}
 }
+
+// TestALocalTrackSeeksThroughTheRing is the caller-path test for the 2026-08-18
+// change: local files play through the decode-ahead ring now (their decode was
+// starving the pull on the phone), so a scrub must move the RING's decoder —
+// position answering the target at once, and only the tail of the track left
+// to play. A seek that changed the number without moving the decoder would
+// pass any bookkeeping check and still play the wrong audio.
+func TestALocalTrackSeeksThroughTheRing(t *testing.T) {
+	dir := t.TempDir()
+	path := writeWAV(t, dir, "a.wav", 0.5) // 22050 samples
+
+	sink := &fakeSink{}
+	p, err := New(sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+
+	p.SetQueue([]*queue.Item{{Path: path}}, 0)
+	waitPlaying(t, p)
+	if b := p.src.buf; b == nil {
+		t.Fatal("a local track is not playing through the ring")
+	}
+	sink.pump(4)
+
+	b := p.src.buf
+	p.Seek(0.4)
+	if el, _ := p.Position(); el < 0.39 || el > 0.42 {
+		t.Fatalf("Position right after Seek = %.3f, want ~0.4 without waiting for the fill", el)
+	}
+
+	// Let the fill land the seek — pumping earlier only collects the padding
+	// the ring is entitled to while it catches up, which counts nothing.
+	waitFor(t, "the fill to land the seek and drain the tail", func() bool {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		return !b.seekPending && b.done
+	})
+
+	// Exactly the track's last 0.1s should be left: 4410 samples, then the
+	// short return that ends the track. More would mean the ring kept audio
+	// from before the seek; a full track's worth, that the decoder never moved.
+	got := 0
+	buf := make([][2]float64, 512)
+	for i := 0; i < 200; i++ {
+		sink.mu.Lock()
+		s := sink.s
+		if s == nil {
+			sink.mu.Unlock()
+			break
+		}
+		n, ok := s.Stream(buf)
+		sink.mu.Unlock()
+		got += n
+		if !ok {
+			break
+		}
+	}
+	if got < 4410-512 || got > 4410+512 {
+		t.Fatalf("pumped %d samples after seeking to 0.4 of 0.5s, want ~4410 — the seek did not reach the decoder", got)
+	}
+}

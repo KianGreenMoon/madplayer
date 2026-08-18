@@ -50,6 +50,7 @@ package player
 
 import (
 	"errors"
+	"log"
 	"math"
 	"sync"
 	"time"
@@ -153,6 +154,18 @@ type buffered struct {
 	seekTo      int
 	seekPending bool
 	gen         int
+
+	// dries counts the ring's dry spells and dryAt stamps the one in
+	// progress — the ring's own starvation record, kept because it was the
+	// blind spot of the 2026-08-18 hunt. Every other stage reports itself:
+	// the sink says when the pull was slow or late, the player says what
+	// each track is. The ring padded in silence, so a crackle whose cause
+	// was the FILL falling behind (rather than the pull) left no trace at
+	// all. It is the likeliest remaining cause now that both the decoder
+	// and the resampler live in the fill, and a phone's little core is what
+	// runs them.
+	dries int
+	dryAt time.Time
 
 	// pos is the playhead in samples: the decoder's position at wrap time plus
 	// every REAL sample delivered since. Padding does not count — silence the
@@ -320,6 +333,7 @@ func (b *buffered) fill() {
 func (b *buffered) Stream(samples [][2]float64) (int, bool) {
 	b.mu.Lock()
 	got := 0
+	wasDry := b.starved
 	// A starved stream stays silent until the ring rearms — unless the track
 	// is done, in which case what remains is its last audio and is owed.
 	gated := b.starved && !b.done && !b.closed && b.count < b.rearm
@@ -344,9 +358,35 @@ func (b *buffered) Stream(samples [][2]float64) (int, bool) {
 	if padding {
 		b.starved = true
 	}
+	// A spell BEGINS on the first pad after real audio; the hysteresis above
+	// means the rest of one dry spell is a single silence, so this counts
+	// gaps a listener could hear, not calls.
+	began := padding && !wasDry
+	if began {
+		b.dries++
+		b.dryAt = time.Now()
+	}
+	var dryFor time.Duration
+	if resumed && !b.dryAt.IsZero() {
+		dryFor = time.Since(b.dryAt)
+	}
+	fill := b.count
+	done := b.done
 	b.mu.Unlock()
 	if got > 0 {
 		b.cond.Broadcast() // room freed; the fill may be waiting for it
+	}
+
+	// Logged OUTSIDE the lock, and only at a spell's two edges: this runs in
+	// the audio pull, where a logcat write is the very kind of work the last
+	// three fixes took out of it. Once per gap it is affordable; per call it
+	// would be the bug.
+	if began && !done {
+		log.Printf("player: the decode-ahead ring ran dry — %s (gap starts here)", b.blame())
+	}
+	if dryFor > 0 {
+		log.Printf("player: the ring refilled after %v of silence (%v buffered now)",
+			dryFor.Round(time.Millisecond), b.out.D(fill).Round(time.Millisecond))
 	}
 
 	if resumed {
@@ -364,6 +404,25 @@ func (b *buffered) Stream(samples [][2]float64) (int, bool) {
 	// last samples, and the short return is the end-of-track signal that runs
 	// the queue.
 	return got, false
+}
+
+// dryCount is how many audible gaps this ring has produced.
+func (b *buffered) dryCount() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.dries
+}
+
+// blame names the only two things that can empty this ring, told apart by
+// what the source IS. A stream's fill waits on the network; a local file's
+// waits on nothing but the CPU it decodes and resamples with — so a dry ring
+// on a file means the phone could not run the fill fast enough, which is a
+// different fix from a slow download and must not be reported as one.
+func (b *buffered) blame() string {
+	if b.canSeek {
+		return "a LOCAL file, so the fill lost to the CPU, not the network"
+	}
+	return "a stream, so the download is behind"
 }
 
 // fadeIn ramps the head of the first real audio after a dry spell up from

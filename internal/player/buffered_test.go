@@ -7,6 +7,7 @@ package player
 // audio that really played.
 
 import (
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -586,5 +587,76 @@ func TestTheRingResamplesInTheFill(t *testing.T) {
 	}
 	if got := b.Position(); got != 550 {
 		t.Errorf("Position = %d after 100 post-seek device samples, want 550", got)
+	}
+}
+
+// The ring keeps its own starvation record. It was the blind spot of the
+// 2026-08-18 crackle hunt: the sink reported slow and late pulls, the player
+// reported each track, and the ring padded in total silence — so a gap whose
+// cause was the FILL falling behind left no evidence anywhere. One dry spell
+// must count once, not once per padded call, or the count says more about the
+// device's buffer size than about the music.
+func TestTheRingCountsItsDrySpells(t *testing.T) {
+	inner := newScripted(0)
+	b := newBuffered(inner, 100, 100, false) // ring 800, rearm 50
+	defer func() { close(inner.ch); <-b.exited }()
+
+	go inner.feed(20)
+	waitFor(t, "the fill to buffer the opening", func() bool {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		return b.count >= 20
+	})
+	buf := make([][2]float64, 20)
+	if n, _ := b.Stream(buf); n != 20 {
+		t.Fatalf("opening Stream delivered %d, want 20", n)
+	}
+	if got := b.dryCount(); got != 0 {
+		t.Fatalf("dries = %d before any padding, want 0", got)
+	}
+
+	// One spell, five padded calls.
+	for i := 0; i < 5; i++ {
+		if _, ok := b.Stream(buf[:8]); !ok {
+			t.Fatal("a padded Stream must keep the track alive")
+		}
+	}
+	if got := b.dryCount(); got != 1 {
+		t.Fatalf("dries = %d after one dry spell of five calls, want 1", got)
+	}
+
+	// Refill past rearm and resume: the spell closes.
+	go inner.feed(60)
+	waitFor(t, "the ring to rearm", func() bool {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		return b.count >= b.rearm
+	})
+	if n, _ := b.Stream(buf[:8]); n != 8 {
+		t.Fatalf("resumed Stream delivered %d, want 8", n)
+	}
+	if got := b.dryCount(); got != 1 {
+		t.Fatalf("dries = %d after resuming, want the same 1", got)
+	}
+
+	// A second spell is a second gap.
+	for i := 0; i < 3; i++ {
+		b.Stream(buf)
+	}
+	if got := b.dryCount(); got != 2 {
+		t.Fatalf("dries = %d after a second dry spell, want 2", got)
+	}
+}
+
+// blame must name the CPU for a local file and the network for a stream:
+// they are different bugs, and the log line is what points at one of them.
+func TestBlameNamesTheRightCulprit(t *testing.T) {
+	file := &buffered{canSeek: true}
+	if got := file.blame(); !strings.Contains(got, "LOCAL") || !strings.Contains(got, "CPU") {
+		t.Errorf("a local file's dry ring blames %q, want the CPU", got)
+	}
+	stream := &buffered{}
+	if got := stream.blame(); !strings.Contains(got, "download") {
+		t.Errorf("a stream's dry ring blames %q, want the download", got)
 	}
 }

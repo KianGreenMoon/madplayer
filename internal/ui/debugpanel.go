@@ -54,6 +54,9 @@ func (a *App) debugRows(gtx C) []layout.Widget {
 			a.setNotice("Log saved: " + path)
 		}
 	}
+	if a.btnTestTone.Clicked(gtx) {
+		a.setNotice(a.pl.PlayTestTone())
+	}
 
 	lines := logbuf.Snapshot()
 	rows := make([]layout.Widget, 0, len(lines)+2)
@@ -77,7 +80,10 @@ func (a *App) debugHeader(gtx C) D {
 			layout.Rigid(func(gtx C) D { return a.sectionTitle(gtx, "Debugging") }),
 			layout.Rigid(func(gtx C) D {
 				return a.sectionHint(gtx, "What madplayer has logged this run, newest first. "+
-					"Copy and Save carry the whole log oldest-first, with the build line on top.")
+					"Copy and Save carry the whole log oldest-first, with the build line on top. "+
+					"The test tone is generated here, at the device's own rate, and reaches the "+
+					"speaker without passing a decoder or a resampler — if it crackles, the fault "+
+					"is below everything this log can see.")
 			}),
 			layout.Rigid(func(gtx C) D {
 				return layout.Inset{Top: 8}.Layout(gtx, func(gtx C) D {
@@ -88,6 +94,10 @@ func (a *App) debugHeader(gtx C) D {
 						layout.Rigid(layout.Spacer{Width: 8}.Layout),
 						layout.Rigid(func(gtx C) D {
 							return a.smallButton(gtx, &a.btnLogSave, "Save to a file", false)
+						}),
+						layout.Rigid(layout.Spacer{Width: 8}.Layout),
+						layout.Rigid(func(gtx C) D {
+							return a.smallButton(gtx, &a.btnTestTone, "Play a test tone", false)
 						}),
 					)
 				})

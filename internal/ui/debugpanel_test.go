@@ -43,3 +43,30 @@ func TestSaveWritesTheLogToAFile(t *testing.T) {
 		t.Errorf("saved file does not open with the build line:\n%s", text)
 	}
 }
+
+// The tone is the page's one control that makes sound rather than reading it,
+// and the whole reason it exists is that somebody presses it and listens. So
+// what is pinned is that pressing it says what is playing — on the screen for
+// the person, and in the log, because the answer to "did it crackle?" is
+// worthless a day later without a line saying what was playing when.
+func TestTheTestToneAnnouncesItself(t *testing.T) {
+	logbuf.Install()
+
+	a := testApp(t)
+	a.openSettingsPage(pageDebug)
+	a.btnTestTone.Click()
+	a.settings(headless())
+
+	if !strings.Contains(a.notice, "1 kHz") {
+		t.Errorf("notice after the tone is %q, want it to say what is playing", a.notice)
+	}
+	var found bool
+	for _, line := range logbuf.Snapshot() {
+		if strings.Contains(line, "test tone") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("the log carries no line for the test tone")
+	}
+}

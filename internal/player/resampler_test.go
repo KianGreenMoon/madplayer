@@ -11,9 +11,9 @@ import (
 	"github.com/gopxl/beep/v2"
 )
 
-// tone streams a stereo signal whose two channels differ, so a wrapper that
+// twoTone streams a stereo signal whose two channels differ, so a wrapper that
 // crossed or shared them would be caught.
-type tone struct {
+type twoTone struct {
 	rate   float64
 	left   float64 // frequency
 	right  float64
@@ -22,7 +22,7 @@ type tone struct {
 	shortI int
 }
 
-func (t *tone) Stream(p [][2]float64) (int, bool) {
+func (t *twoTone) Stream(p [][2]float64) (int, bool) {
 	if t.i >= t.n {
 		return 0, false
 	}
@@ -39,7 +39,7 @@ func (t *tone) Stream(p [][2]float64) (int, bool) {
 	return k, true
 }
 
-func (t *tone) Err() error { return nil }
+func (t *twoTone) Err() error { return nil }
 
 func drain(rs beep.Streamer, chunk int) [][2]float64 {
 	var got [][2]float64
@@ -56,7 +56,7 @@ func drain(rs beep.Streamer, chunk int) [][2]float64 {
 // Each channel must come out as its own tone, at the right frequency and the
 // right amplitude — the test that would fail if the two filters shared state.
 func TestTheResamplerKeepsTheChannelsApart(t *testing.T) {
-	src := &tone{rate: 44100, left: 1000, right: 4000, n: 44100}
+	src := &twoTone{rate: 44100, left: 1000, right: 4000, n: 44100}
 	got := drain(newResampler(src, 44100, 48000), 512)
 	if len(got) < 47000 || len(got) > 48100 {
 		t.Fatalf("one second of 44100 became %d frames at 48000", len(got))
@@ -82,9 +82,9 @@ func TestTheResamplerKeepsTheChannelsApart(t *testing.T) {
 
 // The fill asks for whatever space the ring has, down to a single sample.
 func TestTheResamplerServesAnySize(t *testing.T) {
-	whole := drain(newResampler(&tone{rate: 44100, left: 1000, right: 4000, n: 20000}, 44100, 48000), 512)
+	whole := drain(newResampler(&twoTone{rate: 44100, left: 1000, right: 4000, n: 20000}, 44100, 48000), 512)
 
-	rs := newResampler(&tone{rate: 44100, left: 1000, right: 4000, n: 20000}, 44100, 48000)
+	rs := newResampler(&twoTone{rate: 44100, left: 1000, right: 4000, n: 20000}, 44100, 48000)
 	var got [][2]float64
 	buf := make([][2]float64, 1000)
 	for i := 0; ; i++ {
@@ -109,7 +109,7 @@ func TestTheResamplerServesAnySize(t *testing.T) {
 // returns short reads without being finished, so that behaviour would end the
 // track early — this one ends only when the decoder says so.
 func TestAShortReadIsNotTheEnd(t *testing.T) {
-	src := &tone{rate: 44100, left: 1000, right: 4000, n: 20000, short: 7, shortI: 4096}
+	src := &twoTone{rate: 44100, left: 1000, right: 4000, n: 20000, short: 7, shortI: 4096}
 	got := drain(newResampler(src, 44100, 48000), 512)
 	if len(got) < 21000 {
 		t.Errorf("a short read mid-stream ended the track at %d frames, want the whole %d", len(got), 20000*48000/44100)
@@ -120,7 +120,7 @@ func TestAShortReadIsNotTheEnd(t *testing.T) {
 // it, not before it.
 func TestTheTailIsDelivered(t *testing.T) {
 	const n = 4410
-	src := &tone{rate: 44100, left: 1000, right: 4000, n: n}
+	src := &twoTone{rate: 44100, left: 1000, right: 4000, n: n}
 	got := drain(newResampler(src, 44100, 48000), 512)
 	if want := n * 48000 / 44100; len(got) < want-2 {
 		t.Errorf("delivered %d frames, want %d — the filter's tail was dropped", len(got), want)

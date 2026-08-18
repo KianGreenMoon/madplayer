@@ -211,7 +211,7 @@ type App struct {
 	btnClearPlayed                       widget.Clickable
 	btnClearSeeded, btnClearAll          widget.Clickable
 	btnCopySource, btnCopyBuild          widget.Clickable
-	btnLogCopy, btnLogSave               widget.Clickable
+	btnLogCopy, btnLogSave, btnTestTone  widget.Clickable
 	cacheList                            widget.List
 	btnPlayAlbum, btnAlbumNext           widget.Clickable
 	btnAlbumAdd, btnAlbumKeep            widget.Clickable

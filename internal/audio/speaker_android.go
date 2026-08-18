@@ -18,7 +18,9 @@
 package audio
 
 import (
+	"fmt"
 	"log"
+	"runtime"
 	"sync"
 	"time"
 
@@ -90,6 +92,7 @@ func (s *Speaker) Init(rate beep.SampleRate, _ int) (beep.SampleRate, error) {
 		}
 		<-ready
 		s.rate = rate
+		stats := &streamStats{}
 		s.player = ctx.NewPlayer(&streamReader{
 			mu:   &s.mu,
 			src:  &s.mixer,
@@ -105,12 +108,57 @@ func (s *Speaker) Init(rate beep.SampleRate, _ int) (beep.SampleRate, error) {
 			late: func(gap time.Duration) {
 				log.Printf("audio: feed starved ~%v past the %v pool — audible gap likely", gap.Round(time.Millisecond), poolDuration)
 			},
+			// slow separates the two ways the pool can drain: this line means
+			// the decode chain itself cannot keep realtime; starvation WITHOUT
+			// it means the reads never came — a GC pause, the scheduler, or
+			// Android freezing the process.
+			slow: func(exec, audio time.Duration) {
+				log.Printf("audio: slow pull — %v to produce %v of audio; the decode chain is behind realtime", exec.Round(time.Millisecond), audio.Round(time.Millisecond))
+			},
+			stats: stats,
 		})
 		s.player.SetBufferSize(rate.N(poolDuration) * frameBytes)
 		s.player.Play()
+		go logStats(stats)
 		s.inited = true
 	})
 	return s.rate, err
+}
+
+// logStats writes one line per interval while audio is being pulled, and
+// nothing while it is not. It is the context the event lines above lack: a
+// starved read means little without knowing whether GC was pausing, the heap
+// was climbing, or the whole interval arrived late — the stamp on this line
+// jumping from 30s to minutes is the process having been FROZEN by Android's
+// cached-app freezer, which no in-process counter can record while it
+// happens. The ring in logbuf keeps hours of these; logcat on the diagnosing
+// phone kept ten minutes.
+func logStats(st *streamStats) {
+	const period = 30 * time.Second
+	var m runtime.MemStats
+	var lastGC uint32
+	var lastPause uint64
+	prev := time.Now()
+	for {
+		time.Sleep(period)
+		reads, worstExec, worstGap, starved := st.take()
+		interval := time.Since(prev)
+		prev = time.Now()
+		if reads == 0 {
+			continue // paused or idle: an empty line every 30s is noise
+		}
+		runtime.ReadMemStats(&m)
+		gc, pause := m.NumGC-lastGC, m.PauseTotalNs-lastPause
+		lastGC, lastPause = m.NumGC, m.PauseTotalNs
+		line := fmt.Sprintf("audio: stats %v: %d reads, worst pull %v, worst gap %v; heap %dMB, %d gc (%v paused), %d goroutines",
+			interval.Round(time.Second), reads,
+			worstExec.Round(time.Millisecond), worstGap.Round(time.Millisecond),
+			m.HeapAlloc>>20, gc, time.Duration(pause).Round(time.Millisecond), runtime.NumGoroutine())
+		if starved > 0 {
+			line += fmt.Sprintf(" — STARVED %d×", starved)
+		}
+		log.Print(line)
+	}
 }
 
 func (s *Speaker) Play(st beep.Streamer) {

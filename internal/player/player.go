@@ -3,8 +3,11 @@ package player
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"log"
 	"math"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -952,6 +955,7 @@ func (p *Player) load(ctx context.Context, gen uint64, item *queue.Item) {
 
 	p.src, p.srcPath = src, path
 	delete(p.failed, item.RowKey()) // it played this time
+	logTrackOpen(path, src.format, p.rate)
 
 	streamer := beep.Streamer(src.streamer)
 	if src.format.SampleRate != p.rate {
@@ -974,6 +978,24 @@ func (p *Player) load(ctx context.Context, gen uint64, item *queue.Item) {
 	})))
 	p.mu.Unlock()
 	p.changed()
+}
+
+// logTrackOpen is one line per track for the Debugging page: what the file
+// is, and whether it reaches the sink untouched or through the resampler.
+// It earns its place in a package that otherwise never logs because the
+// answer cannot be had any other way on a phone — the 2026-08-18 crackle
+// hunt stalled on not knowing whether the affected album was 44.1 kHz
+// (resampled since the native-rate change) or 48 kHz (now untouched).
+func logTrackOpen(path string, f beep.Format, out beep.SampleRate) {
+	name := "(network stream)"
+	if path != "" {
+		name = filepath.Base(path)
+	}
+	way := "no resample"
+	if f.SampleRate != out {
+		way = fmt.Sprintf("resample %d → %d Hz, quality %d", f.SampleRate, out, resampleQuality)
+	}
+	log.Printf("player: %s: %d Hz, %d ch, %d-bit — %s", name, f.SampleRate, f.NumChannels, f.Precision*8, way)
 }
 
 // resolve finds the file to decode. A local path is used as it is; anything else

@@ -3,6 +3,7 @@ package audio
 import (
 	"math"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gopxl/beep/v2"
@@ -40,26 +41,69 @@ type streamReader struct {
 	warn time.Duration
 	late func(gap time.Duration)
 
+	// slow and stats split the starvation alarm into its two possible causes.
+	// late above says zeros were mixed; it cannot say WHY. slow fires when
+	// one Read spends longer decoding than half the audio it produced — the
+	// chain below (resampler, decoder, a lock held by the UI) is what is too
+	// slow. A starved pool WITHOUT slow pulls means Read was not called: the
+	// scheduler, a GC pause, or the platform freezing the process. stats
+	// counts every read for the periodic line the sink logs, so the two can
+	// be told apart after the fact from a phone's Debugging page.
+	slow  func(exec, audio time.Duration)
+	stats *streamStats
+
 	level    time.Duration
 	lastRead time.Time
+	slowAt   time.Time
+}
+
+// streamStats is the between-logs accumulator behind the sink's periodic
+// stats line. One goroutine writes (oto's reader), one takes and resets (the
+// sink's ticker); atomics rather than a lock because the writer is the audio
+// path, which must never wait on a logger.
+type streamStats struct {
+	reads     atomic.Int64
+	worstExec atomic.Int64 // ns, longest single Read
+	worstGap  atomic.Int64 // ns, longest wait between Reads
+	starved   atomic.Int64 // late-callback firings
+}
+
+func (s *streamStats) take() (reads int64, worstExec, worstGap time.Duration, starved int64) {
+	return s.reads.Swap(0),
+		time.Duration(s.worstExec.Swap(0)),
+		time.Duration(s.worstGap.Swap(0)),
+		s.starved.Swap(0)
+}
+
+func peak(a *atomic.Int64, v int64) {
+	if v > a.Load() {
+		a.Store(v) // single writer, so load-then-store cannot lose a bigger value
+	}
 }
 
 func (r *streamReader) Read(p []byte) (int, error) {
 	nFrames := len(p) / frameBytes
+	now := time.Now()
+	var gap time.Duration
+	if !r.lastRead.IsZero() {
+		gap = now.Sub(r.lastRead)
+	}
 	if r.late != nil && r.rate > 0 {
-		now := time.Now()
-		if !r.lastRead.IsZero() {
-			r.level -= now.Sub(r.lastRead)
-			if r.level < -r.warn {
-				r.late(-r.level)
-				r.level = 0 // one dry spell, one report
+		r.level -= gap
+		if r.level < -r.warn {
+			r.late(-r.level)
+			if r.stats != nil {
+				r.stats.starved.Add(1)
 			}
+			r.level = 0 // one dry spell, one report
 		}
 		r.lastRead = now
 		r.level += r.rate.D(nFrames)
 		if r.level > r.pool {
 			r.level = r.pool
 		}
+	} else {
+		r.lastRead = now
 	}
 	var tmp [512][2]float64
 	for done := 0; done < nFrames; {
@@ -73,6 +117,23 @@ func (r *streamReader) Read(p []byte) (int, error) {
 			putSample(p[off+4:], tmp[i][1])
 		}
 		done += n
+	}
+	exec := time.Since(now)
+	if r.stats != nil {
+		r.stats.reads.Add(1)
+		peak(&r.stats.worstExec, int64(exec))
+		peak(&r.stats.worstGap, int64(gap))
+	}
+	if r.slow != nil && r.rate > 0 {
+		audio := r.rate.D(nFrames)
+		// Half of realtime is the tripwire: a pull that slow leaves no margin,
+		// and a train of them is the pool draining. At most one report a
+		// second — a decoder in real trouble would otherwise write a line per
+		// read, and flooding the log it is meant to diagnose helps nobody.
+		if exec > audio/2 && exec > 10*time.Millisecond && now.Sub(r.slowAt) > time.Second {
+			r.slowAt = now
+			r.slow(exec, audio)
+		}
 	}
 	return nFrames * frameBytes, nil
 }

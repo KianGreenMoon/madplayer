@@ -128,6 +128,69 @@ func TestStreamReaderReportsStarvation(t *testing.T) {
 	}
 }
 
+// TestStreamReaderReportsSlowPulls pins the other half of the alarm: a source
+// that takes longer than half the audio it delivers calls slow — once, not
+// per read, because a decoder in trouble is in trouble on every read and the
+// report must not flood the log it feeds. A fast source stays silent.
+func TestStreamReaderReportsSlowPulls(t *testing.T) {
+	var mu sync.Mutex
+	var slow []time.Duration
+	stats := &streamStats{}
+	sluggish := beep.StreamerFunc(func(samples [][2]float64) (int, bool) {
+		time.Sleep(12 * time.Millisecond)
+		return len(samples), true
+	})
+	r := &streamReader{
+		mu:    &mu,
+		src:   sluggish,
+		rate:  44100,
+		slow:  func(exec, audio time.Duration) { slow = append(slow, exec) },
+		stats: stats,
+	}
+	// 512 frames at 44.1 kHz is ~11.6ms of audio; one chunk sleeping 12ms is
+	// past both tripwires (over 10ms, over half the audio's duration).
+	buf := make([]byte, 512*frameBytes)
+	for i := 0; i < 3; i++ {
+		if _, err := r.Read(buf); err != nil {
+			t.Fatalf("Read: %v", err)
+		}
+	}
+	if len(slow) != 1 {
+		t.Fatalf("slow called %d times in one second of trouble, want 1 (rate-limited)", len(slow))
+	}
+	if slow[0] < 12*time.Millisecond {
+		t.Fatalf("reported exec %v, want at least the source's 12ms sleep", slow[0])
+	}
+	reads, worstExec, worstGap, starved := stats.take()
+	if reads != 3 {
+		t.Fatalf("stats counted %d reads, want 3", reads)
+	}
+	if worstExec < 12*time.Millisecond {
+		t.Fatalf("stats worst pull %v, want at least 12ms", worstExec)
+	}
+	if worstGap <= 0 {
+		t.Fatalf("stats worst gap %v, want a positive wait between reads", worstGap)
+	}
+	if starved != 0 {
+		t.Fatalf("stats counted %d starvations with no late callback wired", starved)
+	}
+	if reads2, _, _, _ := stats.take(); reads2 != 0 {
+		t.Fatalf("take did not reset: %d reads left behind", reads2)
+	}
+
+	// A source with no sleep must never trip it, however many reads pass.
+	slow = nil
+	r.src, r.slowAt = &counting{}, time.Time{}
+	for i := 0; i < 5; i++ {
+		if _, err := r.Read(buf); err != nil {
+			t.Fatalf("Read: %v", err)
+		}
+	}
+	if len(slow) != 0 {
+		t.Fatalf("slow called %d times on a healthy source", len(slow))
+	}
+}
+
 // TestStreamReaderMixerSilence pins the property the sink leans on: a mixer
 // with nothing in it keeps streaming silence, so the device is fed zeros
 // rather than starved (starvation is the bug this sink exists to fix).

@@ -39,6 +39,13 @@ require (
 // one require line and the checkout beside us stops being load-bearing.
 replace daemonlord.ygg/madshare => ../madshare
 
+// oto is forked for ONE line: upstream opens its Android stream with
+// PerformanceMode::LowLatency and offers no way to say otherwise, which on this
+// phone means a FAST|RAW output whose HAL buffer is 2.7 ms and which underran
+// ~40 times a minute — the crackle. See third_party/oto/MADPLAYER-PATCH.md for
+// the measurement and for what to re-apply if this is ever bumped.
+replace github.com/ebitengine/oto/v3 => ./third_party/oto
+
 // madshare's own replace does NOT reach us: only the MAIN module's replace
 // directives apply, so its local yggstack fork has to be repeated here or the
 // build silently resolves upstream and loses three patches the mesh depends on

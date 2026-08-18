@@ -15,6 +15,14 @@
 // a small driver request, and a pool sized to cover the triple-read with
 // margin. Same beep.Mixer semantics as the desktop speaker, same Sink
 // surface, float32 straight through instead of beep's int16 detour.
+//
+// That fixed the noise and left a crackle, which was NOT ours: oto asks
+// Android for the low-latency output, whose HAL buffer on this phone is
+// 2.7 ms and drops ~1.5 ms of audio some forty times a minute no matter who
+// fills it. oto is forked for the one line that asks
+// (third_party/oto/MADPLAYER-PATCH.md); the measurement that found it is
+// there too, and it is worth reading before touching any size in this file,
+// because four rounds of tuning up the chain could not have helped.
 package audio
 
 import (
@@ -29,10 +37,21 @@ import (
 )
 
 const (
-	// driverBuffer is the capacity asked of the device. The phone does not
-	// have to honor it (this one granted a 1024-frame FAST track against a
-	// 2205-frame request), but oto's read size is 3× whatever WAS granted,
-	// so asking small keeps the reads small too.
+	// driverBuffer is the capacity asked of the device, and since 2026-08-18
+	// it is asked of the DEEP BUFFER path: oto is forked for one line so it
+	// stops requesting Android's low-latency output
+	// (third_party/oto/MADPLAYER-PATCH.md). That matters more than the number
+	// here. Measured on the Pixel 7 Pro, 60 s windows, same track, same
+	// speaker: the FAST|RAW stream upstream oto asks for has a 128-frame
+	// (2.7 ms) HAL buffer and underran 40 times a minute, ~72 frames each —
+	// a click every second and a half — while the browser's DEEP_BUFFER
+	// stream, 960 frames, underran zero times. Not our lateness: AudioFlinger
+	// found this app's track full on every mixer cycle throughout, and the
+	// stream still underran while the app was paused and feeding silence.
+	//
+	// On that path the device's burst is 20 ms, and oboe rounds a request up
+	// to whole bursts — so 25 ms buys the double buffering that is the norm
+	// there, and oto's own fifo is 3× the granted capacity on top.
 	driverBuffer = 25 * time.Millisecond
 
 	// poolDuration sizes the Go-side buffer those reads drain. It must

@@ -43,6 +43,22 @@ const (
 	// is already pooled still plays, up to this long. Clear() does not pay
 	// it — it drops the pool.
 	poolDuration = 250 * time.Millisecond
+
+	// poolCapacity is what oto REALLY holds, and it is not poolDuration.
+	// Its mux refills a player when the buffer falls BELOW bufferSize, and
+	// the refill reads a whole bufferSize and appends it (mux.go
+	// canReadSourceToBuffer + readSourceToBuffer), so the level swings
+	// between one and nearly two of them. The starvation model below has to
+	// use this figure or it reports a dry pool while up to 250 ms of audio
+	// is still queued — a false alarm on a healthy build, which is worse
+	// than no alarm at all.
+	poolCapacity = 2 * poolDuration
+
+	// readDeadline is how long one Read may take before zeros are CERTAIN:
+	// the refill fires with one bufferSize still buffered, so that is the
+	// whole runway. Half of it is the warning line — a read that slow has no
+	// margin left for the scheduler.
+	readDeadline = poolDuration
 )
 
 // Speaker adapts oto's Android device to player.Sink.
@@ -97,7 +113,7 @@ func (s *Speaker) Init(rate beep.SampleRate, _ int) (beep.SampleRate, error) {
 			mu:   &s.mu,
 			src:  &s.mixer,
 			rate: rate,
-			pool: poolDuration,
+			pool: poolCapacity,
 			// The pool absorbs feed lateness up to its depth; past that oto
 			// pads the mix with zeros — a gap the ear reads as crackle and
 			// AudioFlinger's counters cannot see (the track still looks
@@ -106,14 +122,15 @@ func (s *Speaker) Init(rate beep.SampleRate, _ int) (beep.SampleRate, error) {
 			// evidence a crackle report needs from logcat.
 			warn: 3 * driverBuffer,
 			late: func(gap time.Duration) {
-				log.Printf("audio: feed starved ~%v past the %v pool — audible gap likely", gap.Round(time.Millisecond), poolDuration)
+				log.Printf("audio: feed starved ~%v past the %v pool — audible gap likely", gap.Round(time.Millisecond), poolCapacity)
 			},
 			// slow separates the two ways the pool can drain: this line means
 			// the decode chain itself cannot keep realtime; starvation WITHOUT
 			// it means the reads never came — a GC pause, the scheduler, or
 			// Android freezing the process.
 			slow: func(exec, audio time.Duration) {
-				log.Printf("audio: slow pull — %v to produce %v of audio; the decode chain is behind realtime", exec.Round(time.Millisecond), audio.Round(time.Millisecond))
+				log.Printf("audio: slow pull — %v to produce %v of audio (the runway is %v); the chain in the pull is behind realtime",
+					exec.Round(time.Millisecond), audio.Round(time.Millisecond), readDeadline)
 			},
 			stats: stats,
 		})

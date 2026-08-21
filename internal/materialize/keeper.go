@@ -380,3 +380,52 @@ func copyInto(src, dst string) error {
 	}
 	return nil
 }
+
+// KeepCover writes an album's art beside its kept tracks, as cover<ext> in the
+// album's folder (covers-federation P3). The name is deliberately one the
+// artwork finder already looks for, so a kept album shows its art offline with
+// no further machinery — and one the reconciler already ignores, so it never
+// reads as a stray.
+//
+// Fill-if-missing, like every cover path in this system: any cover-named file
+// already there — including one a person put there — stands. Technical
+// (hash-named) layouts have no album folder, so there is nowhere for art and
+// this quietly declines; a track that resolved to no name at all declines the
+// same way. Both are answers about the layout, not faults worth failing a keep
+// that already succeeded.
+func (k *Keeper) KeepCover(tr Track, data []byte, ext string) error {
+	if len(data) == 0 || ext == "" || k.technical || k.root == "" {
+		return nil
+	}
+	rel, err := tr.Name(k.technical)
+	if err != nil {
+		return nil
+	}
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	dir := filepath.Join(k.root, filepath.FromSlash(filepath.Dir(rel)))
+	if _, err := os.Stat(dir); err != nil {
+		return nil // no album folder means nothing was kept here after all
+	}
+	for _, name := range []string{"cover.jpg", "cover.jpeg", "cover.png", "cover.webp"} {
+		if _, err := os.Lstat(filepath.Join(dir, name)); err == nil {
+			return nil // art is already chosen, by us or by a person
+		}
+	}
+	// Write-then-rename, like the artwork spill: the finder may look the moment
+	// the name exists, and half an image is worse than none.
+	tmp, err := os.CreateTemp(dir, ".cover-*")
+	if err != nil {
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(tmp.Name())
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmp.Name())
+		return err
+	}
+	return os.Rename(tmp.Name(), filepath.Join(dir, "cover"+ext))
+}

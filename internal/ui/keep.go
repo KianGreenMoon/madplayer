@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"strings"
 
 	"daemonlord.ygg/madplayer/internal/library"
@@ -157,6 +158,9 @@ func (a *App) keep(tracks []*library.Track, albumArtist string) {
 		ctx := context.Background()
 		var saved, already int
 		var failed []string
+		// coverTr remembers one landed track's naming, which is what resolves
+		// the album folder the cover belongs beside (covers-federation P3).
+		var coverTr *materialize.Track
 
 		for i, t := range tracks {
 			if !t.Remote() {
@@ -178,15 +182,56 @@ func (a *App) keep(tracks []*library.Track, albumArtist string) {
 				failed = append(failed, t.Title)
 			case res.Already:
 				already++
+				if coverTr == nil {
+					coverTr = &tr
+				}
 			default:
 				saved++
+				if coverTr == nil {
+					coverTr = &tr
+				}
 			}
 		}
 
+		a.keepCover(ctx, keeper, coverTr)
 		a.setNoticeAsync(keptSentence(saved, already, failed, keeper.Root()))
 		// The library gained rows, so whatever is on screen is now out of date.
 		a.reload()
 	}()
+}
+
+// keepCover lands the album's art beside what was just kept, when the album
+// names any (covers-federation P3): fetched through the library it lives in,
+// written as cover.jpg/png so the artwork finder shows it offline with no
+// further machinery. Every failure is a shrug — the music is already saved,
+// and a missing cover must not turn a successful keep into a reported one.
+func (a *App) keepCover(ctx context.Context, keeper *materialize.Keeper, coverTr *materialize.Track) {
+	if coverTr == nil {
+		return
+	}
+	a.mu.Lock()
+	al := a.album
+	a.mu.Unlock()
+	if al == nil || al.Cover.Zero() {
+		return
+	}
+	data, err := a.lib.FetchCover(ctx, al.Cover)
+	if err != nil {
+		log.Printf("madplayer: cover for kept album %s: %v", al.Title, err)
+		return
+	}
+	var ext string
+	switch http.DetectContentType(data) {
+	case "image/jpeg":
+		ext = ".jpg"
+	case "image/png":
+		ext = ".png"
+	default:
+		return // not an image this player writes; the bytes decide, not the claim
+	}
+	if err := keeper.KeepCover(*coverTr, data, ext); err != nil {
+		log.Printf("madplayer: writing cover beside %s: %v", al.Title, err)
+	}
 }
 
 // keptSentence is what the notice line says afterwards.

@@ -33,6 +33,12 @@ type Item struct {
 	Artist   string  `json:"artist"`
 	Album    string  `json:"album"`
 	Duration float64 `json:"duration,omitempty"`
+
+	// Cover is the album-art ref in its stored form (library.CoverRef.Key) —
+	// the fallback art for a file that embeds none. Carried as an opaque
+	// string so the queue stays independent of the library's types and the
+	// ref survives the queue's restart persistence.
+	Cover string `json:"cover,omitempty"`
 }
 
 // Key is the row identity, and the ONE place the rule lives: the local analogue

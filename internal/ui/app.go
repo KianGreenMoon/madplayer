@@ -850,7 +850,7 @@ func (a *App) Run() error {
 	// construction — a machine with no session bus is a normal machine, and a
 	// music player that refused to start over one would be absurd — so a failure
 	// is logged once and the program carries on with its own window.
-	if svc, err := mpris.New("madplayer", controls{a.pl, a.art}, a.closeWindow); err != nil {
+	if svc, err := mpris.New("madplayer", controls{a.pl, a.art, a.nowPlayingCoverKey}, a.closeWindow); err != nil {
 		log.Printf("madplayer: media keys and the desktop's media widget are unavailable: %v", err)
 	} else {
 		a.mediaBus.Store(svc)
@@ -860,7 +860,7 @@ func (a *App) Run() error {
 	// service without which playback dies when the screen sleeps. A no-op stub
 	// on every other platform; on Android a failure inside disables itself
 	// with one log line, so there is no error to handle here.
-	a.mediaSession.Store(mediasession.New(controls{a.pl, a.art}))
+	a.mediaSession.Store(mediasession.New(controls{a.pl, a.art, a.nowPlayingCoverKey}))
 	a.mediaSession.Load().Update()
 	go a.queueSaver()
 
@@ -1357,6 +1357,9 @@ func (a *App) itemsFromTracks(tracks []*library.Track) []*queue.Item {
 			Artist:   t.Artist,
 			Album:    t.Album,
 			Duration: t.Duration,
+		}
+		if !t.Cover.Zero() {
+			it.Cover = t.Cover.Key()
 		}
 		if c, ok := t.Best(); ok {
 			it.Path, it.URL, it.Hash, it.Origin = c.Path, c.URL, c.Hash, c.Origin.Label

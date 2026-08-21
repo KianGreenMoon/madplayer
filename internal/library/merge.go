@@ -157,6 +157,9 @@ func mergeTracks(lists [][]*Track) []*Track {
 			if row.Duration == 0 {
 				row.Duration = in.Duration
 			}
+			if row.Cover.Zero() {
+				row.Cover = in.Cover // first named wins, as on album rows
+			}
 			row.Copies = append(row.Copies, in.Copies...)
 		}
 	}

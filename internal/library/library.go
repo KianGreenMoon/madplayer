@@ -160,6 +160,25 @@ type CoverRef struct {
 // Zero reports whether there is nothing to fetch.
 func (c CoverRef) Zero() bool { return c == CoverRef{} }
 
+// ParseCoverKey is Key's inverse: the ref back out of a stored key, ok=false
+// for anything that is not one. The queue persists refs in this form — three
+// fields in a string survive a restart where a map of session pointers cannot.
+func ParseCoverKey(key string) (CoverRef, bool) {
+	parts := strings.Split(key, "\x1f")
+	if len(parts) != 3 {
+		return CoverRef{}, false
+	}
+	id, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil {
+		return CoverRef{}, false
+	}
+	ref := CoverRef{Source: parts[0], AlbumID: id, Hash: parts[2]}
+	if ref.Zero() {
+		return CoverRef{}, false
+	}
+	return ref, true
+}
+
 // Key is the ref's identity as a cache key: two rows naming the same art must
 // collide, and rows naming different art must not.
 func (c CoverRef) Key() string {
@@ -293,6 +312,12 @@ type Track struct {
 
 	// Duration in seconds; 0 means "not known".
 	Duration float64
+
+	// Cover is the row's album art as a fetchable ref, for the surfaces the
+	// audio file itself cannot answer: a played file with no embedded art (a
+	// sidecar-cover library's whole output) still has a cover — it is just not
+	// IN the file. Zero when no source named one.
+	Cover CoverRef
 
 	Copies []Copy
 }

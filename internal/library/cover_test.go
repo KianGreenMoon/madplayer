@@ -61,6 +61,17 @@ func coverServer(t *testing.T) (*httptest.Server, *[]string) {
 				return
 			}
 			_, _ = w.Write([]byte("network-cover-bytes"))
+		case r.URL.Path == "/api/tracks":
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				{"id": 1, "tagset_id": 5, "title": "Row One", "url": "/files/x/row1.mp3"},
+			})
+		case r.URL.Path == "/api/madnetwork/tracks":
+			_ = json.NewEncoder(w).Encode(map[string]any{"tracks": []map[string]any{
+				{"title": "Net Row", "artist": "Band", "cover_hash": testCoverHash, "cover_ext": ".jpg",
+					"versions": []map[string]any{{
+						"renditions": []map[string]any{{"hash": strings.Repeat("cd", 32), "size": 9, "codec": "mp3"}},
+					}}},
+			}})
 		default:
 			http.NotFound(w, r)
 		}
@@ -173,5 +184,44 @@ func TestFetchCoverOriginal(t *testing.T) {
 	data, err = r.FetchCoverOriginal(ctx, CoverRef{Source: srv.URL, AlbumID: 8})
 	if err != nil || string(data) != "library-cover-large" {
 		t.Fatalf("hashless fallback = %q err=%v, want the large variant", data, err)
+	}
+}
+
+// Track rows carry the album's cover ref — the fallback art for the player
+// bar and the media widget when the played file embeds none — and the ref
+// survives the queue's string form.
+func TestTrackRowsCarryTheCoverRef(t *testing.T) {
+	srv, _ := coverServer(t)
+	ctx := context.Background()
+
+	r := remoteSource{base: srv.URL, label: "home", cl: madshare.New(srv.URL, "tok")}
+	tracks, err := r.AlbumTracks(ctx, Origin{Source: srv.URL, ID: 7}, "Pictured")
+	if err != nil || len(tracks) != 1 {
+		t.Fatalf("remote tracks = %v err=%v", tracks, err)
+	}
+	if ref := tracks[0].Cover; ref.AlbumID != 7 || ref.Source != srv.URL {
+		t.Errorf("remote track cover ref = %+v, want the album's", ref)
+	}
+
+	m := madnetworkSource{base: srv.URL, label: "madnetwork", cl: madshare.New(srv.URL, "tok")}
+	tracks, err = m.AlbumTracks(ctx, Origin{Source: m.ID(), Ref: "Band"}, "Far Album")
+	if err != nil || len(tracks) != 1 {
+		t.Fatalf("madnetwork tracks = %v err=%v", tracks, err)
+	}
+	if ref := tracks[0].Cover; ref.Hash != testCoverHash || ref.Source != m.ID() {
+		t.Errorf("madnetwork track cover ref = %+v, want the elected hash", ref)
+	}
+
+	// The queue's string form round-trips, and junk parses to nothing.
+	ref := tracks[0].Cover
+	back, ok := ParseCoverKey(ref.Key())
+	if !ok || back != ref {
+		t.Errorf("ParseCoverKey(Key()) = (%+v,%v), want the ref back", back, ok)
+	}
+	if _, ok := ParseCoverKey("just some string"); ok {
+		t.Error("garbage parsed as a cover key")
+	}
+	if _, ok := ParseCoverKey(CoverRef{}.Key()); ok {
+		t.Error("the zero ref's key parsed as fetchable")
 	}
 }

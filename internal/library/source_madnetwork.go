@@ -226,6 +226,7 @@ func (m madnetworkSource) track(t madshare.MadnetworkTrack, albumArtist, albumTi
 		Title:    t.Title,
 		Artist:   credit,
 		Album:    albumTitle,
+		Cover:    coverRefFor(m.ID(), t.CoverHash),
 		Duration: t.Duration,
 	}
 	if t.Track != nil {
@@ -299,4 +300,12 @@ func (m madnetworkSource) Search(ctx context.Context, q string) (SearchResults, 
 		out.Tracks = append(out.Tracks, tr)
 	}
 	return out, nil
+}
+
+// coverRefFor is the hash claim as a ref, or zero when there is no claim.
+func coverRefFor(source, hash string) CoverRef {
+	if hash == "" {
+		return CoverRef{}
+	}
+	return CoverRef{Source: source, Hash: hash}
 }

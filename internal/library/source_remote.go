@@ -95,7 +95,13 @@ func (r remoteSource) AlbumTracks(ctx context.Context, album Origin, albumTitle 
 	}
 	out := make([]*Track, 0, len(rows))
 	for _, t := range rows {
-		out = append(out, r.track(t, albumTitle))
+		tr := r.track(t, albumTitle)
+		// The album addressed these tracks, so its art ref rides on each row —
+		// for the player bar and the media widget, whose file may carry no
+		// embedded art. A coverless album's ref fetches one 404 and caches
+		// "none", which is the same answer at the same price as asking first.
+		tr.Cover = CoverRef{Source: r.ID(), AlbumID: album.ID}
+		out = append(out, tr)
 	}
 	return out, nil
 }

@@ -133,7 +133,7 @@ func (a *App) nowPlaying(gtx C) D {
 			// The cover is the one place a player is expected to show one, and it is
 			// laid out even when there is none: a tile that appears and disappears
 			// would move the whole transport sideways every time a track changed.
-			layout.Rigid(func(gtx C) D { return a.cover(gtx, a.nowPlayingCoverPath(), 44) }),
+			layout.Rigid(func(gtx C) D { return a.cover(gtx, a.nowPlayingCoverKey(), 44) }),
 			layout.Rigid(layout.Spacer{Width: 12}.Layout),
 			layout.Flexed(1, func(gtx C) D {
 				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,

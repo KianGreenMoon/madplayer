@@ -201,6 +201,29 @@ func (a *App) nowPlayingCoverPath() string {
 	return ""
 }
 
+// nowPlayingCoverKey is the key the player bar and the media widget paint: the
+// playing FILE's own art when it has any, else the album's fetchable ref. The
+// file wins because embedded art is the artist's answer for THIS track — but a
+// sidecar-cover library's files embed nothing at all, and before this fallback
+// every such track played faceless while its browse row sat there with the art.
+func (a *App) nowPlayingCoverKey() string {
+	path := a.nowPlayingCoverPath()
+	if path != "" {
+		if img, settled := a.art.cache.Get(path); !settled || img != nil {
+			return path // has art, or the answer is still being read
+		}
+	}
+	cur := a.pl.Current()
+	if cur == nil || cur.Cover == "" {
+		return path
+	}
+	ref, ok := library.ParseCoverKey(cur.Cover)
+	if !ok {
+		return path
+	}
+	return a.netCoverKey(ref)
+}
+
 // controls is the player as the desktop's media bus needs it: playback, plus
 // the one thing playback does not know about — where the current cover is.
 //
@@ -210,23 +233,22 @@ func (a *App) nowPlayingCoverPath() string {
 type controls struct {
 	*player.Player
 	art *covers
+	// key resolves the current cover key — the App's nowPlayingCoverKey, so
+	// the widget and the player bar can never disagree about whose art shows.
+	key func() string
 }
 
 // ArtPath is a file the media widget can fetch, and it is the reason
 // artwork.Cache can spill: a cover embedded in an audio file has no path of its
-// own, and another process cannot read this one's memory.
+// own — and a fetched network cover never had one — while another process
+// cannot read this one's memory either way.
 func (c controls) ArtPath() string {
-	if c.art == nil {
+	if c.art == nil || c.key == nil {
 		return ""
 	}
-	path := c.Player.CurrentPath()
-	if path == "" {
-		if cur := c.Player.Current(); cur != nil {
-			path = cur.Path
-		}
-	}
-	if path == "" {
+	key := c.key()
+	if key == "" {
 		return ""
 	}
-	return c.art.cache.File(path)
+	return c.art.cache.File(key)
 }

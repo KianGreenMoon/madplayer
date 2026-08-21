@@ -150,6 +150,17 @@ func (m madnetworkSource) FetchCover(ctx context.Context, ref CoverRef) ([]byte,
 	return cl.MadnetworkCover(ctx, ref.Hash, "medium")
 }
 
+// FetchCoverOriginal: the ref's hash IS the original's identity, so the
+// no-size relay answer is exactly the canonical bytes, verified by the server
+// against this very hash.
+func (m madnetworkSource) FetchCoverOriginal(ctx context.Context, ref CoverRef) ([]byte, error) {
+	cl, err := m.client()
+	if err != nil {
+		return nil, err
+	}
+	return cl.MadnetworkCover(ctx, ref.Hash, "")
+}
+
 func (m madnetworkSource) album(artist string, a madshare.MadnetworkAlbum) *Album {
 	al := &Album{
 		ArtistName:    artist,

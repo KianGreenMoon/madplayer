@@ -215,7 +215,7 @@ func (a *App) keepCover(ctx context.Context, keeper *materialize.Keeper, coverTr
 	if al == nil || al.Cover.Zero() {
 		return
 	}
-	data, err := a.lib.FetchCover(ctx, al.Cover)
+	data, err := a.lib.FetchCoverOriginal(ctx, al.Cover)
 	if err != nil {
 		log.Printf("madplayer: cover for kept album %s: %v", al.Title, err)
 		return

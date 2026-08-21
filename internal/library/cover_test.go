@@ -33,14 +33,31 @@ func coverServer(t *testing.T) (*httptest.Server, *[]string) {
 					"track_count": 1, "has_image": false},
 			})
 		case r.URL.Path == "/api/albums/7/image":
+			if r.URL.Query().Get("size") == "large" {
+				_, _ = w.Write([]byte("library-cover-large"))
+				return
+			}
 			_, _ = w.Write([]byte("library-cover-bytes"))
+		case r.URL.Path == "/api/albums/7/image/status":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"has_cover": true, "image_hash": testCoverHash, "variants_ready": true})
+		case r.URL.Path == "/api/albums/8/image/status":
+			// A legacy cover: present, but with no full-hash key to relay by.
+			_ = json.NewEncoder(w).Encode(map[string]any{"has_cover": true, "image_hash": ""})
+		case r.URL.Path == "/api/albums/8/image":
+			_, _ = w.Write([]byte("library-cover-large"))
 		case r.URL.Path == "/api/madnetwork/albums":
 			_ = json.NewEncoder(w).Encode(map[string]any{"albums": []map[string]any{
 				{"title": "Far Album", "tracks": 3, "cover_hash": testCoverHash, "cover_ext": ".jpg"},
 			}})
 		case r.URL.Path == "/api/madnetwork/cover/"+testCoverHash:
+			// No size = the original (the keep-grade answer); display asks medium.
+			if r.URL.Query().Get("size") == "" {
+				_, _ = w.Write([]byte("original-cover-bytes"))
+				return
+			}
 			if r.URL.Query().Get("size") != "medium" {
-				http.Error(w, "want the medium crop, not the original", http.StatusBadRequest)
+				http.Error(w, "unexpected size", http.StatusBadRequest)
 				return
 			}
 			_, _ = w.Write([]byte("network-cover-bytes"))
@@ -130,5 +147,31 @@ func TestMergeKeepsTheFirstCover(t *testing.T) {
 	})
 	if len(merged) != 1 || merged[0].Cover != ref {
 		t.Fatalf("merged cover = %+v, want the first named ref", merged)
+	}
+}
+
+// FetchCoverOriginal is the keep-grade fetch: the madnetwork ref's hash gets
+// the no-size relay answer, and a server-library ref reaches the original
+// through the status endpoint's hash plus the same relay.
+func TestFetchCoverOriginal(t *testing.T) {
+	srv, _ := coverServer(t)
+	ctx := context.Background()
+
+	m := madnetworkSource{base: srv.URL, label: "madnetwork", cl: madshare.New(srv.URL, "tok")}
+	data, err := m.FetchCoverOriginal(ctx, CoverRef{Source: m.ID(), Hash: testCoverHash})
+	if err != nil || string(data) != "original-cover-bytes" {
+		t.Fatalf("madnetwork original = %q err=%v", data, err)
+	}
+
+	r := remoteSource{base: srv.URL, label: "home", cl: madshare.New(srv.URL, "tok")}
+	data, err = r.FetchCoverOriginal(ctx, CoverRef{Source: srv.URL, AlbumID: 7})
+	if err != nil || string(data) != "original-cover-bytes" {
+		t.Fatalf("library original = %q err=%v — the status hash should reach the relay", data, err)
+	}
+
+	// A cover with no full-hash key falls back to the largest variant.
+	data, err = r.FetchCoverOriginal(ctx, CoverRef{Source: srv.URL, AlbumID: 8})
+	if err != nil || string(data) != "library-cover-large" {
+		t.Fatalf("hashless fallback = %q err=%v, want the large variant", data, err)
 	}
 }

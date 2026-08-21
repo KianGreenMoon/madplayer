@@ -111,6 +111,25 @@ func (r remoteSource) FetchCover(ctx context.Context, ref CoverRef) ([]byte, err
 	return cl.AlbumImage(ctx, ref.AlbumID, "medium")
 }
 
+// FetchCoverOriginal: /api/albums itself never serves originals (the variants
+// doctrine), but the cover's full hash — from the status endpoint — makes the
+// original reachable through the same server's madnetwork cover relay, which
+// serves its OWN covers locally without touching the network. A legacy cover
+// with no full-hash key, or a server without federation, falls back to the
+// largest derived variant: bytes over nothing, never silently the small one.
+func (r remoteSource) FetchCoverOriginal(ctx context.Context, ref CoverRef) ([]byte, error) {
+	cl, err := r.client()
+	if err != nil {
+		return nil, err
+	}
+	if hash, err := cl.AlbumCoverHash(ctx, ref.AlbumID); err == nil && hash != "" {
+		if data, err := cl.MadnetworkCover(ctx, hash, ""); err == nil {
+			return data, nil
+		}
+	}
+	return cl.AlbumImage(ctx, ref.AlbumID, "large")
+}
+
 func (r remoteSource) Search(ctx context.Context, q string) (SearchResults, error) {
 	var res SearchResults
 	cl, err := r.client()

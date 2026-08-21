@@ -239,6 +239,25 @@ func (c *Client) AlbumImage(ctx context.Context, albumID int64, size string) ([]
 	return c.getBytes(ctx, "/api/albums/"+strconv.FormatInt(albumID, 10)+"/image?size="+url.QueryEscape(size))
 }
 
+// AlbumCoverHash asks the album image status endpoint for the full sha256 of
+// the album cover's source original — the identity that makes the ORIGINAL
+// fetchable through the madnetwork cover relay, since /api/albums itself only
+// ever serves derived variants. Empty (no error) when the album has no cover
+// or only a legacy row with no full-hash key.
+func (c *Client) AlbumCoverHash(ctx context.Context, albumID int64) (string, error) {
+	var out struct {
+		HasCover  bool   `json:"has_cover"`
+		ImageHash string `json:"image_hash"`
+	}
+	if err := c.get(ctx, "/api/albums/"+strconv.FormatInt(albumID, 10)+"/image/status", &out); err != nil {
+		return "", err
+	}
+	if !out.HasCover {
+		return "", nil
+	}
+	return out.ImageHash, nil
+}
+
 // MadnetworkCover fetches a network album cover through the server's relay
 // (GET /api/madnetwork/cover/{hash}) — the cover twin of the audio relay. The
 // hash addresses the cover's source original on whichever node holds it; the

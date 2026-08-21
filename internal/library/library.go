@@ -79,12 +79,29 @@ type Source interface {
 // its covers are files, read by internal/artwork — which is why this is a
 // second interface rather than a fifth method every source must stub.
 type coverFetcher interface {
+	// FetchCover is the DISPLAY fetch: a derived variant sized for a screen.
 	FetchCover(ctx context.Context, ref CoverRef) ([]byte, error)
+	// FetchCoverOriginal is the KEEP fetch: the canonical source bytes, for
+	// the cover.jpg a materialized album carries. A source that cannot reach
+	// the original answers with the largest variant it can — bytes over
+	// nothing, but never silently the small one.
+	FetchCoverOriginal(ctx context.Context, ref CoverRef) ([]byte, error)
 }
 
-// FetchCover returns the bytes behind an album's CoverRef, asking the source
-// that produced it. The caller decodes; this layer only knows who to ask.
+// FetchCover returns the display bytes behind an album's CoverRef, asking the
+// source that produced it. The caller decodes; this layer only knows who to ask.
 func (l *Library) FetchCover(ctx context.Context, ref CoverRef) ([]byte, error) {
+	return l.fetchCover(ctx, ref, coverFetcher.FetchCover)
+}
+
+// FetchCoverOriginal is FetchCover at replication grade — the canonical source
+// bytes, for the cover file a kept album carries.
+func (l *Library) FetchCoverOriginal(ctx context.Context, ref CoverRef) ([]byte, error) {
+	return l.fetchCover(ctx, ref, coverFetcher.FetchCoverOriginal)
+}
+
+func (l *Library) fetchCover(ctx context.Context, ref CoverRef,
+	via func(coverFetcher, context.Context, CoverRef) ([]byte, error)) ([]byte, error) {
 	if ref.Zero() {
 		return nil, errors.New("this album names no network cover")
 	}
@@ -96,7 +113,7 @@ func (l *Library) FetchCover(ctx context.Context, ref CoverRef) ([]byte, error) 
 		if !ok {
 			return nil, errors.New(s.Label() + " cannot fetch covers")
 		}
-		return f.FetchCover(ctx, ref)
+		return via(f, ctx, ref)
 	}
 	return nil, errors.New("no library can answer for this cover any more")
 }

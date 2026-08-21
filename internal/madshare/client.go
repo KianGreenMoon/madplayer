@@ -197,6 +197,57 @@ func (c *Client) get(ctx context.Context, path string, out any) error {
 	return c.do(ctx, http.MethodGet, path, nil, out)
 }
 
+// maxCoverBytes bounds a fetched cover image. It mirrors the server's own
+// upload ceiling (maxImageSize, 10 MB): anything larger is not a cover this
+// network could have accepted, so reading further would only buy memory.
+const maxCoverBytes = 10 << 20
+
+// getBytes fetches one small binary resource whole — cover images, nothing
+// audio-sized. The cap is a hard error, not a truncation: half an image
+// decodes into nothing useful, and a resource over the cap is a wrong answer.
+func (c *Client) getBytes(ctx context.Context, path string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.Base+path, nil)
+	if err != nil {
+		return nil, err
+	}
+	if c.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.Token)
+	}
+	res, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		return nil, &Error{Status: res.StatusCode, Method: http.MethodGet, Path: path}
+	}
+	data, err := io.ReadAll(io.LimitReader(res.Body, maxCoverBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxCoverBytes {
+		return nil, fmt.Errorf("%s is larger than any cover this network accepts", path)
+	}
+	return data, nil
+}
+
+// AlbumImage fetches an album cover from the server's own library — a derived
+// variant, sized by the server (medium = 300 px, plenty for every surface this
+// player paints; see artwork.MaxDimension). 404 means the album has no cover
+// yet, which the caller treats as an answer, not a fault.
+func (c *Client) AlbumImage(ctx context.Context, albumID int64, size string) ([]byte, error) {
+	return c.getBytes(ctx, "/api/albums/"+strconv.FormatInt(albumID, 10)+"/image?size="+url.QueryEscape(size))
+}
+
+// MadnetworkCover fetches a network album cover through the server's relay
+// (GET /api/madnetwork/cover/{hash}) — the cover twin of the audio relay. The
+// hash addresses the cover's source original on whichever node holds it; the
+// server fetches cache-through and the answer is immutable, so the HTTP layer
+// may cache it as hard as it likes.
+func (c *Client) MadnetworkCover(ctx context.Context, hash string) ([]byte, error) {
+	return c.getBytes(ctx, "/api/madnetwork/cover/"+url.PathEscape(hash))
+}
+
 // do runs one request. A nil body sends none; anything else is marshalled as
 // JSON. A nil out discards the reply.
 func (c *Client) do(ctx context.Context, method, path string, body, out any) error {

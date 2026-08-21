@@ -53,6 +53,11 @@ type MadnetworkAlbum struct {
 	Title  string `json:"title"`
 	Tracks int64  `json:"tracks"`
 	Year   *int64 `json:"year"`
+	// CoverHash is the album's cover as the merged view elected it — the full
+	// sha256 of the cover's source original, fetchable via Client.MadnetworkCover.
+	// Empty when no reachable source claims art for this album.
+	CoverHash string `json:"cover_hash"`
+	CoverExt  string `json:"cover_ext"`
 }
 
 // MadnetworkRendition is one file of one version: the bytes, and what they are.
@@ -101,6 +106,9 @@ type MadnetworkTrack struct {
 	Track    *int64  `json:"track_number"`
 	Disc     *int64  `json:"disc_number"`
 	Duration float64 `json:"duration"`
+	// CoverHash / CoverExt: the row's elected album cover, as on MadnetworkAlbum.
+	CoverHash string `json:"cover_hash"`
+	CoverExt  string `json:"cover_ext"`
 
 	Versions []MadnetworkVersion `json:"versions"`
 }

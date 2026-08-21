@@ -89,6 +89,12 @@ func mergeAlbums(lists [][]*Album) []*Album {
 			if row.Year == 0 {
 				row.Year = in.Year
 			}
+			// Same rule for network art: the first source that names a cover
+			// wins. The device source never names one — its covers are files,
+			// and a local file always outranks this ref in the UI anyway.
+			if row.Cover.Zero() {
+				row.Cover = in.Cover
+			}
 			row.Origins = append(row.Origins, in.Origins...)
 			row.countFrom(in.TrackCount)
 		}

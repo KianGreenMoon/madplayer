@@ -209,6 +209,52 @@ func (c *Cache) Get(path string) (img image.Image, settled bool) {
 	return nil, false
 }
 
+// GetFetched is Get for art that is not beside any audio file: network covers,
+// keyed by whatever identity the caller fetches them under (library.CoverRef
+// keys, in practice). The bytes are fetched ONCE per key through fetch, decoded
+// and shrunk exactly like file art, and every answer — including a fetch that
+// failed, which stores the same "none" a coverless folder does — is cached, so
+// a server that answers 404 is asked once per session and not sixty times a
+// second. Same map, same eviction, same OnLoad as Get; the key namespaces
+// cannot collide because a caller's key is never a bare file path.
+func (c *Cache) GetFetched(key string, fetch func() ([]byte, error)) (img image.Image, settled bool) {
+	if key == "" {
+		return nil, true
+	}
+	c.mu.Lock()
+	if e, ok := c.entries[key]; ok {
+		img, done := e.img, e.done
+		c.mu.Unlock()
+		return img, done
+	}
+	c.entries[key] = &entry{}
+	c.order = append(c.order, key)
+	c.evictLocked()
+	c.mu.Unlock()
+
+	go c.loadFetched(key, fetch)
+	return nil, false
+}
+
+// loadFetched is load for a fetched key: the finding is the caller's fetch, the
+// rest — shrink, store, repaint — is shared behaviour.
+func (c *Cache) loadFetched(key string, fetch func() ([]byte, error)) {
+	var img image.Image
+	if data, err := fetch(); err == nil {
+		if decoded, _, derr := image.Decode(bytes.NewReader(data)); derr == nil {
+			img = shrink(decoded)
+		}
+	}
+	c.mu.Lock()
+	if e, ok := c.entries[key]; ok {
+		e.img, e.done = img, true
+	}
+	c.mu.Unlock()
+	if c.OnLoad != nil {
+		c.OnLoad()
+	}
+}
+
 // evictLocked drops the oldest entries once the cache is over its bound.
 func (c *Cache) evictLocked() {
 	for len(c.order) > maxEntries {

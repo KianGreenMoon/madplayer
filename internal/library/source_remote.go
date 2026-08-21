@@ -76,6 +76,9 @@ func (r remoteSource) Albums(ctx context.Context, artist Origin) ([]*Album, erro
 		if a.Year != nil {
 			al.Year = int(*a.Year)
 		}
+		if a.HasImage {
+			al.Cover = CoverRef{Source: r.ID(), AlbumID: a.ID}
+		}
 		out = append(out, al)
 	}
 	return out, nil
@@ -95,6 +98,17 @@ func (r remoteSource) AlbumTracks(ctx context.Context, album Origin, albumTitle 
 		out = append(out, r.track(t, albumTitle))
 	}
 	return out, nil
+}
+
+// FetchCover satisfies coverFetcher: the server's own album art, as the
+// medium (300 px) derived variant — larger than any surface this player paints
+// (artwork.MaxDimension is 320), a tenth the bytes of the default large.
+func (r remoteSource) FetchCover(ctx context.Context, ref CoverRef) ([]byte, error) {
+	cl, err := r.client()
+	if err != nil {
+		return nil, err
+	}
+	return cl.AlbumImage(ctx, ref.AlbumID, "medium")
 }
 
 func (r remoteSource) Search(ctx context.Context, q string) (SearchResults, error) {

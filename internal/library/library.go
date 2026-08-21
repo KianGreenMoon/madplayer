@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -73,6 +74,33 @@ type Source interface {
 	Search(ctx context.Context, q string) (SearchResults, error)
 }
 
+// coverFetcher is the optional half of Source: a library that can hand over
+// the bytes of a CoverRef it produced. The device source never implements it —
+// its covers are files, read by internal/artwork — which is why this is a
+// second interface rather than a fifth method every source must stub.
+type coverFetcher interface {
+	FetchCover(ctx context.Context, ref CoverRef) ([]byte, error)
+}
+
+// FetchCover returns the bytes behind an album's CoverRef, asking the source
+// that produced it. The caller decodes; this layer only knows who to ask.
+func (l *Library) FetchCover(ctx context.Context, ref CoverRef) ([]byte, error) {
+	if ref.Zero() {
+		return nil, errors.New("this album names no network cover")
+	}
+	for _, s := range l.sources() {
+		if s.ID() != ref.Source {
+			continue
+		}
+		f, ok := s.(coverFetcher)
+		if !ok {
+			return nil, errors.New(s.Label() + " cannot fetch covers")
+		}
+		return f.FetchCover(ctx, ref)
+	}
+	return nil, errors.New("no library can answer for this cover any more")
+}
+
 // Problem is one library that could not be read.
 //
 // It is reported alongside the rows rather than instead of them: a server being
@@ -98,6 +126,29 @@ type Artist struct {
 	Origins    []Origin
 }
 
+// CoverRef names album art that can be FETCHED when no local file carries it —
+// the answer to "this album lives only on a server, where is its cover".
+//
+// Two address forms for the two kinds of remote library, like Origin: a signed-in
+// server's own album is addressed by its id there (AlbumID), and a madnetwork
+// album by the content hash of its cover original (Hash), which the home server
+// relays from whichever node holds it. Source names the library that can answer,
+// exactly as Origin.Source does. The zero value means "no network art known".
+type CoverRef struct {
+	Source  string
+	AlbumID int64
+	Hash    string
+}
+
+// Zero reports whether there is nothing to fetch.
+func (c CoverRef) Zero() bool { return c == CoverRef{} }
+
+// Key is the ref's identity as a cache key: two rows naming the same art must
+// collide, and rows naming different art must not.
+func (c CoverRef) Key() string {
+	return c.Source + "" + strconv.FormatInt(c.AlbumID, 10) + "" + c.Hash
+}
+
 // Album belongs to one album-artist, and may exist in several libraries.
 type Album struct {
 	// ArtistName is the album ARTIST — what a breadcrumb should say when an album
@@ -113,6 +164,11 @@ type Album struct {
 	TrackCount int
 	Approx     bool
 	Origins    []Origin
+
+	// Cover is where this album's art can be fetched from a network library,
+	// for the rows no local file backs. A local copy always wins over it — the
+	// file on disk is the truth about what this machine holds.
+	Cover CoverRef
 }
 
 // Artist rebuilds the album-artist a breadcrumb needs.

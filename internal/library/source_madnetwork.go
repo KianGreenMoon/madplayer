@@ -128,6 +128,24 @@ func (m madnetworkSource) Albums(ctx context.Context, artist Origin) ([]*Album, 
 	return out, nil
 }
 
+// FetchCover satisfies coverFetcher: a network cover, relayed by the home
+// server from whichever node holds it (GET /api/madnetwork/cover/{hash}).
+//
+// This is the one place the madnetwork source asks its server for BYTES, and
+// it stays inside the "server is a directory" rule's reason rather than its
+// letter: the rule guards against the server downloading albums on a phone's
+// behalf, and a cover is a bounded image the server was going to cache for its
+// own browse anyway. Fetching it from holders directly would need the cover's
+// size (the swarm API wants one) — which the catalog does not carry — so the
+// relay is the honest v0, not a shortcut.
+func (m madnetworkSource) FetchCover(ctx context.Context, ref CoverRef) ([]byte, error) {
+	cl, err := m.client()
+	if err != nil {
+		return nil, err
+	}
+	return cl.MadnetworkCover(ctx, ref.Hash)
+}
+
 func (m madnetworkSource) album(artist string, a madshare.MadnetworkAlbum) *Album {
 	al := &Album{
 		ArtistName:    artist,
@@ -140,6 +158,9 @@ func (m madnetworkSource) album(artist string, a madshare.MadnetworkAlbum) *Albu
 	}
 	if a.Year != nil {
 		al.Year = int(*a.Year)
+	}
+	if a.CoverHash != "" {
+		al.Cover = CoverRef{Source: m.ID(), Hash: a.CoverHash}
 	}
 	return al
 }

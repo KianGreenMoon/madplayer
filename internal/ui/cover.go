@@ -1,8 +1,12 @@
 package ui
 
 import (
+	"context"
+	"errors"
 	"image"
+	"strings"
 	"sync"
+	"time"
 
 	"gioui.org/layout"
 	"gioui.org/op/clip"
@@ -34,9 +38,19 @@ import (
 type covers struct {
 	cache *artwork.Cache
 
+	// fetchNet resolves a network cover key (netCoverPrefix-marked) to its
+	// bytes. Set once at startup by the App, which is the layer that knows the
+	// libraries; nil paints such keys as coverless rather than crashing.
+	fetchNet func(key string) ([]byte, error)
+
 	mu  sync.Mutex
 	ops map[string]paint.ImageOp
 }
+
+// netCoverPrefix marks a cover key as network art rather than a file path.
+// The prefix cannot open a file (no absolute path starts with it), so the two
+// key spaces cannot collide however a library names things.
+const netCoverPrefix = "net!"
 
 func newCovers(invalidate func()) *covers {
 	c := &covers{cache: artwork.New(), ops: map[string]paint.ImageOp{}}
@@ -53,7 +67,16 @@ func (c *covers) op(path string) (paint.ImageOp, bool) {
 	}
 	c.mu.Unlock()
 
-	img, settled := c.cache.Get(path)
+	var img image.Image
+	var settled bool
+	if strings.HasPrefix(path, netCoverPrefix) {
+		if c.fetchNet == nil {
+			return paint.ImageOp{}, false
+		}
+		img, settled = c.cache.GetFetched(path, func() ([]byte, error) { return c.fetchNet(path) })
+	} else {
+		img, settled = c.cache.Get(path)
+	}
 	if img == nil {
 		// Either still reading or there is none; both paint the placeholder, and
 		// settled is the caller's business rather than this one's.
@@ -99,6 +122,54 @@ func (a *App) coverPlaceholder(gtx C, px int) D {
 		gtx.Constraints = layout.Exact(image.Pt(px/2, px/2))
 		return iconNoCover.Layout(gtx, colLine)
 	})
+}
+
+// netCoverKey registers an album's network cover and returns the key that
+// paints it: covers.op sees the prefix and fetches instead of reading a file.
+// The registry maps the key back to its CoverRef for fetchNetCover; entries are
+// a few strings and refs are stable identities, so it only ever grows within a
+// session and is never rebuilt under the rows still on screen.
+func (a *App) netCoverKey(ref library.CoverRef) string {
+	key := netCoverPrefix + ref.Key()
+	a.mu.Lock()
+	if a.netCovers == nil {
+		a.netCovers = map[string]library.CoverRef{}
+	}
+	a.netCovers[key] = ref
+	a.mu.Unlock()
+	return key
+}
+
+// fetchNetCover is covers.fetchNet: key back to ref, ref to bytes, through the
+// library that produced it. Bounded — a cover is a nicety, and a relay that has
+// to walk the mesh for it must not hold a paint slot open for minutes.
+func (a *App) fetchNetCover(key string) ([]byte, error) {
+	a.mu.Lock()
+	ref, ok := a.netCovers[key]
+	a.mu.Unlock()
+	if !ok {
+		return nil, errors.New("no album registered this cover key")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return a.lib.FetchCover(ctx, ref)
+}
+
+// albumHeaderCoverKey is the art for the tracks view's album header: a local
+// file when any track here has one, else the album row's network cover. The
+// order is the point — the file on disk is the truth about this machine, and
+// the network ref is for the album that lives only on a server.
+func (a *App) albumHeaderCoverKey(tracks []*library.Track) string {
+	if p := albumCoverPath(tracks); p != "" {
+		return p
+	}
+	a.mu.Lock()
+	al := a.album
+	a.mu.Unlock()
+	if al != nil && !al.Cover.Zero() {
+		return a.netCoverKey(al.Cover)
+	}
+	return ""
 }
 
 // albumCoverPath is the file an album's cover is read from: the first track on

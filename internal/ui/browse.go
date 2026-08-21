@@ -371,7 +371,7 @@ func (a *App) albumHeader(gtx C, tracks []*library.Track) D {
 			children := []layout.FlexChild{
 				layout.Rigid(func(gtx C) D {
 					return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
-						layout.Rigid(func(gtx C) D { return a.cover(gtx, albumCoverPath(tracks), 104) }),
+						layout.Rigid(func(gtx C) D { return a.cover(gtx, a.albumHeaderCoverKey(tracks), 104) }),
 						layout.Rigid(layout.Spacer{Width: 16}.Layout),
 						layout.Flexed(1, titles),
 					)
@@ -388,7 +388,7 @@ func (a *App) albumHeader(gtx C, tracks []*library.Track) D {
 			return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
 		}
 		return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
-			layout.Rigid(func(gtx C) D { return a.cover(gtx, albumCoverPath(tracks), 104) }),
+			layout.Rigid(func(gtx C) D { return a.cover(gtx, a.albumHeaderCoverKey(tracks), 104) }),
 			layout.Rigid(layout.Spacer{Width: 16}.Layout),
 			layout.Flexed(1, func(gtx C) D {
 				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,

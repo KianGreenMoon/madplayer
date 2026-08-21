@@ -114,6 +114,10 @@ type App struct {
 	// rebuilt with the album list rather than kept: the keys are the rows
 	// themselves, so a stale entry would pin an album nothing is showing.
 	albumArt map[*library.Album]string
+	// netCovers maps a netCoverPrefix key back to the CoverRef that fetches it
+	// — the other half of albumArt for albums no local file backs. See
+	// App.netCoverKey for why it is never rebuilt.
+	netCovers map[string]library.CoverRef
 
 	// probs is the libraries that did not answer the last fetch. It is shown
 	// beside the rows, never instead of them: a server being down must not blank
@@ -297,6 +301,7 @@ func newApp(win *app.Window, pl *player.Player, be *backend.Backend, store *pref
 	a := &App{win: win, th: newTheme(), store: store, pl: pl, be: be, lib: library.New(be.Library())}
 	a.build = about.Current()
 	a.art = newCovers(win.Invalidate)
+	a.art.fetchNet = a.fetchNetCover
 	// Embedded covers are written out here when the media bus asks for one: it
 	// wants a URL, and art that lives inside an audio file has no path of its own.
 	a.art.cache.SpillDir(filepath.Join(be.DataDir(), "covers"))
@@ -760,13 +765,21 @@ func (a *App) loadAlbumArt(albums []*library.Album) {
 		ctx := context.Background()
 		found := 0
 		for _, al := range albums {
-			tracks, err := a.lib.DeviceAlbumTracks(ctx, al)
-			if err != nil || len(tracks) == 0 {
-				continue
+			var path string
+			if tracks, err := a.lib.DeviceAlbumTracks(ctx, al); err == nil && len(tracks) > 0 {
+				path = albumCoverPath(tracks)
 			}
-			path := albumCoverPath(tracks)
+			// No file on this device backs the album; art can still come from
+			// the library it lives in (covers-federation P1/P2). Only the KEY
+			// is stored — the fetch happens lazily when the row's cover is
+			// actually painted, so a long list costs nothing here. A local file
+			// always wins over the network ref: disk is the truth about what
+			// this machine holds.
 			if path == "" {
-				continue
+				if al.Cover.Zero() {
+					continue
+				}
+				path = a.netCoverKey(al.Cover)
 			}
 			a.mu.Lock()
 			// The album list can have been replaced while this ran; writing into

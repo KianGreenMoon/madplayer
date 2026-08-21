@@ -138,12 +138,16 @@ func (m madnetworkSource) Albums(ctx context.Context, artist Origin) ([]*Album, 
 // own browse anyway. Fetching it from holders directly would need the cover's
 // size (the swarm API wants one) — which the catalog does not carry — so the
 // relay is the honest v0, not a shortcut.
+//
+// medium (300 px), like the remote-library source: artwork keeps nothing
+// larger than 320 anyway, so the original's megabytes would be decoded once
+// and thrown away.
 func (m madnetworkSource) FetchCover(ctx context.Context, ref CoverRef) ([]byte, error) {
 	cl, err := m.client()
 	if err != nil {
 		return nil, err
 	}
-	return cl.MadnetworkCover(ctx, ref.Hash)
+	return cl.MadnetworkCover(ctx, ref.Hash, "medium")
 }
 
 func (m madnetworkSource) album(artist string, a madshare.MadnetworkAlbum) *Album {

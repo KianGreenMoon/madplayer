@@ -243,9 +243,15 @@ func (c *Client) AlbumImage(ctx context.Context, albumID int64, size string) ([]
 // (GET /api/madnetwork/cover/{hash}) — the cover twin of the audio relay. The
 // hash addresses the cover's source original on whichever node holds it; the
 // server fetches cache-through and the answer is immutable, so the HTTP layer
-// may cache it as hard as it likes.
-func (c *Client) MadnetworkCover(ctx context.Context, hash string) ([]byte, error) {
-	return c.getBytes(ctx, "/api/madnetwork/cover/"+url.PathEscape(hash))
+// may cache it as hard as it likes. size picks a derived crop ("thumb",
+// "small", "medium", "large" — as on the album image endpoint); empty asks for
+// the original, which only replication-grade callers should want.
+func (c *Client) MadnetworkCover(ctx context.Context, hash, size string) ([]byte, error) {
+	path := "/api/madnetwork/cover/" + url.PathEscape(hash)
+	if size != "" {
+		path += "?size=" + url.QueryEscape(size)
+	}
+	return c.getBytes(ctx, path)
 }
 
 // do runs one request. A nil body sends none; anything else is marshalled as

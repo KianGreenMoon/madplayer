@@ -39,6 +39,10 @@ func coverServer(t *testing.T) (*httptest.Server, *[]string) {
 				{"title": "Far Album", "tracks": 3, "cover_hash": testCoverHash, "cover_ext": ".jpg"},
 			}})
 		case r.URL.Path == "/api/madnetwork/cover/"+testCoverHash:
+			if r.URL.Query().Get("size") != "medium" {
+				http.Error(w, "want the medium crop, not the original", http.StatusBadRequest)
+				return
+			}
 			_, _ = w.Write([]byte("network-cover-bytes"))
 		default:
 			http.NotFound(w, r)

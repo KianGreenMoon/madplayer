@@ -73,6 +73,22 @@ func Tech(path string) (*probe.Info, error) {
 // the track's full duration — which is what fpcalc reports beside a fingerprint
 // of the first two minutes, so it is what the column means.
 func Fingerprint(ctx context.Context, path string) (raw []uint32, seconds float64, err error) {
+	// A damaged file is a fact about the file, not a reason to end the program.
+	//
+	// The decoders trust their own headers: beep's WAV decoder computes a frame
+	// size from the format chunk and indexes its read buffer by it, so a header
+	// claiming a frame of zero bytes panics on the first sample rather than
+	// reporting anything. This runs on a worker pool that has no recover of its
+	// own, so that panic takes the whole process with it — a truncated download
+	// or one damaged file in a scanned folder is enough. Caught here, at the
+	// boundary where a bad file is already an ordinary outcome.
+	defer func() {
+		if r := recover(); r != nil {
+			raw, seconds = nil, 0
+			err = fmt.Errorf("analyze: %s could not be decoded (%v)", filepath.Base(path), r)
+		}
+	}()
+
 	ext := strings.ToLower(filepath.Ext(path))
 	decode, ok := decoders[ext]
 	if !ok {

@@ -50,6 +50,7 @@ package player
 
 import (
 	"errors"
+	"fmt"
 	"log"
 	"math"
 	"sync"
@@ -255,6 +256,23 @@ func (b *buffered) fill() {
 		// own reader closes underneath it, as it did before this type existed.
 		_ = b.inner.Close()
 		close(b.exited)
+	}()
+	// The last line of defence, one per goroutine rather than one per call.
+	//
+	// Decoder panics are caught where they happen (the guarded wrapper in
+	// decode.go) so the track can end with a reason. This is for whatever is
+	// left: an unowned panic on a goroutine this package started ends the
+	// PROGRAM, silently as far as the person listening is concerned, and one
+	// bad file is not worth that. The track ends instead, and the log says
+	// which one it was.
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("player: decoding stopped on an unexpected failure: %v", r)
+			b.mu.Lock()
+			b.done, b.err = true, fmt.Errorf("this track could not be decoded (%v)", r)
+			b.cond.Broadcast()
+			b.mu.Unlock()
+		}
 	}()
 
 	buf := make([][2]float64, fillChunk)

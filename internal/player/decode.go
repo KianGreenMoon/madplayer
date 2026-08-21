@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/gopxl/beep/v2"
 	"github.com/gopxl/beep/v2/flac"
@@ -134,12 +135,132 @@ func openReader(rc io.ReadCloser, ext string) (*source, error) {
 	if !ok {
 		return nil, &ErrUnsupported{Ext: ext}
 	}
-	streamer, format, err := dec(rc)
+	streamer, format, err := decodeGuarded(dec, rc, ext)
 	if err != nil {
 		return nil, err
 	}
+	if format.SampleRate <= 0 {
+		// Nothing downstream can work with this and several things divide by
+		// it — the resampler builds its phase table from the ratio of the two
+		// rates. Refused here, where it is still one clean error, rather than
+		// discovered in the audio path.
+		streamer.Close()
+		return nil, fmt.Errorf("the %s decoder reported no sample rate for this file", strings.TrimPrefix(ext, "."))
+	}
 	_, seekable := rc.(io.Seeker)
-	return &source{streamer: streamer, format: format, closer: rc, seekable: seekable}, nil
+	return &source{streamer: guard(streamer, ext), format: format, closer: rc, seekable: seekable}, nil
+}
+
+// A decoder that panics must not end the program.
+//
+// The decoders trust their own headers. beep's WAV decoder derives a frame size
+// from the format chunk and then indexes its read buffer by it, so a header
+// claiming a zero-byte frame panics on the first sample — and divides by zero in
+// Len(). That is one damaged file, or one download cut short, and this runs on
+// the decode-ahead goroutine and inside the audio device's own pull, where a
+// panic is the whole process.
+//
+// The same guard is on the fingerprinter (internal/analyze), and here it means
+// the same thing it means there: a bad file is an ordinary outcome, so it
+// becomes an error. Every decoder call goes through this wrapper — Stream and
+// Seek and Len alike, because guarding some of them would only move the crash —
+// and a failed Stream reports the end of the stream, which is a path the player
+// already has: the track ends, Err() says why, the queue carries on.
+//
+// It does NOT replace source.seekable, which stops beep's mp3 decoder being
+// asked to seek a stream that cannot (it panics by documented design). Refusing
+// to make the call is better than surviving it.
+type guarded struct {
+	inner beep.StreamSeekCloser
+	what  string
+
+	mu  sync.Mutex
+	err error
+}
+
+func guard(s beep.StreamSeekCloser, what string) beep.StreamSeekCloser {
+	return &guarded{inner: s, what: strings.TrimPrefix(what, ".")}
+}
+
+// failed records why the decoder died. The first reason is kept: what follows a
+// panic is a decoder in an unknown state, and its later complaints explain less.
+func (g *guarded) failed(op string, r any) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.err == nil {
+		g.err = fmt.Errorf("the %s decoder failed on this file (%s: %v)", g.what, op, r)
+	}
+}
+
+func (g *guarded) Stream(samples [][2]float64) (n int, ok bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			g.failed("decoding", r)
+			n, ok = 0, false
+		}
+	}()
+	return g.inner.Stream(samples)
+}
+
+func (g *guarded) Err() error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.err != nil {
+		return g.err
+	}
+	return g.inner.Err()
+}
+
+func (g *guarded) Len() (n int) {
+	defer func() {
+		if r := recover(); r != nil {
+			g.failed("measuring", r)
+			n = 0
+		}
+	}()
+	return g.inner.Len()
+}
+
+func (g *guarded) Position() (n int) {
+	defer func() {
+		if r := recover(); r != nil {
+			g.failed("reading its position", r)
+			n = 0
+		}
+	}()
+	return g.inner.Position()
+}
+
+func (g *guarded) Seek(p int) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			g.failed("seeking", r)
+			err = g.Err()
+		}
+	}()
+	return g.inner.Seek(p)
+}
+
+func (g *guarded) Close() (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			g.failed("closing", r)
+			err = g.Err()
+		}
+	}()
+	return g.inner.Close()
+}
+
+// decodeGuarded is the same protection around the decoder's construction, where
+// a parser meets a header it did not expect.
+func decodeGuarded(dec func(io.ReadCloser) (beep.StreamSeekCloser, beep.Format, error), rc io.ReadCloser, ext string) (s beep.StreamSeekCloser, f beep.Format, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			s, f = nil, beep.Format{}
+			err = fmt.Errorf("the %s decoder failed on this file (opening: %v)", strings.TrimPrefix(ext, "."), r)
+		}
+	}()
+	return dec(rc)
 }
 
 // Probe returns a file's duration in seconds by decoding just its header.

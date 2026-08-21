@@ -174,9 +174,36 @@ func (c Copy) Ext() string {
 		return e
 	}
 	if c.Codec != "" {
-		return "." + strings.TrimPrefix(strings.ToLower(c.Codec), ".")
+		return extForCodec(c.Codec)
 	}
 	return ""
+}
+
+// extForCodec turns a codec name into a file extension.
+//
+// A catalogue row's codec is what ffprobe called the STREAM, and several of
+// those names are not extensions anybody uses: a 24-bit WAV reports
+// `pcm_s24le`, and a file written as `.pcm_s24le` is one no decoder here opens
+// and no scanner indexes — it would land in the managed folder as something
+// between a stray and a mystery. The names that already are extensions (mp3,
+// flac, opus) fall through unchanged, which is most of them.
+func extForCodec(codec string) string {
+	c := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(codec)), ".")
+	if c == "" {
+		return ""
+	}
+	if strings.HasPrefix(c, "pcm_") || c == "adpcm" {
+		return ".wav"
+	}
+	switch c {
+	case "vorbis":
+		return ".ogg"
+	case "aac", "alac", "mp4a":
+		return ".m4a"
+	case "mp2":
+		return ".mp3"
+	}
+	return "." + c
 }
 
 // Track is one logical track: the same recording may be held by several

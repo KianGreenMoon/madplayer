@@ -113,3 +113,34 @@ func TestATrackWithNoArtistTagIsCreditedToTheAlbumArtist(t *testing.T) {
 		t.Errorf("album = %q, want the album's own title", tracks[0].Album)
 	}
 }
+
+// A catalogue row names a CODEC, and a file needs an extension. The two are the
+// same word often enough to be tempting and not often enough to be right: a
+// 24-bit WAV reports `pcm_s24le`, and a kept file called `.pcm_s24le` is one
+// nothing here plays and nothing indexes.
+func TestACodecNameBecomesAFileExtension(t *testing.T) {
+	for _, tc := range []struct{ codec, want string }{
+		{"pcm_s24le", ".wav"},
+		{"pcm_s16le", ".wav"},
+		{"PCM_F32LE", ".wav"},
+		{"vorbis", ".ogg"},
+		{"aac", ".m4a"},
+		{"alac", ".m4a"},
+		{"flac", ".flac"},
+		{"mp3", ".mp3"},
+		{"opus", ".opus"},
+		{"", ""},
+	} {
+		if got := (Copy{Codec: tc.codec, Network: true, Hash: "h"}).Ext(); got != tc.want {
+			t.Errorf("Ext() for codec %q = %q, want %q", tc.codec, got, tc.want)
+		}
+	}
+	// A named file still wins: the codec is only consulted when nothing else
+	// names the bytes.
+	if got := (Copy{Path: "/music/x.flac", Codec: "pcm_s24le"}).Ext(); got != ".flac" {
+		t.Errorf("Ext() = %q for a local path, want .flac", got)
+	}
+	if got := (Copy{URL: "https://host/files/abc/01 - Song.wav", Codec: "mp3"}).Ext(); got != ".wav" {
+		t.Errorf("Ext() = %q for a play URL, want .wav", got)
+	}
+}

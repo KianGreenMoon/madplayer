@@ -155,7 +155,9 @@ func (m madnetworkSource) AlbumTracks(ctx context.Context, album Origin, albumTi
 	}
 	out := make([]*Track, 0, len(rows))
 	for _, t := range rows {
-		if tr := m.track(t, albumTitle); tr != nil {
+		// album.Ref is the ALBUM ARTIST — it is what addressed these tracks —
+		// and it is the credit a row with no artist tag of its own falls back to.
+		if tr := m.track(t, album.Ref, albumTitle); tr != nil {
 			out = append(out, tr)
 		}
 	}
@@ -169,14 +171,24 @@ func (m madnetworkSource) AlbumTracks(ctx context.Context, album Origin, albumTi
 // missing file is an unplugged drive worth saying out loud — here it means the
 // catalogue names audio nobody offered a hash for, which is not a track anybody
 // can do anything about.
-func (m madnetworkSource) track(t madshare.MadnetworkTrack, albumTitle string) *Track {
+//
+// albumArtist is who the album is filed under, and it is the credit a row falls
+// back to. A file tagged with an album artist and no artist tag reaches here
+// with an empty one; the server fills that in now, but a client must not draw a
+// blank credit against an older node — and the blank does not only look wrong,
+// it is what a kept track would be FILED under on disk.
+func (m madnetworkSource) track(t madshare.MadnetworkTrack, albumArtist, albumTitle string) *Track {
 	version, rendition, ok := t.Best()
 	if !ok {
 		return nil
 	}
+	credit := t.Artist
+	if strings.TrimSpace(credit) == "" {
+		credit = albumArtist
+	}
 	tr := &Track{
 		Title:    t.Title,
-		Artist:   t.Artist,
+		Artist:   credit,
 		Album:    albumTitle,
 		Duration: t.Duration,
 	}
@@ -192,7 +204,7 @@ func (m madnetworkSource) track(t madshare.MadnetworkTrack, albumTitle string) *
 	}
 
 	c := Copy{
-		Origin:  m.origin(t.Artist),
+		Origin:  m.origin(albumArtist),
 		Hash:    rendition.Hash,
 		Size:    rendition.Size,
 		Codec:   strings.ToLower(rendition.Codec),

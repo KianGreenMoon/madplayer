@@ -3,6 +3,8 @@ package ui
 import (
 	"strings"
 	"testing"
+
+	"daemonlord.ygg/madplayer/internal/library"
 )
 
 // The three outcomes are three different sentences on purpose. "Already there"
@@ -91,5 +93,74 @@ func TestOnlyRemoteTracksAreKeepable(t *testing.T) {
 	a.mu.Unlock()
 	if got := a.keepable(remoteOnlyTrack("far")); got != (keeper != nil) {
 		t.Errorf("keepable = %v with keeper != nil = %v", got, keeper != nil)
+	}
+}
+
+// Where a kept track lands on disk is a question about the ALBUM, not about the
+// track: a compilation belongs in one folder, so the album artist names it and
+// the per-track performer never does. What a search hit has instead is the
+// track's own credit, and that is the whole of the fallback.
+func TestAKeptTrackIsFiledUnderItsAlbumArtist(t *testing.T) {
+	a := testApp(t)
+
+	track := &library.Track{
+		Title: "Halo", Artist: "Beyonce", Album: "Greatest Comp", TrackNumber: 3,
+		Copies: []library.Copy{{URL: "https://elsewhere/halo.flac", Hash: "h1"}},
+	}
+
+	// Browsing the album: the album artist wins, so every track on the comp
+	// lands in one folder instead of twelve.
+	tr, _, err := a.keepTrack(track, "Various Artists")
+	if err != nil {
+		t.Fatalf("keepTrack: %v", err)
+	}
+	if tr.Artist != "Various Artists" {
+		t.Errorf("artist = %q, want the album artist", tr.Artist)
+	}
+	if tr.Album != "Greatest Comp" || tr.Number != 3 {
+		t.Errorf("track = %+v, want the album and number the row carries", tr)
+	}
+
+	// A search hit has no album open, so the row's own credit is all there is.
+	tr, _, err = a.keepTrack(track, "")
+	if err != nil {
+		t.Fatalf("keepTrack (no album): %v", err)
+	}
+	if tr.Artist != "Beyonce" {
+		t.Errorf("artist = %q, want the track's own credit when no album is open", tr.Artist)
+	}
+
+	// Whitespace is not an album artist. It used to reach the folder namer as a
+	// component made of nothing, which is how music ends up in a directory
+	// called " ".
+	tr, _, err = a.keepTrack(track, "   ")
+	if err != nil {
+		t.Fatalf("keepTrack (blank album artist): %v", err)
+	}
+	if tr.Artist != "Beyonce" {
+		t.Errorf("artist = %q for a blank album artist, want the track's credit", tr.Artist)
+	}
+}
+
+// A track the network offers with an album artist and no artist tag must still
+// be filed under a name. The row is credited to its album artist by the browse
+// (internal/library), so what reaches here is never empty — and if it somehow
+// is, the buckets are the server's own, not an invented placeholder.
+func TestAKeptTrackWithNoCreditAtAllUsesTheServersBuckets(t *testing.T) {
+	a := testApp(t)
+
+	tr, _, err := a.keepTrack(&library.Track{
+		Title:  "Sweet Unrest",
+		Copies: []library.Copy{{URL: "https://elsewhere/x.flac", Hash: "h2", Codec: "flac"}},
+	}, "")
+	if err != nil {
+		t.Fatalf("keepTrack: %v", err)
+	}
+	name, err := tr.Name(false)
+	if err != nil {
+		t.Fatalf("Name: %v", err)
+	}
+	if !strings.HasPrefix(name, "Unknown artist/Other/") {
+		t.Errorf("path = %q, want the server's Unknown artist / Other buckets", name)
 	}
 }

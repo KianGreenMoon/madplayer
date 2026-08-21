@@ -181,6 +181,15 @@ func (k *Keeper) Keep(ctx context.Context, tr Track, item *queue.Item) (Result, 
 	if rel, ok := k.rec.Holds(tr.Hash); ok {
 		abs := filepath.Join(k.root, filepath.FromSlash(rel))
 		if _, err := os.Stat(abs); err == nil {
+			// Nothing to copy, but say again what it is. Describing fills gaps
+			// only, so repeating it changes nothing — except for a track kept
+			// before this program told the library anything, where pressing Keep
+			// again is the repair. Reported, not returned as a failure: the
+			// audio is there either way, which is what Already means.
+			if err := k.reg.Describe(ctx, tr); err != nil {
+				return Result{Path: abs, Already: true},
+					fmt.Errorf("%s is already here, but your library could not be told what it is: %w", rel, err)
+			}
 			return Result{Path: abs, Already: true}, nil
 		}
 		// Recorded but gone: somebody deleted it, which is their right. Forget

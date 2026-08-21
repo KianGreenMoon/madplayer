@@ -130,6 +130,31 @@ func TestALibraryThatCannotBeToldIsReported(t *testing.T) {
 	}
 }
 
+// Pressing Keep on something already kept is how a row that was filed wrong gets
+// repaired — the tracks kept before this program told the library anything are
+// exactly the ones somebody would try that on.
+func TestKeepingSomethingAlreadyHereSaysAgainWhatItIs(t *testing.T) {
+	k, fetch, reg, _ := keeper(t, false)
+	ctx := context.Background()
+
+	if _, err := k.Keep(ctx, track("ccc333"), remote("ccc333")); err != nil {
+		t.Fatal(err)
+	}
+	second, err := k.Keep(ctx, track("ccc333"), remote("ccc333"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !second.Already {
+		t.Error("the second keep did not report the audio as already there")
+	}
+	if fetch.calls != 1 {
+		t.Errorf("downloaded %d times, want 1 — nothing is re-fetched", fetch.calls)
+	}
+	if len(reg.described) != 2 {
+		t.Errorf("described %d times, want 2 — the second keep re-asserts the row", len(reg.described))
+	}
+}
+
 // Materialize all exists, and it gets pressed twice.
 func TestKeepingTheSameAudioTwiceIsANoOp(t *testing.T) {
 	k, fetch, _, _ := keeper(t, false)

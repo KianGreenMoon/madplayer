@@ -187,6 +187,12 @@ which throws away everything the source library knew beyond the file's own tags.
 | **High** | **A damaged audio file panics the process.** Found by accident while building a WAV fixture by hand: beep's WAV decoder derives a frame size from the format chunk and indexes its read buffer by it, so a header claiming a zero-byte frame panics on the first sample. Fingerprinting runs on madshare's `mediaproc` pool, which has **no recover anywhere in it** — so one truncated download or one damaged file in a scanned folder ends the program. | **fixed at the boundary** — `analyze.Fingerprint` recovers and returns an error naming the file (`TestADamagedFileIsAnErrorAndNotAPanic`). **Not fixed: the same decoders are used for PLAYBACK**, where a panic is equally fatal and there is no such guard. Worth its own pass. |
 | Low | **The Registrar comment claimed the scanner skips unchanged files by size and mtime.** It does not: `sources.ingestOne` hashes every file on every scan and skips on the links storage already holding the hash. Keeping an album therefore re-hashes the whole managed folder once per track. | comment corrected; the per-track rescan is untouched (it predates this pass) and is the obvious next thing if keeping a big album feels slow. |
 
+**Repairing what is already on a device:** the fix describes new keeps, and rows
+kept before it stay as they are — so **pressing Keep again on such a track is the
+repair**, which is why the already-here path describes too instead of returning
+early. Nothing is re-downloaded and nothing is overwritten; only the empty
+fields fill in.
+
 **What was NOT the cause, so it is not re-investigated:** the scan reads TPE2 and
 files a track with an album-artist tag and no artist tag under that artist —
 pinned by `internal/backend/tags_test.go`, which passed the day it was written.

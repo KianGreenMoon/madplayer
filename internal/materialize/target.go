@@ -119,12 +119,22 @@ func Resolve(setting, dataDir string) (root string, explicit bool) {
 	return filepath.Join(dataDir, DirName), false
 }
 
-// Track is the little a name needs to know. It is a plain struct rather than a
-// library row so this package can be tested with no library.
+// Track is the little a name needs to know — and, since the library that
+// receives the file can only read its bytes, the little the library needs to be
+// told. It is a plain struct rather than a library row so this package can be
+// tested with no library.
 type Track struct {
+	// Artist is the ALBUM artist: what the album is filed under, and what names
+	// its folder. A compilation belongs in one folder, not scattered across
+	// twelve.
 	Artist string
-	Album  string
-	Title  string
+	// Performer is the track's own credit, which differs from the album artist
+	// on a compilation and on a soundtrack. It never appears in a path — a
+	// folder is per album — and exists so the row this file becomes in the
+	// receiving library says who plays it.
+	Performer string
+	Album     string
+	Title     string
 	// Number is the track's tag, or 0 when it has none. A missing number drops
 	// the "NN - " prefix rather than inventing a position: the row's position in
 	// a list is a fact about the list, not about the file.
@@ -135,6 +145,12 @@ type Track struct {
 	// Ext is the container's extension, WITH the dot. The decoders pick by it,
 	// so a file without one is unplayable and Name refuses rather than writing it.
 	Ext string
+
+	// Disc and Year are 0 when the source library does not know them. They are
+	// carried for the same reason Performer is: they are part of what a row
+	// says, and no tag in the file need mention either.
+	Disc int
+	Year int
 }
 
 // Name is the path of this track relative to the managed folder.

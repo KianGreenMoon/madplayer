@@ -30,6 +30,10 @@ type fakeReg struct {
 	ensured, registered int
 	added               bool
 	err                 error
+	describeErr         error
+	// described records what the library was told each kept file is — the half
+	// of a keep that no filename can carry.
+	described []Track
 }
 
 func (r *fakeReg) EnsureFolder(context.Context, string) (bool, error) {
@@ -40,6 +44,11 @@ func (r *fakeReg) EnsureFolder(context.Context, string) (bool, error) {
 func (r *fakeReg) Register(context.Context, string) error {
 	r.registered++
 	return r.err
+}
+
+func (r *fakeReg) Describe(_ context.Context, tr Track) error {
+	r.described = append(r.described, tr)
+	return r.describeErr
 }
 
 func keeper(t *testing.T, technical bool) (*Keeper, *fakeFetch, *fakeReg, string) {
@@ -86,6 +95,38 @@ func TestKeepWritesTheFileAndHandsItToTheLibrary(t *testing.T) {
 	}
 	if fetch.calls != 1 || reg.ensured != 1 || reg.registered != 1 {
 		t.Errorf("fetch=%d ensure=%d register=%d, want 1 each", fetch.calls, reg.ensured, reg.registered)
+	}
+	// Indexing is only half of handing a track over. The scan reads the FILE,
+	// and what the track came with — the album artist it is filed under, its
+	// performer, its numbers — is in the catalogue rather than in the bytes for
+	// a great deal of music. A keep that skips this leaves the row under
+	// "Unknown artist" with a title taken from the filename we just invented.
+	if len(reg.described) != 1 || reg.described[0].Hash != "aaa111" {
+		t.Fatalf("described = %+v, want the kept track", reg.described)
+	}
+	if reg.described[0].Artist != "Dakh Daughters" || reg.described[0].Title != "Inshe Misto" {
+		t.Errorf("described = %+v, want what the catalogue said", reg.described[0])
+	}
+}
+
+// Describing runs after the indexing, and a failure there is reported without
+// pretending the file is not on disk — it is, and it plays.
+func TestALibraryThatCannotBeToldIsReported(t *testing.T) {
+	k, _, reg, root := keeper(t, false)
+	reg.describeErr = errors.New("the scan has not got there yet")
+
+	got, err := k.Keep(context.Background(), track("bbb222"), remote("bbb222"))
+	if err == nil {
+		t.Fatal("a library that could not be told reported success")
+	}
+	if !strings.Contains(err.Error(), "what it is") {
+		t.Errorf("error = %v, want it to say the library was not told", err)
+	}
+	if got.Path == "" {
+		t.Error("the error hid the file that was written")
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "Dakh Daughters", "Air", "03 - Inshe Misto.flac")); statErr != nil {
+		t.Errorf("the file is not on disk: %v", statErr)
 	}
 }
 

@@ -22,9 +22,12 @@ type Fetcher interface {
 // Registrar is the library, as this package needs it.
 //
 // Register is a RESCAN, not a per-file call, and that is the point: the scanner
-// already adds what is new and skips what is unchanged by size and mtime, so
-// "index only the files the library is missing" is a property that falls out of
-// the existing machinery rather than a rule reimplemented here.
+// already adds what is new and skips content it has already linked, so "index
+// only the files the library is missing" is a property that falls out of the
+// existing machinery rather than a rule reimplemented here. (It decides that by
+// hashing, not by size and mtime — a rescan of a big managed folder is not free,
+// which is an argument for keeping a whole album in one pass rather than a
+// reason to reimplement the skip here.)
 type Registrar interface {
 	// EnsureFolder makes the managed folder a data source, adding it when the
 	// library does not have it — which is also how a thrown-away database
@@ -32,6 +35,13 @@ type Registrar interface {
 	EnsureFolder(ctx context.Context, root string) (added bool, err error)
 	// Register indexes what is new in it.
 	Register(ctx context.Context, root string) error
+	// Describe tells the library what a track IS, for everything its bytes do
+	// not say. It runs after the indexing above, and it is not an optional
+	// nicety: the scanner can only read the file, while the library this track
+	// came FROM knew more than the file does — an album artist somebody set in a
+	// web UI is in no blob anywhere, and a WAV carries no tags at all. Without
+	// this, keeping such an album files it under "Unknown artist".
+	Describe(ctx context.Context, tr Track) error
 }
 
 // Keeper copies network music into the managed folder.
@@ -209,14 +219,20 @@ func (k *Keeper) Keep(ctx context.Context, tr Track, item *queue.Item) (Result, 
 	if err != nil {
 		return Result{Path: abs}, fmt.Errorf("saved %s, but the folder could not be added to your library: %w", rel, err)
 	}
-	if added {
-		// Adding a folder scans it. Asking for a second scan on top would be
-		// asking the scanner to run twice at once, which it answers with an
-		// error rather than a queue.
-		return Result{Path: abs}, nil
+	if !added {
+		// Adding a folder already scans it. Asking for a second scan on top
+		// would be asking the scanner to run twice at once, which it answers
+		// with an error rather than a queue.
+		if err := k.reg.Register(ctx, k.root); err != nil {
+			return Result{Path: abs}, fmt.Errorf("saved %s, but it could not be indexed: %w", rel, err)
+		}
 	}
-	if err := k.reg.Register(ctx, k.root); err != nil {
-		return Result{Path: abs}, fmt.Errorf("saved %s, but it could not be indexed: %w", rel, err)
+	if err := k.reg.Describe(ctx, tr); err != nil {
+		// The track is in the library, playable, under whatever its own tags
+		// say — which for an untagged file is the Unknown-artist bucket. Worth
+		// saying out loud rather than swallowing: the file is fine and the row
+		// is wrong, and those look nothing alike to somebody browsing.
+		return Result{Path: abs}, fmt.Errorf("saved %s, but your library could not be told what it is: %w", rel, err)
 	}
 	return Result{Path: abs}, nil
 }

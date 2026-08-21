@@ -89,6 +89,11 @@ func (a *App) keepable(t *library.Track) bool {
 // compilation belongs in one folder, not scattered across twelve — falling back
 // to the track's own credit when the album artist is not known, which is what a
 // search hit looks like.
+//
+// Both names travel, and so do the numbers, because the file itself may say
+// none of it: the library that showed this row knew more than the bytes do (its
+// metadata is an overlay that is never written back into a file), and a WAV
+// carries no tags at all. What is not carried here is lost in the copy.
 func (a *App) keepTrack(t *library.Track, albumArtist string) (materialize.Track, *queue.Item, error) {
 	best, ok := t.Best()
 	if !ok {
@@ -101,11 +106,18 @@ func (a *App) keepTrack(t *library.Track, albumArtist string) (materialize.Track
 
 	tr := materialize.Track{
 		Artist: artist,
-		Album:  t.Album,
-		Title:  t.Title,
-		Number: t.TrackNumber,
-		Hash:   best.Hash,
-		Ext:    best.Ext(),
+		// The performer is carried beside it, unused by the folder layout and
+		// needed by the library: the row this file becomes must say who plays
+		// the track, and on a soundtrack that is not the album artist.
+		Performer: t.Artist,
+		Album:     t.Album,
+		Title:     t.Title,
+		Number:    t.TrackNumber,
+		Hash:      best.Hash,
+		Ext:       best.Ext(),
+	}
+	if t.DiscNumber != nil {
+		tr.Disc = *t.DiscNumber
 	}
 	items := a.itemsFromTracks([]*library.Track{t})
 	return tr, items[0], nil

@@ -19,13 +19,17 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"daemonlord.ygg/madshare/app"
 	"daemonlord.ygg/madshare/auth"
 	"daemonlord.ygg/madshare/config"
+	"daemonlord.ygg/madshare/database"
 	"daemonlord.ygg/madshare/sources"
+
+	"daemonlord.ygg/madplayer/internal/materialize"
 )
 
 // ownerName is the single identity a madplayer install has. It exists because
@@ -479,10 +483,12 @@ func isDir(path string) bool {
 // --- the managed folder -----------------------------------------------------
 //
 // Network music kept on this device lands in a folder madplayer manages
-// (docs/design.md §"Where the bytes live"). These two calls are all
-// internal/materialize needs from the library, and they are deliberately the
-// ORDINARY folder calls: a materialized file is an ordinary links-backed row in
-// an ordinary data source, so there is exactly one kind of library entry.
+// (docs/design.md §"Where the bytes live"). These three calls are all
+// internal/materialize needs from the library, and the first two are
+// deliberately the ORDINARY folder calls: a materialized file is an ordinary
+// links-backed row in an ordinary data source, so there is exactly one kind of
+// library entry. The third exists because that ordinary path reads the FILE, and
+// a track pulled off the network is known by more than its bytes say.
 
 // EnsureFolder makes a folder a data source, adding it when the library does not
 // have it. The bool reports that it was added — and adding scans, so a caller
@@ -523,6 +529,59 @@ func (b *Backend) Register(ctx context.Context, root string) error {
 	}
 	b.WaitScan()
 	return b.RescanFolder(ctx, id)
+}
+
+// Describe tells the library what a kept track is, for the fields its own tags
+// leave empty.
+//
+// The scan that just indexed the file could only read the file. What the track
+// came WITH — the artist, album, album artist and numbers the catalogue showed
+// when somebody pressed Keep — is not in the bytes for a great deal of music:
+// metadata on a madshare is an overlay that is never written back into the file,
+// so an album artist set in a web UI exists in no blob anywhere, and a WAV
+// carries no tags this reader understands at all. Without this the Pathologic 2
+// OST arrives as 47 tracks of "Unknown artist / Other" with titles taken from
+// the filenames madplayer itself had just invented.
+//
+// It FILLS GAPS: madshare's FillMissingTags never overwrites a tag the file
+// carries, so a well-tagged album keeps its own text and only the album-artist
+// grouping (the field most often absent) is supplied.
+//
+// The wait is load-bearing. EnsureFolder and Register both start a scan and
+// return; the row this patches does not exist until that scan reaches the file.
+func (b *Backend) Describe(ctx context.Context, tr materialize.Track) error {
+	if tr.Hash == "" {
+		return nil // nothing to address the row by
+	}
+	b.WaitScan()
+
+	patch := database.MetadataPatch{}
+	set := func(field **string, value string) {
+		if strings.TrimSpace(value) != "" {
+			v := value
+			*field = &v
+		}
+	}
+	num := func(field **string, value int) {
+		if value > 0 {
+			v := strconv.Itoa(value)
+			*field = &v
+		}
+	}
+	set(&patch.Title, tr.Title)
+	// The performer is the track's own credit; the album artist is what the
+	// album is filed under. A soundtrack has both and they differ, which is the
+	// whole reason the row needs telling.
+	set(&patch.Artist, tr.Performer)
+	set(&patch.AlbumArtist, tr.Artist)
+	set(&patch.Album, tr.Album)
+	num(&patch.TrackNumber, tr.Number)
+	num(&patch.DiscNumber, tr.Disc)
+	num(&patch.Year, tr.Year)
+	if patch.IsEmpty() {
+		return nil
+	}
+	return b.inst.FillMissingTags(ctx, tr.Hash, patch)
 }
 
 // folderAt finds the data source rooted at a path.

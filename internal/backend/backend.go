@@ -67,6 +67,13 @@ type Options struct {
 	// the local network. This is the fallback for somebody who has a peer and
 	// neither of the other two.
 	Peers []string
+	// NoMulticast switches LAN peer discovery off. The player never sets it —
+	// multicast is how a phone finds its home server with no configuration —
+	// but a hermetic test building a throwaway madnetwork on loopback must not
+	// announce itself and peer with whatever real yggdrasil node happens to run
+	// on the developer's machine, which would quietly join the lab to the
+	// public mesh.
+	NoMulticast bool
 }
 
 // Open starts madshare against dataDir, provisioning the owner on first run.
@@ -261,7 +268,7 @@ func playerConfig(dataDir string, opts Options) config.Config {
 	// Local peer discovery, the opposite of a server's default. A phone finding
 	// its home server over the wifi with no configuration at all is the case this
 	// client exists in (docs/architecture/federation.md §"The household").
-	cfg.Yggdrasil.Multicast = true
+	cfg.Yggdrasil.Multicast = !opts.NoMulticast
 	// And nothing is shared back out: share_peers serves an HTTP endpoint, and
 	// this program has no listener for one. Said explicitly rather than left to
 	// the default, because the default is true and the reason it is harmless here

@@ -133,6 +133,13 @@ type fakeSwarm struct {
 	stream io.Reader // overrides body, for a fetch that dies part-way
 	err    error
 
+	// script, when non-nil, gives each successive call its own outcome — the
+	// mid-stream-resume tests speak in terms of "the first fetch died, the
+	// second delivered the rest". Each entry is a factory because a reader is
+	// drained by the call that gets it; calls past the end replay the last
+	// entry, which is how "it keeps dying" is spelled with one line.
+	script []func() (io.Reader, error)
+
 	mu      sync.Mutex
 	calls   int
 	hash    string
@@ -178,8 +185,18 @@ func (s *fakeSwarm) fetchBlob(ctx context.Context, hash string, size int64, hold
 
 	s.mu.Lock()
 	s.calls++
+	call := s.calls
 	s.hash, s.size, s.holders = hash, size, holders
 	s.mu.Unlock()
+
+	if len(s.script) > 0 {
+		step := s.script[min(call-1, len(s.script)-1)]
+		r, err := step()
+		if err != nil {
+			return nil, err
+		}
+		return io.NopCloser(r), nil
+	}
 
 	if s.gate != nil {
 		select {

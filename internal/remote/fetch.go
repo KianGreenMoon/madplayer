@@ -92,6 +92,12 @@ type Fetcher struct {
 	// the same track costs no HEAD request.
 	szmu  sync.Mutex
 	sizes map[string]int64
+
+	// resumeWaits paces the mid-stream resumes of a madnetwork track — one
+	// entry per retry, each the pause before that attempt. See fill for why a
+	// network row gets resumed at all; the field exists so tests need not sit
+	// out real seconds.
+	resumeWaits []time.Duration
 }
 
 // New returns a fetcher over a cache. It fetches over the relay until SetSwarm
@@ -100,7 +106,25 @@ func New(cache *blobcache.Cache, lg *log.Logger) *Fetcher {
 	if lg == nil {
 		lg = log.Default()
 	}
-	return &Fetcher{cache: cache, log: lg, slot: make(chan struct{}, 1), sizes: map[string]int64{}}
+	return &Fetcher{
+		cache:       cache,
+		log:         lg,
+		slot:        make(chan struct{}, 1),
+		sizes:       map[string]int64{},
+		resumeWaits: defaultResumeWaits(),
+	}
+}
+
+// defaultResumeWaits is how a madnetwork track rides out a mid-stream death:
+// two resumes, five seconds and then fifteen. The numbers come from what
+// actually kills a stream — the swarm's own per-holder failover already spans
+// roughly four to eight seconds of backoff before it gives up, so anything it
+// could not ride out is an outage longer than that: a wifi handover, a router
+// reconnect, a holder restarting. Five seconds catches the short end of those,
+// fifteen the long end, and past ~35 seconds of silence the person has given
+// up on the track anyway — more patience here is not kindness.
+func defaultResumeWaits() []time.Duration {
+	return []time.Duration{5 * time.Second, 15 * time.Second}
 }
 
 // SetSwarm installs the mesh path, or clears it with two nils. Until it is
@@ -216,7 +240,7 @@ func (f *Fetcher) fill(srv library.Server, item *queue.Item) blobcache.Fetch {
 		// a playback fetch for the very track being prefetched joins that fetch
 		// in the cache and never gets here.
 		f.preemptPrefetch(key)
-		wrote, declined, err := f.fromSwarm(ctx, srv, item, w)
+		wrote, declined, err := f.fromSwarm(ctx, srv, item, w, 0)
 
 		// A madnetwork track has no relay behind it, on purpose.
 		//
@@ -233,18 +257,53 @@ func (f *Fetcher) fill(srv library.Server, item *queue.Item) blobcache.Fetch {
 		// failure is the track's failure — said out loud rather than papered
 		// over with a download the person did not ask anybody to make.
 		if item.Network {
+			// A death MID-STREAM is resumed, not surrendered to (owner's call,
+			// 2026-08-23 — option C of the skip diagnosis; the lab that
+			// reproduced the skips is internal/backend/labnet_test.go). The
+			// swarm's own failover rides out roughly four to eight seconds of a
+			// holder's silence; what reaches here is the longer outage — a wifi
+			// handover, a router reconnect, a holder restarting — and skipping
+			// a track that was audibly playing because one link blinked is the
+			// single worst thing this player did on the madnetwork. Each resume
+			// asks for a FRESH holder plan and presents the vouch anew (which
+			// also survives a token renewed mid-track), and splices at the byte
+			// count already written — sound for the same two reasons the relay
+			// resume cites: chunks are verified before they are readable, and a
+			// blob is addressed by its content, so every copy is the same bytes.
+			//
+			// Only a death with bytes on disk is resumed. A swarm that never
+			// started already spent its own attempts and its budget; retrying
+			// the click is the person's call, not this loop's.
+			total := wrote
+			for attempt := 0; err != nil && total > 0 && ctx.Err() == nil && attempt < len(f.resumeWaits); attempt++ {
+				f.log.Printf("madplayer: madnetwork stream of %s died after %d byte(s), resuming in %s: %v",
+					item.Hash, total, f.resumeWaits[attempt], err)
+				if !sleepFor(ctx, f.resumeWaits[attempt]) {
+					break
+				}
+				var n int64
+				n, declined, err = f.fromSwarm(ctx, srv, item, w, total)
+				total += n
+			}
 			switch {
 			case err != nil:
 				// Logged as well as reported: with no fallback underneath, this
 				// line is the only account of why a track did not play.
 				f.log.Printf("madplayer: madnetwork fetch of %s failed: %v", item.Hash, err)
 				return fmt.Errorf("the madnetwork could not send this track: %w", err)
-			case wrote == 0:
+			case total == 0:
 				f.log.Printf("madplayer: madnetwork fetch of %s declined: %s", item.Hash, declined)
 				if declined == "" {
 					declined = "nobody on the madnetwork sent anything"
 				}
 				return errors.New(declined)
+			case declined != "":
+				// A resume that was DECLINED — no vouch any more, nobody
+				// holding it now — left the file short, and a short file must
+				// never be reported as a finished one: the cache would replay
+				// truncated audio forever.
+				f.log.Printf("madplayer: madnetwork stream of %s could not resume: %s", item.Hash, declined)
+				return errors.New("the madnetwork stopped sending this track: " + declined)
 			}
 			return nil
 		}
@@ -299,7 +358,14 @@ func (f *Fetcher) fill(srv library.Server, item *queue.Item) blobcache.Fetch {
 // middle return: a sentence naming which decline this was, empty whenever bytes
 // moved or a real error is being reported. The relay path ignores it, which is
 // the point: the reason exists for the path that cannot fall back.
-func (f *Fetcher) fromSwarm(ctx context.Context, srv library.Server, item *queue.Item, w io.Writer) (int64, string, error) {
+//
+// resumeAt picks the fetch up where an earlier one died: that many bytes of
+// the fresh stream are read and thrown away before anything reaches w, so the
+// caller's file continues instead of growing a second copy of its own prefix.
+// The discarded bytes do cross the mesh again — the transfer refetches the
+// whole blob into the node's cache regardless, so the resume adds no wire cost
+// the retry was not already paying. The count returned is what reached w.
+func (f *Fetcher) fromSwarm(ctx context.Context, srv library.Server, item *queue.Item, w io.Writer, resumeAt int64) (int64, string, error) {
 	f.mu.RLock()
 	swarm, vouch := f.swarm, f.vouch
 	f.mu.RUnlock()
@@ -397,6 +463,15 @@ func (f *Fetcher) fromSwarm(ctx context.Context, srv library.Server, item *queue
 		return 0, "", fmt.Errorf("fetching from %d holder(s) of %s: %w", len(keys), item.Hash, err)
 	}
 	defer body.Close()
+
+	// A resume re-reads the prefix the caller already has and drops it. Short
+	// means the stream died again before catching up — no NEW byte reached w,
+	// which is exactly what the zero count says.
+	if resumeAt > 0 {
+		if _, err := io.CopyN(io.Discard, body, resumeAt); err != nil {
+			return 0, "", fmt.Errorf("re-reaching byte %d of %s: %w", resumeAt, item.Hash, err)
+		}
+	}
 
 	// The count is what makes a mid-track failure recoverable: the caller resumes
 	// the relay from exactly here (see fill). madshare verifies each chunk before
@@ -574,6 +649,19 @@ func (f *Fetcher) StopPrefetch() {
 	}
 	f.prefetchKey = ""
 	f.pmu.Unlock()
+}
+
+// sleepFor waits d out, unless the fetch is abandoned first — a resume must
+// never outlive the person's interest in the track.
+func sleepFor(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
 }
 
 // serverFor finds the server a URL belongs to.

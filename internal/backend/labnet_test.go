@@ -560,20 +560,23 @@ func TestLabAHolderThatCannotPlaceTheVouchingServerServesNothing(t *testing.T) {
 	fetchUntil(t, f, item, 3*time.Minute)
 }
 
-// TestLabATruncatedSeederCopyStartsPlayingThenDies reproduces "it plays the
-// first seconds, then skips".
+// TestLabATruncatedSeederCopyIsRefusedBeforeItPlays pins the fix for what
+// used to be "it plays the first seconds, then skips" (option A of the skip
+// diagnosis, owner's call 2026-08-23; madshare federation-swarm.md §"Two
+// manifest hardenings", the size cross-check).
 //
 // The seeder's cached copy is a correct PREFIX of the blob under its full
-// hash. A sole holder's manifest is believed (madshare federation/swarm.go:
-// agreement needs a second holder), so the player's swarm verifies chunks
-// against a manifest that describes the truncated file, streams them into
-// playback — genuine audio, the track audibly starts — and only the
-// whole-file hash at the end says the blob is wrong. For a madnetwork row
-// there is no relay to resume from, so the failure surfaces mid-listen and
-// the queue moves on. Any mid-stream death of a sole holder — a crash, a
-// dropped link, a vouch expiring mid-transfer — lands on this same edge; the
-// truncated copy is simply the deterministic way to build one.
-func TestLabATruncatedSeederCopyStartsPlayingThenDies(t *testing.T) {
+// hash. A sole holder's manifest used to be believed outright, so its
+// self-consistent description of the truncated file let every chunk verify
+// and stream into playback — the track audibly started — until the
+// whole-file hash ended it mid-listen. A blob's size is pinned by its
+// content hash, and the player advertises the catalog's size with the fetch,
+// so a sole manifest that contradicts it is now refused BEFORE a byte moves:
+// the track fails immediately, with a sentence naming the contradiction,
+// instead of starting something that cannot finish. (A mid-stream death of a
+// HEALTHY holder is the other road to the old symptom, and that one is
+// answered by the resumes — internal/remote/resume_test.go.)
+func TestLabATruncatedSeederCopyIsRefusedBeforeItPlays(t *testing.T) {
 	labSkip(t)
 	hub := startLabHub(t)
 	home := newLabHome(t, hub)
@@ -596,31 +599,30 @@ func TestLabATruncatedSeederCopyStartsPlayingThenDies(t *testing.T) {
 	home.offer(hash2, seeder.node.Key(), int64(len(blob2)))
 	item := networkItem(home, hash2, int64(len(blob2)))
 
-	// Generous: since the mid-stream resumes (option C) the player retries a
-	// dying stream twice, with real waits, before giving up — the truncated
-	// copy fails identically on every attempt, it just takes ~25s longer to be
-	// sure.
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	// Generous only for the swarm's own budget arithmetic — the refusal itself
+	// is immediate, and the resumes never fire (nothing was written).
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
+	var n int64
 	rc, _, err := f.Stream(ctx, item)
-	if err != nil {
-		// Failing before the first byte is the milder cousin of the symptom —
-		// say so, because it means the swarm refused the copy up front and the
-		// "plays then dies" edge has moved.
-		t.Fatalf("the stream did not even open: %v — the swarm now refuses a truncated sole holder up front; "+
-			"rewrite this reproduction to pin that behaviour", err)
+	if err == nil {
+		// The cache layer may hand the reader over before the fill has failed;
+		// the refusal then arrives on the first read. Either way, no byte.
+		n, err = io.Copy(io.Discard, rc)
+		rc.Close()
 	}
-	n, rerr := io.Copy(io.Discard, rc)
-	rc.Close()
-	if rerr == nil {
-		t.Fatalf("the truncated copy streamed to completion (%d bytes) — the whole-file verify no longer fails it?", n)
+	if err == nil {
+		t.Fatalf("the truncated copy streamed to completion (%d bytes) — nothing refused it and nothing verified it", n)
 	}
-	if n == 0 {
-		t.Fatalf("no bytes played before the failure (%v) — the symptom under test is a track that STARTS", rerr)
+	if n != 0 {
+		t.Fatalf("%d byte(s) played before the failure (%v) — the refusal is supposed to land BEFORE the first byte", n, err)
 	}
-	t.Logf("the track played %d byte(s) and then died with: %v", n, rerr)
+	if !strings.Contains(err.Error(), "advertised") {
+		t.Fatalf("the failure should name the size contradiction, got: %v", err)
+	}
+	t.Logf("the truncated copy was refused up front with: %v", err)
 
-	// And the poisoned copy must not be kept: a replay tomorrow must not skip.
+	// And no poisoned copy is kept: a replay tomorrow must not skip.
 	if f.Cached(item) {
 		t.Fatalf("the failed fetch left a cached copy behind — every replay would fail from disk")
 	}

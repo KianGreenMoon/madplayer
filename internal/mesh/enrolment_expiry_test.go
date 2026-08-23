@@ -2,16 +2,15 @@ package mesh
 
 // What enrolment does about a vouch whose life is over.
 //
-// These pin the defect behind "the madnetwork stopped playing after the laptop
-// woke up" (found 2026-08-23, reproduced end to end in
-// internal/backend/labnet_test.go): the enrolment records a grant's token and
-// forgets its ExpiresAt. Present answers "is there a vouch" from the token's
-// mere existence, so a token that died hours ago is still installed on the
-// wire, every holder refuses it — deliberately without saying why — and a
-// madnetwork track fails looking like nobody holds it. The honest decline the
-// fetcher already carries ("this device has no vouch from X yet",
-// remote/fetch.go) is unreachable, because Present never says no once it has
-// ever said yes.
+// These pin the fix for the defect behind "the madnetwork stopped playing
+// after the laptop woke up" (found 2026-08-23, reproduced end to end in
+// internal/backend/labnet_test.go): the enrolment used to record a grant's
+// token and forget its ExpiresAt. Present answered "is there a vouch" from the
+// token's mere existence, so a token that died hours ago was still installed
+// on the wire, every holder refused it — deliberately without saying why — and
+// a madnetwork track failed looking like nobody holds it. The honest decline
+// the fetcher carries ("this device has no vouch from X yet", remote/fetch.go)
+// was unreachable, because Present never said no once it had ever said yes.
 //
 // Two ways a device gets there, both ordinary:
 //
@@ -21,13 +20,16 @@ package mesh
 //     asleep the loop still believes renewal is half an hour away, while the
 //     wall clock every verifier reads moved eight hours.
 //   - the home server is unreachable past the token's life. fail() keeps the
-//     old token on purpose ("valid until it expires" — true, and unchecked),
-//     so once the hour passes the kept token is a corpse that Present still
-//     presents.
+//     old token on purpose ("valid until it expires" — true, and now checked),
+//     so once the hour passes the kept token is a corpse.
 //
-// When the fix lands — Present (or the round) checking the grant's wall-clock
-// expiry, refusing, and nudging a renewal — these tests are the ones to flip:
-// each names the assertion that must then invert.
+// The fix keeps the grant's ExpiresAt (JSON-decoded, so it carries no
+// monotonic reading — comparing time.Now() against it reads the wall clock,
+// suspend-proof), makes Present refuse a dead token and mark its server due,
+// and makes the round treat a wall-clock-dead token as due whatever the
+// monotonic due time says. These tests began life asserting the broken
+// behaviour and were inverted when the fix landed; each now names the
+// assertion that holds.
 
 import (
 	"context"
@@ -87,17 +89,14 @@ func (h *expiryHome) setDown(v bool) {
 	h.mu.Unlock()
 }
 
-// TestPresentStillOffersAVouchThatHasExpired: the post-sleep state. The grant
+// TestPresentRefusesAVouchThatHasExpired: the post-sleep state. The grant
 // enrolment holds is wall-clock dead while its RenewAfter — the only date the
-// loop paces itself by — says "not due yet". Present answers yes and installs
-// the corpse; nothing anywhere reports a problem. Every mesh fetch then runs
-// with a vouch no verifier will honour.
-//
-// FLIP THIS when the expiry check lands: Present must answer false (the
-// fetcher then declines with its honest "no vouch from X yet" instead of
-// burning the swarm budget on refusals), and the round should be re-run
-// rather than waited out.
-func TestPresentStillOffersAVouchThatHasExpired(t *testing.T) {
+// loop used to pace itself by — says "not due yet". Present must answer no and
+// keep the corpse off the wire (the fetcher then declines with its honest "no
+// vouch from X yet" instead of burning the swarm budget on refusals), and the
+// refusal must mark the server due — so the next round, not RenewAfter's
+// half-hour, brings the fresh token.
+func TestPresentRefusesAVouchThatHasExpired(t *testing.T) {
 	home := newExpiryHome(t)
 	// Dead for half an hour, renewal supposedly half an hour away — exactly
 	// what the monotonic clocks leave behind after a long suspend.
@@ -114,30 +113,95 @@ func TestPresentStillOffersAVouchThatHasExpired(t *testing.T) {
 	e.SetServers(ctx, []Server{{Base: home.URL, Label: "home", Client: madshare.New(home.URL, "t")}})
 	e.round(ctx)
 
+	// The round itself is clean — the server answered everything it was asked.
+	// The dates on the answer are the problem, and Present is the gate.
 	for _, st := range e.Status() {
 		if st.Problem != "" {
-			t.Fatalf("the round reported %q — this reproduction expects a clean round around a dead grant", st.Problem)
+			t.Fatalf("the round reported %q — a dead grant is refused at Present, not reported as a round failure", st.Problem)
 		}
 	}
-	if !e.Present(home.URL) {
-		t.Fatal("Present refused the expired vouch — the expiry check exists now; " +
-			"invert this test to pin it (and give the fetcher its honest decline)")
+	if e.Present(home.URL) {
+		t.Fatal("Present offered a vouch that expired half an hour ago — every holder would refuse it without saying why")
 	}
-	if got := node.snapshot().token; got != "expired-vouch" {
-		t.Fatalf("installed token = %q, want the expired one on the wire (the defect this test pins)", got)
+	if got := node.snapshot().token; got == "expired-vouch" {
+		t.Fatal("the expired token reached the wire anyway")
+	}
+
+	// The refusal marks the server due, so the server being healthy is enough:
+	// the very next round — the one the nudge wakes — gets a fresh vouch, and
+	// a fetch a few seconds after the refusal succeeds.
+	home.issue(madshare.Grant{
+		Token:      "fresh-vouch",
+		Issuer:     "issuer-key",
+		ExpiresAt:  time.Now().Add(time.Hour),
+		RenewAfter: time.Now().Add(30 * time.Minute),
+	})
+	e.round(ctx)
+	if !e.Present(home.URL) {
+		t.Fatal("Present still refuses after a healthy renewal round")
+	}
+	if got := node.snapshot().token; got != "fresh-vouch" {
+		t.Fatalf("installed token = %q, want the renewed one", got)
 	}
 }
 
-// TestAFailedRenewalKeepsPresentingTheCorpse: the unreachable-server state.
+// TestTheRoundRenewsAWallClockDeadTokenBeforeItsDueTime: the suspend shape at
+// round level, with no Present in between to do the nudging. The kept grant's
+// due time (RenewAfter) is far in the future — the monotonic clock slept
+// through the token's life — so the old dueness check would wait half an hour.
+// The round must notice the wall-clock death itself and re-enrol now.
+func TestTheRoundRenewsAWallClockDeadTokenBeforeItsDueTime(t *testing.T) {
+	home := newExpiryHome(t)
+	home.issue(madshare.Grant{
+		Token:      "slept-through",
+		Issuer:     "issuer-key",
+		ExpiresAt:  time.Now().Add(-8 * time.Hour),
+		RenewAfter: time.Now().Add(30 * time.Minute),
+	})
+
+	node := newFakeNode()
+	e := New(node, quiet())
+	ctx := context.Background()
+	e.SetServers(ctx, []Server{{Base: home.URL, Label: "home", Client: madshare.New(home.URL, "t")}})
+	e.round(ctx)
+
+	// Force the exact post-suspend shape. The round above already tripped
+	// Present's own refusal (enrol keeps the wire current), which marks the
+	// server due — but the state a real suspend leaves behind is one where
+	// NOTHING has run since: a dead token under a due time half an hour out.
+	// Build that state directly, so what this test exercises is the round's
+	// own wall-clock check and not Present's nudge.
+	e.mu.Lock()
+	for _, cur := range e.servers {
+		cur.due = time.Now().Add(30 * time.Minute)
+	}
+	e.mu.Unlock()
+
+	// The machine "wakes": the server is fine and issues living grants again.
+	home.issue(madshare.Grant{
+		Token:      "morning-vouch",
+		Issuer:     "issuer-key",
+		ExpiresAt:  time.Now().Add(time.Hour),
+		RenewAfter: time.Now().Add(30 * time.Minute),
+	})
+	e.round(ctx)
+
+	if !e.Present(home.URL) {
+		t.Fatal("Present has no living vouch — the round waited out a due time whose clock stood still")
+	}
+	if got := node.snapshot().token; got != "morning-vouch" {
+		t.Fatalf("installed token = %q, want the post-wake renewal", got)
+	}
+}
+
+// TestAFailedRenewalStopsPresentingTheCorpse: the unreachable-server state.
 // The server issues a short-lived grant, then goes away. Once the grant's life
-// is over, the retrying round FAILS — the status says so, honestly — and yet
-// Present keeps saying yes with the dead token, so fetches keep running with a
-// vouch every holder refuses instead of declining with a reason a person could
-// act on.
-//
-// FLIP the tail of this when the expiry check lands: after the expiry,
-// Present must answer false however long the server stays gone.
-func TestAFailedRenewalKeepsPresentingTheCorpse(t *testing.T) {
+// is over, the retrying round FAILS — the status says so, honestly, and that
+// half must keep working — and Present must answer no however long the server
+// stays gone, taking the dead token off the wire it put it on. fail() keeping
+// the token itself is deliberate and stays: a token still ALIVE survives a
+// failed round; only one past expiry stops being presented.
+func TestAFailedRenewalStopsPresentingTheCorpse(t *testing.T) {
 	home := newExpiryHome(t)
 	home.issue(madshare.Grant{
 		Token:      "short-vouch",
@@ -167,11 +231,10 @@ func TestAFailedRenewalKeepsPresentingTheCorpse(t *testing.T) {
 	if problem == "" {
 		t.Fatal("the failed round should be reported — that half works and must keep working")
 	}
-	if !e.Present(home.URL) {
-		t.Fatal("Present refused the dead vouch — the expiry check exists now; " +
-			"invert this test to pin it")
+	if e.Present(home.URL) {
+		t.Fatal("Present offered the dead vouch a failed renewal left behind")
 	}
-	if got := node.snapshot().token; got != "short-vouch" {
-		t.Fatalf("installed token = %q, want the dead one on the wire (the defect this test pins)", got)
+	if got := node.snapshot().token; got == "short-vouch" {
+		t.Fatal("the dead token is still on the wire — refusing it must also take it down")
 	}
 }

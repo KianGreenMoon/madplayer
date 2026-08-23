@@ -461,25 +461,24 @@ func TestLabFreshMadnetworkServesANetworkTrack(t *testing.T) {
 	}
 }
 
-// TestLabAnExpiredVouchTheClientStillTrustsFailsEveryNetworkTrack reproduces
-// the reported failure and pins its cause.
+// TestLabAnExpiredVouchDeclinesHonestlyAndRenewsItselfBack pins the fix for
+// the reported failure this scenario used to reproduce.
 //
 // The state under test is the one a device wakes into after a suspend, a
 // frozen app, or an hour with the home server unreachable: the token it holds
-// has expired on the wall clock, while the client believes everything is fine
-// — enrolment reports no problem (its renewal clocks are monotonic and stood
-// still with the machine), Present hands the dead token out, and the fetch
-// path proceeds. Every holder then refuses it — deliberately without saying
-// why (federation/token.go: refusals are indistinguishable on the wire) — so
-// from the player it looks like nobody on the madnetwork has the track, or
-// like the server "didn't verify" it. A madnetwork row has no relay behind it,
-// so the track simply fails: the skip the owner sees.
+// has expired on the wall clock while the enrolment's own monotonic clocks
+// say renewal is not due. Before the fix, Present handed the corpse out,
+// every holder 404ed it — deliberately without saying why — and a madnetwork
+// track failed looking like nobody held it (the skip the owner reported; the
+// original reproduction is in this file's history, and the component half in
+// internal/mesh/enrolment_expiry_test.go).
 //
-// The same fetch with a fresh vouch succeeds, which is what pins the token as
-// the only variable. The defect is client-side: enrolment KNOWS the grant's
-// ExpiresAt and neither checks it in Present nor lets the fetcher decline with
-// the honest "no vouch from X yet".
-func TestLabAnExpiredVouchTheClientStillTrustsFailsEveryNetworkTrack(t *testing.T) {
+// Since the fix, enrolment refuses a wall-clock-dead vouch: the fetch
+// declines with the honest "no vouch from X yet" instead of burning the
+// budget on refusals, and the refusal marks the server due and wakes the
+// loop — so the moment the home server issues living grants again, playback
+// heals ITSELF, with nobody re-signing-in.
+func TestLabAnExpiredVouchDeclinesHonestlyAndRenewsItselfBack(t *testing.T) {
 	labSkip(t)
 	hub := startLabHub(t)
 	home := newLabHome(t, hub)
@@ -496,32 +495,30 @@ func TestLabAnExpiredVouchTheClientStillTrustsFailsEveryNetworkTrack(t *testing.
 	seeder.enrolAt(home)
 	player.enrolAt(home)
 
-	// Prove the pipe first, so the failure below cannot be convergence.
+	// Prove the pipe first, so nothing below can be blamed on convergence.
 	f := player.fetcher(home)
 	fetchUntil(t, f, networkItem(home, hash1, int64(len(blob1))), 3*time.Minute)
 
-	// Now the player's vouch goes stale — and the client has no idea.
+	// Now the player's vouch goes wall-clock dead.
 	home.setStale(true)
 	e := player.enrolAt(home)
-	for _, st := range e.Status() {
-		if st.Problem != "" {
-			t.Fatalf("enrolment reported a problem (%q) — the defect under test is that it reports NONE", st.Problem)
-		}
-	}
-	if !e.Present(home.URL()) {
-		t.Fatalf("Present refused the expired vouch — the client-side check exists now; " +
-			"this reproduction has done its job, rewrite it to pin the fix")
+	if e.Present(home.URL()) {
+		t.Fatal("Present offered a wall-clock-dead vouch — the expiry check regressed")
 	}
 
+	// Fetches fail — but honestly, and without touching the swarm.
 	f2 := player.fetcher(home)
-	err := fetchNever(t, f2, networkItem(home, hash2, int64(len(blob2))), 25*time.Second)
+	err := fetchNever(t, f2, networkItem(home, hash2, int64(len(blob2))), 20*time.Second)
 	t.Logf("with a dead vouch the player is told: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "no vouch from") {
+		t.Fatalf("the decline should say the vouch is missing, got: %v", err)
+	}
 
-	// Same track, same holder, same route — only the vouch renewed.
+	// The server heals. NOTHING on the player is restarted or re-enrolled by
+	// hand: the next fetch's refusal nudges the loop, the loop renews, and the
+	// fetch after that succeeds — the recovery the fix was built to provide.
 	home.setStale(false)
-	player.enrolAt(home)
-	f3 := player.fetcher(home)
-	fetchUntil(t, f3, networkItem(home, hash2, int64(len(blob2))), 2*time.Minute)
+	fetchUntil(t, f2, networkItem(home, hash2, int64(len(blob2))), 2*time.Minute)
 }
 
 // TestLabAHolderThatCannotPlaceTheVouchingServerServesNothing is the
@@ -599,7 +596,11 @@ func TestLabATruncatedSeederCopyStartsPlayingThenDies(t *testing.T) {
 	home.offer(hash2, seeder.node.Key(), int64(len(blob2)))
 	item := networkItem(home, hash2, int64(len(blob2)))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	// Generous: since the mid-stream resumes (option C) the player retries a
+	// dying stream twice, with real waits, before giving up — the truncated
+	// copy fails identically on every attempt, it just takes ~25s longer to be
+	// sure.
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	rc, _, err := f.Stream(ctx, item)
 	if err != nil {

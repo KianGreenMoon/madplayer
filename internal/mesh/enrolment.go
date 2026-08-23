@@ -84,6 +84,16 @@ const tick = time.Minute
 // token costs the mesh, and a phone's network comes and goes.
 const retry = 2 * time.Minute
 
+// expiryMargin is how far ahead of a token's wall-clock expiry the round starts
+// treating its server as due, whatever the due time says. It exists for the
+// recovery paths only: renewal normally happens at the half-life, half an hour
+// before this matters, and Present itself refuses exactly at expiry — no
+// earlier, because verifiers allow TokenClockSkew (5 min, madshare
+// federation/token.go) of slack PAST the expiry, so a token presented a moment
+// before it dies is still honoured. Renewing one retry-width early just means a
+// failed attempt gets its retry in while the old token still works.
+const expiryMargin = retry
+
 // Enrolment maintains that standing for every server.
 type Enrolment struct {
 	node Node
@@ -107,6 +117,21 @@ type enrolled struct {
 	// renewal and the advertisement's refresh, because one round does both.
 	due   time.Time
 	token string
+	// expires is the token's own wall-clock death, from the grant. It is kept
+	// separately from due because the two ride different clocks: due carries
+	// Go's monotonic reading, which stands still through a suspend on Linux and
+	// an app freeze on Android, while expires was decoded from JSON and so
+	// carries none — comparing time.Now() against it reads the wall clock, the
+	// same clock every verifier reads. Zero when the server named no expiry, in
+	// which case the token is trusted the way it always was.
+	expires time.Time
+}
+
+// tokenDead reports whether this server's token is past its wall-clock life at
+// now. A zero expiry means the server said nothing, and a token nobody dated is
+// not one we can declare dead.
+func (cur *enrolled) tokenDead(now time.Time) bool {
+	return !cur.expires.IsZero() && !now.Before(cur.expires)
 }
 
 // New returns an enrolment for this device. name is what home servers will call
@@ -185,17 +210,47 @@ func (e *Enrolment) SetServers(ctx context.Context, servers []Server) {
 // it against an issuer IT can place. So the right token is the one from the
 // server that named the holders being fetched from, and the caller installs it
 // immediately before the fetch. That is why mesh fetches are run one at a time.
+//
+// A token past its wall-clock expiry is refused, not installed: every holder
+// would refuse it anyway — deliberately without saying why — and the fetcher's
+// honest "no vouch from X yet" is a better answer than a track that fails
+// looking like nobody holds it. Refusing also marks the server due and wakes
+// the loop, so a fetch a few seconds later can find a fresh token waiting.
 func (e *Enrolment) Present(base string) bool {
+	now := time.Now()
 	e.mu.Lock()
 	cur, ok := e.servers[base]
 	token := ""
+	clearWire, renew := false, false
 	if ok {
 		token = cur.token
+	}
+	if token != "" && cur.tokenDead(now) {
+		token = ""
+		// A dead credential has no business staying the standing default on
+		// the wire either — same hygiene as signing out.
+		if e.presented == base {
+			e.presented = ""
+			clearWire = true
+		}
+		// Make the server due now, unless it already is — a round that keeps
+		// receiving an already-expired grant would otherwise chase its own
+		// nudge in a hot loop, and an already-due server needs no reminder.
+		if cur.due.After(now) {
+			cur.due = now
+			renew = true
+		}
 	}
 	if token != "" {
 		e.presented = base
 	}
 	e.mu.Unlock()
+	if clearWire {
+		e.node.SetToken("")
+	}
+	if renew {
+		e.nudge()
+	}
 	if token == "" {
 		return false
 	}
@@ -236,13 +291,18 @@ func (e *Enrolment) nudge() {
 	}
 }
 
-// round enrols every server that is due.
+// round enrols every server that is due — by its due time, or because its token
+// is about to be wall-clock dead. The second check is what survives a suspend:
+// due carries the monotonic clock, which slept through the machine's sleep, so
+// after eight hours it can still say "half an hour away" while the wall clock
+// every verifier reads moved eight hours. The token's expiry carries no
+// monotonic reading, so tokenDead against time.Now() compares wall clocks.
 func (e *Enrolment) round(ctx context.Context) {
 	now := time.Now()
 	e.mu.Lock()
 	due := make([]*enrolled, 0, len(e.servers))
 	for _, cur := range e.servers {
-		if !cur.due.After(now) {
+		if !cur.due.After(now) || cur.tokenDead(now.Add(expiryMargin)) {
 			due = append(due, cur)
 		}
 	}
@@ -314,14 +374,20 @@ func (e *Enrolment) enrol(ctx context.Context, cur *enrolled) {
 	e.mu.Lock()
 	cur.status = status
 	cur.token = grant.Token
+	cur.expires = grant.ExpiresAt
 	cur.due = next
 	presented := e.presented
+	dead := cur.tokenDead(time.Now())
 	e.mu.Unlock()
 
 	// Keep the installed vouch current: if this is the server whose token is on
 	// the wire, the renewal has to reach the wire too, or the transfers running
-	// right now start failing at the hour.
-	if presented == base || presented == "" {
+	// right now start failing at the hour. Unless the grant arrived already
+	// dead — a server whose clock is badly wrong — in which case there is
+	// nothing to put on the wire, and Present's refusal would nudge another
+	// round into another dead grant, a hot loop. The round's own wall-clock
+	// check retries that server at the ticker's pace instead.
+	if (presented == base || presented == "") && !dead {
 		e.Present(base)
 	}
 }
@@ -329,7 +395,9 @@ func (e *Enrolment) enrol(ctx context.Context, cur *enrolled) {
 // fail records why a server's round did not work and schedules a retry. The
 // token, if there is one, is left installed: it is valid until it expires, and a
 // server being unreachable for a moment is not a reason to stop being able to
-// fetch from anybody.
+// fetch from anybody. "Until it expires" is Present's job — once the kept
+// token's wall-clock life is over, Present stops offering it however long the
+// server stays gone.
 func (e *Enrolment) fail(cur *enrolled, why string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()

@@ -1,18 +1,18 @@
 package backend
 
-// The pairing test surface: this device's node befriending a server by
-// exchanged public keys, the way two madshare servers do — madshare's
-// EXPERIMENTAL app.Pairing (v0.8.11), translated into rows the UI may hold.
+// The pairing surface: this device's node befriending a server by exchanged
+// public keys, the way two madshare servers do — madshare's app.Pairing
+// (stable since 2026-08-26; it began as the 2026-08-17 befriending
+// experiment), translated into rows the UI may hold. Node mode's first
+// administration surface (docs/design.md §"Node mode").
 //
 // A device paired this way is a full member of the community: a gossiped
 // edge, a place on the network map, holders of its own — everything a server
 // gets, nothing withheld. The quiet listener path (federation-access.md
 // §"The household") remains what a device that does NOT pair gets; pairing is
-// how this one opts into membership instead. Experimental while the owner
-// tries it (2026-08-17): switched by ui.pairingEnabled, and removing it
-// entirely is deleting this file and internal/ui/pairing.go. Sharing is a
-// separate axis and unchanged — the library stays pinned closed, only the
-// seeded cache is served.
+// how this one opts into membership instead. Sharing is a separate axis:
+// the library stays pinned closed, only the seeded cache is served — until
+// something is pinned open per item (community.go).
 
 import (
 	"context"

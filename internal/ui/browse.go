@@ -155,9 +155,12 @@ func (a *App) artistList(gtx C) D {
 			// A server answering with nothing is not the same as having nothing:
 			// an account without content.access gets the guest listing, same
 			// shape, no error (docs/design.md §"The browse endpoints
-			// narrow, they do not refuse").
-			return a.emptyState(gtx, "Nothing to show. Your folders are empty, and the servers you are "+
-				"signed in to returned nothing your account may see.")
+			// narrow, they do not refuse"). Worded to cover the paired view too
+			// — a node-mode player with no sign-in reaches here through its own
+			// node, and a message blaming servers it never had would mislead.
+			return a.emptyState(gtx, "Nothing to show. Your folders are empty, and the libraries this "+
+				"device can reach — signed-in servers, or the madnetwork through your node — "+
+				"offered nothing you may see.")
 		default:
 			return a.emptyState(gtx, "No music found in your folders.")
 		}

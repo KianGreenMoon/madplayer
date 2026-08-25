@@ -255,10 +255,18 @@ only what the *client's controls* look like, which is the half this repo owns.
 - **Phones do not offer the mode** (owner, full-node-mode.md): a compile-time
   const (`ui.nodeModeOffered`, build-tagged) removes the section, its page and
   everything it gates from Android builds — not merely hides it.
-- madshare's `app.Pairing` underneath is still marked EXPERIMENTAL; settling
-  its method set — block, rename — is that repo's W1 and stays a madshare
-  question. The phone-side transfer policy is separate and later:
+- madshare's `app.Pairing` underneath is **stable since 2026-08-26** (W1,
+  owner's call — the marker came off with node mode's graduation); block and
+  rename parity remain that plan's open question 1 and would arrive
+  additively. The phone-side transfer policy is separate and later:
   `docs/plans/mobile-seeding-controls.md`.
+- **"Only local" is the `/library` analog and node mode counts for it**
+  (2026-08-26, owner's call). The scope button and the per-row origin badges
+  hang off `library.Remote()`, which now means "anything beyond this device
+  is merged in" — signed-in servers *or* the paired view. Without that, a
+  node-mode player with no sign-in browsed the community's rows with no way
+  to see only its own files. The Sharing page is the other direction's list:
+  what of those files the network sees.
 
 **Node mode browses through the own node (built 2026-08-26).** The first live
 pairing showed that membership bought standing without a view: the paired

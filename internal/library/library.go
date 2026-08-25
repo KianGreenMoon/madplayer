@@ -511,12 +511,17 @@ func (l *Library) sources() []Source {
 	return out
 }
 
-// Remote reports whether any server is configured — the switch between "a music
-// player" and "a music player plus somebody else's library".
+// Remote reports whether anything beyond this device is merged in — the switch
+// between "a music player" and "a music player plus somebody else's library".
+// It counts the paired view as well as signed-in servers, because everything
+// that hangs off it (the "Only local" scope button, the per-row origin badges)
+// exists to tell mine from not-mine, and a node-mode player with no sign-in has
+// exactly that distinction to make: without this, its merged list carried the
+// community's rows with no way to see only its own files.
 func (l *Library) Remote() bool {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
-	return len(l.remotes) > 0
+	return len(l.remotes) > 0 || l.paired != nil
 }
 
 // Artists is the browse list: album artists only, merged, already ordered, with

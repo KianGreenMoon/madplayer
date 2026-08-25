@@ -10,10 +10,10 @@ package ui
 // the switch says so when that state exists rather than letting the menus
 // vanish over a membership that is still standing.
 //
-// This graduates the 2026-08-17 pairing experiment (full-node-mode.md P1):
+// This graduated the 2026-08-17 pairing experiment (full-node-mode.md P1):
 // the const that switched it is gone and prefs.NodeMode is the switch now.
-// madshare's app.Pairing underneath is still marked EXPERIMENTAL — settling
-// its method set (block? rename?) is that repo's W1, a madshare question.
+// madshare's app.Pairing underneath is stable since 2026-08-26 (W1, owner's
+// call); block/rename parity remains that plan's open question 1.
 
 import (
 	"gioui.org/layout"

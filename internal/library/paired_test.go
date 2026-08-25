@@ -117,6 +117,13 @@ func TestPairedSourceBrowsesTheOwnNode(t *testing.T) {
 		t.Errorf("a blank credit did not fall back to the album artist: %q", tracks[0].Artist)
 	}
 
+	// The paired view counts as "beyond this device": the Only-local button
+	// and the origin badges hang off Remote(), and a node-mode player with no
+	// sign-in needs them exactly as much as a signed-in one.
+	if !lib.Remote() {
+		t.Error("Remote() is false with the paired view merged in — no way to see only this device's files")
+	}
+
 	// The paired view is part of the network, so Only-local excludes it.
 	lib.SetScope(ScopeDevice)
 	if artists, _, _ := lib.Artists(ctx); len(artists) != 0 {
@@ -124,10 +131,14 @@ func TestPairedSourceBrowsesTheOwnNode(t *testing.T) {
 	}
 	lib.SetScope(ScopeAll)
 
-	// Switching node mode off takes the whole catalogue out of the merge.
+	// Switching node mode off takes the whole catalogue out of the merge — and
+	// with it the last non-device source, so the scope machinery stands down.
 	lib.SetNode(nil)
 	if artists, _, _ := lib.Artists(ctx); len(artists) != 0 {
 		t.Errorf("SetNode(nil) left %d community artists in the merge", len(artists))
+	}
+	if lib.Remote() {
+		t.Error("Remote() still true after SetNode(nil) with no servers")
 	}
 }
 

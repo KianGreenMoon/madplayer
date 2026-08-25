@@ -128,14 +128,21 @@ func Open(ctx context.Context, dataDir string, lg *log.Logger, opts Options) (*B
 		// still browses and plays, it just cannot attribute what it imports.
 		b.owner = sql.NullInt64{Int64: id, Valid: true}
 	}
+	// The device's standing rule, applied before anything can ask: the node
+	// DEFAULT is pinned Local, so nothing in the library is advertised or
+	// served unless pinned open per item (docs/architecture/federation.md §"The
+	// household"; the per-item pins are community.go). Pinned on EVERY open,
+	// mesh or not — the sharing surface reads its answers off this default, and
+	// a default that waited for the mesh reported the whole library as shared
+	// while the mesh was off. On a mesh-less open a failure only skews that
+	// reporting; with the mesh up it would run a device that cannot be pinned,
+	// so the mesh stays off.
+	pinErr := inst.PublishNothing(ctx)
+	if pinErr != nil {
+		lg.Printf("madplayer: could not pin this device to publishing nothing: %v", pinErr)
+	}
 	if net, up := inst.Network(); up {
-		// The listener node's standing rule, applied before anything can ask:
-		// this device's own library is never advertised or served, whatever it
-		// ends up able to place (docs/architecture/federation.md §"The
-		// household"). Not fatal, but the mesh does not run without it — a device
-		// that cannot be pinned must not run unpinned.
-		if err := net.PublishNothing(ctx); err != nil {
-			lg.Printf("madplayer: could not pin this device to publishing nothing: %v", err)
+		if pinErr != nil {
 			b.meshWhy = "this device could not be pinned to publishing nothing, so the madnetwork is off"
 		} else {
 			b.net = net

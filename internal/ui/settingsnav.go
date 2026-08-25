@@ -45,6 +45,7 @@ const (
 	pageNetwork
 	pageNodeMode
 	pagePairing
+	pageSharing
 	pageKeep
 	pageKeyboard
 	pageDebug
@@ -86,6 +87,8 @@ var settingsSections = []settingsSection{
 	// controls join it here as they are built.
 	{page: pagePairing, title: "Paired nodes", state: (*App).pairingSummary,
 		rows: onePage((*App).pairingControls), hidden: func(a *App) bool { return !a.nodeMode() }},
+	{page: pageSharing, title: "Sharing", state: (*App).sharingSummary,
+		rows: onePage((*App).sharingControls), hidden: func(a *App) bool { return !a.nodeMode() }},
 	{page: pageKeep, title: "Music kept from the network", state: (*App).keepState, rows: onePage((*App).keepControls)},
 	{page: pageKeyboard, title: "Keyboard", state: (*App).keyboardState, rows: onePage((*App).shortcutHelp)},
 	{page: pageDebug, title: "Debugging", state: (*App).debugState, rows: (*App).debugRows},

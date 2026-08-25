@@ -114,8 +114,10 @@ func (a *App) nodeModeControls(gtx C) D {
 	})
 }
 
-// saveNodeMode records the switch. Unlike the mesh switch there is nothing to
-// restart: the pages it gates are laid out from the pref on the next frame.
+// saveNodeMode records the switch and applies it. Unlike the mesh switch there
+// is nothing to restart: the pages it gates are laid out from the pref on the
+// next frame, and the browse/fetch wiring follows it live (applyNodeMode) —
+// the community's rows enter and leave the merged list with the mode.
 func (a *App) saveNodeMode(on bool) {
 	a.mu.Lock()
 	a.cfg.NodeMode = on
@@ -127,4 +129,6 @@ func (a *App) saveNodeMode(on bool) {
 		a.nodeModeMsg = "could not save the node mode setting: " + err.Error()
 		a.mu.Unlock()
 	}
+	a.applyNodeMode()
+	go a.reload()
 }

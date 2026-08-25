@@ -60,6 +60,16 @@ type Vouch interface {
 	Present(base string) bool
 }
 
+// Directory answers "who holds this hash" from this device's OWN node — the
+// paired member's twin of a home server's /holders endpoint, backed by the
+// node's cached catalogs with the same stale-holder freshness
+// (backend.CommunityHolders). Used for items whose Base is
+// library.NodeSourceBase; nil means this device is not a paired node right
+// now, which those items report as a plain decline.
+type Directory interface {
+	CommunityHolders(ctx context.Context, hash string) (int64, []string, error)
+}
+
 // Fetcher satisfies player.Fetcher.
 type Fetcher struct {
 	cache *blobcache.Cache
@@ -69,6 +79,7 @@ type Fetcher struct {
 	servers     []library.Server
 	swarm       Swarm
 	vouch       Vouch
+	dir         Directory
 	swarmBudget time.Duration
 
 	// slot serializes mesh fetches — a one-place semaphore rather than a mutex,
@@ -133,6 +144,15 @@ func defaultResumeWaits() []time.Duration {
 func (f *Fetcher) SetSwarm(swarm Swarm, vouch Vouch) {
 	f.mu.Lock()
 	f.swarm, f.vouch = swarm, vouch
+	f.mu.Unlock()
+}
+
+// SetDirectory installs (or, with nil, removes) the own node as the holder
+// directory for paired rows. Separate from SetSwarm because it comes and goes
+// with node mode, not with the mesh.
+func (f *Fetcher) SetDirectory(d Directory) {
+	f.mu.Lock()
+	f.dir = d
 	f.mu.Unlock()
 }
 
@@ -216,6 +236,12 @@ func (f *Fetcher) sourceFor(item *queue.Item) (library.Server, error) {
 	if item.Network {
 		if item.Hash == "" || item.Base == "" {
 			return library.Server{}, errors.New("this track has no audio to play")
+		}
+		// A paired row's directory is this device's own node — no server to
+		// find. fromSwarm reads the Base off the item; the Label is for its
+		// messages.
+		if item.Base == library.NodeSourceBase {
+			return library.Server{Base: library.NodeSourceBase, Label: "this device's node"}, nil
 		}
 		return f.serverFor(item.Base)
 	}
@@ -367,10 +393,17 @@ func (f *Fetcher) fill(srv library.Server, item *queue.Item) blobcache.Fetch {
 // the retry was not already paying. The count returned is what reached w.
 func (f *Fetcher) fromSwarm(ctx context.Context, srv library.Server, item *queue.Item, w io.Writer, resumeAt int64) (int64, string, error) {
 	f.mu.RLock()
-	swarm, vouch := f.swarm, f.vouch
+	swarm, vouch, dir := f.swarm, f.vouch, f.dir
 	f.mu.RUnlock()
 	if swarm == nil || item.Hash == "" {
 		return 0, "this device is not on the madnetwork", nil
+	}
+	// A paired row is fetched on this node's OWN standing: the holder plan
+	// comes from its cached catalogs, and no vouch is presented — friendship,
+	// not a token, is what a holder places (docs/design.md §"Node mode").
+	paired := item.Base == library.NodeSourceBase
+	if paired && dir == nil {
+		return 0, "node mode is off", nil
 	}
 
 	// ONE deadline covers everything before bytes flow: taking the fetch slot,
@@ -404,7 +437,7 @@ func (f *Fetcher) fromSwarm(ctx context.Context, srv library.Server, item *queue
 	if err := ctx.Err(); err != nil {
 		return 0, "", err
 	}
-	if vouch != nil && !vouch.Present(srv.Base) {
+	if !paired && vouch != nil && !vouch.Present(srv.Base) {
 		return 0, "this device has no vouch from " + srv.Label + " yet", nil
 	}
 
@@ -443,11 +476,21 @@ func (f *Fetcher) fromSwarm(ctx context.Context, srv library.Server, item *queue
 	// that never starts.
 	hctx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
-	plan, err := srv.Client.Holders(hctx, item.Hash)
-	if err != nil {
-		return 0, "", fmt.Errorf("asking %s who holds this track: %w", srv.Label, err)
+	var size int64
+	var keys []string
+	if paired {
+		var err error
+		size, keys, err = dir.CommunityHolders(hctx, item.Hash)
+		if err != nil {
+			return 0, "", fmt.Errorf("asking this device's node who holds this track: %w", err)
+		}
+	} else {
+		plan, err := srv.Client.Holders(hctx, item.Hash)
+		if err != nil {
+			return 0, "", fmt.Errorf("asking %s who holds this track: %w", srv.Label, err)
+		}
+		size, keys = plan.Size, plan.Keys()
 	}
-	keys := plan.Keys()
 	if len(keys) == 0 {
 		return 0, "nobody reachable has this track right now", nil
 	}
@@ -458,7 +501,7 @@ func (f *Fetcher) fromSwarm(ctx context.Context, srv library.Server, item *queue
 	if firstByte <= 0 {
 		return 0, "the madnetwork did not answer in time", nil
 	}
-	body, err := swarm.StreamBlob(ctx, item.Hash, plan.Size, keys, firstByte)
+	body, err := swarm.StreamBlob(ctx, item.Hash, size, keys, firstByte)
 	if err != nil {
 		return 0, "", fmt.Errorf("fetching from %d holder(s) of %s: %w", len(keys), item.Hash, err)
 	}

@@ -307,6 +307,9 @@ func (a *App) albumHeader(gtx C, tracks []*library.Track) D {
 	if a.btnAlbumKeep.Clicked(gtx) {
 		a.keep(tracks, a.albumArtistName())
 	}
+	if a.btnAlbumShare.Clicked(gtx) {
+		a.cycleAlbumShare(tracks)
+	}
 	total := 0.0
 	for _, t := range tracks {
 		total += t.Duration
@@ -385,6 +388,12 @@ func (a *App) albumHeader(gtx C, tracks []*library.Track) D {
 					layout.Rigid(keep),
 				)
 			}
+			if share := a.albumShareButton(tracks); share != nil {
+				children = append(children,
+					layout.Rigid(layout.Spacer{Height: 8}.Layout),
+					layout.Rigid(share),
+				)
+			}
 			return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
 		}
 		return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
@@ -395,15 +404,18 @@ func (a *App) albumHeader(gtx C, tracks []*library.Track) D {
 					layout.Rigid(titles),
 					layout.Rigid(layout.Spacer{Height: 10}.Layout),
 					layout.Rigid(func(gtx C) D {
-						keep := a.albumKeepButton(tracks)
-						if keep == nil {
-							return queueActions(gtx)
+						row := []layout.FlexChild{layout.Rigid(queueActions)}
+						if keep := a.albumKeepButton(tracks); keep != nil {
+							row = append(row,
+								layout.Rigid(layout.Spacer{Width: 8}.Layout),
+								layout.Rigid(keep))
 						}
-						return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
-							layout.Rigid(queueActions),
-							layout.Rigid(layout.Spacer{Width: 8}.Layout),
-							layout.Rigid(keep),
-						)
+						if share := a.albumShareButton(tracks); share != nil {
+							row = append(row,
+								layout.Rigid(layout.Spacer{Width: 8}.Layout),
+								layout.Rigid(share))
+						}
+						return layout.Flex{Axis: layout.Horizontal}.Layout(gtx, row...)
 					}),
 				)
 			}),

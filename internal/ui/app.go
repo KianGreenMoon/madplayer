@@ -228,6 +228,10 @@ type App struct {
 	// App.mu, is its save-error line.
 	nodeModeOn  widget.Bool
 	nodeModeMsg string
+	// btnAlbumShare and sharing are node mode's publish picker (sharing.go):
+	// the album header's share control and the Settings Sharing page.
+	btnAlbumShare widget.Clickable
+	sharing       sharingState
 	// pairEd and pairing are the paired-nodes page (pairing.go), shown only in
 	// node mode. The editor is a top-level field so the typing-gate walk sees
 	// it; everything else the page owns lives in the one struct.
@@ -385,6 +389,10 @@ func newApp(win *app.Window, pl *player.Player, be *backend.Backend, store *pref
 		}
 		// Whatever applyServers has already worked out, if it ran first.
 		a.tellMesh()
+		// Node mode's browse and fetch wiring rides on the same mesh check —
+		// applyNodeMode is also what the Settings switch calls, so turning the
+		// mode on needs no restart while the mesh itself does.
+		a.applyNodeMode()
 	}
 
 	// LAST of the wiring, on purpose: everything it hands the server list to has

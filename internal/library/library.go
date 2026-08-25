@@ -408,7 +408,11 @@ type Library struct {
 	device  Source
 	remotes []Source
 	network []Source
-	scope   Scope
+	// paired is the community browsed through this device's OWN node — set
+	// exactly while node mode is on (SetNode). Nil is the listener's normal
+	// state.
+	paired Source
+	scope  Scope
 }
 
 // New wraps the embedded backend's browse surface. Servers are added afterwards
@@ -452,6 +456,21 @@ const madnetworkName = "madnetwork"
 
 func madnetworkLabel(string) string { return madnetworkName }
 
+// SetNode adds (or, with nil, removes) the community browsed through this
+// device's own node — the paired member's view (source_paired.go). It rides
+// beside the per-server madnetwork sources rather than replacing them: each
+// answers for a different standing (an account there, a friendship here), and
+// the merge folds rows the two agree on exactly as it folds two servers'.
+func (l *Library) SetNode(mn PairedNode) {
+	l.mu.Lock()
+	if mn == nil {
+		l.paired = nil
+	} else {
+		l.paired = pairedSource{mn: mn}
+	}
+	l.mu.Unlock()
+}
+
 // SetScope narrows or widens what is browsed. It takes effect on the next fetch,
 // which is what the caller does after changing it.
 func (l *Library) SetScope(s Scope) {
@@ -474,7 +493,7 @@ func (l *Library) Scope() Scope {
 func (l *Library) sources() []Source {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
-	out := make([]Source, 0, 1+len(l.remotes)+len(l.network))
+	out := make([]Source, 0, 2+len(l.remotes)+len(l.network))
 	if l.device != nil {
 		out = append(out, l.device)
 	}
@@ -482,7 +501,14 @@ func (l *Library) sources() []Source {
 		return out
 	}
 	out = append(out, l.remotes...)
-	return append(out, l.network...)
+	out = append(out, l.network...)
+	// The paired view is last for the network group's own reason, doubled: it
+	// is the least specific claim, and rows a server's view also carries should
+	// keep that server's origin (which can relay a library track directly).
+	if l.paired != nil {
+		out = append(out, l.paired)
+	}
+	return out
 }
 
 // Remote reports whether any server is configured — the switch between "a music

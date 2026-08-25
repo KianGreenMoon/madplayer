@@ -260,6 +260,40 @@ only what the *client's controls* look like, which is the half this repo owns.
   question. The phone-side transfer policy is separate and later:
   `docs/plans/mobile-seeding-controls.md`.
 
+**Node mode browses through the own node (built 2026-08-26).** The first live
+pairing showed that membership bought standing without a view: the paired
+player pulled the friend's catalog into its own tables and the browse merged
+only signed-in servers over HTTP. madshare's facade grew the community browse
+(`Instance.Madnetwork()` — the same `api.MadnetworkBrowse` core the web UI's
+/madnetwork handlers run, embedding.md §"The madnetwork browse and the publish
+picker") and this client grew its consumer: `library.SetNode` registers a
+`pairedSource` — madnetworkSource's sibling with the directory in-process —
+exactly while node mode is on, wired live by `ui.applyNodeMode` so the
+community's rows enter and leave the merged list with the switch. A paired
+row's queue items carry `Base = library.NodeSourceBase` ("@node"), which is
+how `remote.Fetcher` knows to take the holder plan from the own node
+(`backend.CommunityHolders`, same stale-holder freshness as a server's
+/holders endpoint) and to present **no vouch** — friendship, not a token, is
+what a holder places. No covers yet: the facade has no cover relay, so paired
+rows show the placeholder unless the device rows the merge folds them into
+bring the art.
+
+**And sharing is chosen here, per item (built 2026-08-26 — full-node-mode.md
+P2, the facade half is its W2).** Nothing is shared until chosen: the node
+default is pinned Local on EVERY backend open now (`Instance.PublishNothing`,
+moved to the library side of madshare's facade — a default that waited for
+the mesh made the sharing surface report the whole library as shared while
+the mesh was off). The choice lives where the music is: the album header
+gains a **share control** in node mode — a button cycling *off → friends →
+madnetwork → off* over the album's device-held appearances (mixed states
+normalize to friends, the smallest positive answer) — and Settings gains a
+**Sharing** page listing exactly what is published, each row with Stop. The
+cache-seeding arm is untouched: seeding back what the swarm fetched is the
+swarm working, not the library opening, and the Sharing page's empty state
+says so. Propagation is honest: a scope change binds bytes and catalog
+immediately, a friend's *listing* follows on its next catalog pull (up to
+madshare's 15-minute sync cadence).
+
 ### Where the bytes live: three directories, two of them technical
 
 A server ingests by **upload** into storage it manages, and nobody browses

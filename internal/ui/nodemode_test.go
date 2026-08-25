@@ -25,17 +25,22 @@ func TestNodeModeGatesThePairedNodesPage(t *testing.T) {
 	}
 
 	a.saveNodeMode(true)
-	a.openSettingsPage(pagePairing)
-	if _, ok := a.openSection(); !ok {
-		t.Fatal("the paired-nodes page is hidden with node mode on")
-	}
-	if d := a.settings(headless()); d.Size.Y == 0 {
-		t.Fatal("the paired-nodes page laid out to nothing")
+	for _, p := range []settingsPage{pagePairing, pageSharing} {
+		a.openSettingsPage(p)
+		if _, ok := a.openSection(); !ok {
+			t.Fatalf("page %v is hidden with node mode on", p)
+		}
+		if d := a.settings(headless()); d.Size.Y == 0 {
+			t.Fatalf("page %v laid out to nothing", p)
+		}
 	}
 
 	a.saveNodeMode(false)
-	if _, ok := a.openSection(); ok {
-		t.Fatal("switching node mode off left the paired-nodes page reachable")
+	for _, p := range []settingsPage{pagePairing, pageSharing} {
+		a.openSettingsPage(p)
+		if _, ok := a.openSection(); ok {
+			t.Fatalf("switching node mode off left page %v reachable", p)
+		}
 	}
 }
 

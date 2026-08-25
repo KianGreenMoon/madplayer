@@ -224,9 +224,13 @@ type App struct {
 	keepTechnical                        widget.Bool
 	btnSignIn, btnCacheSave              widget.Clickable
 	meshOn                               widget.Bool
-	// pairEd and pairing are the node-pairing experiment (pairing.go). The
-	// editor is a top-level field so the typing-gate walk sees it; everything
-	// else the experiment owns lives in the one struct, for easy removal.
+	// nodeModeOn is the node-mode switch (nodemode.go); nodeModeMsg, under
+	// App.mu, is its save-error line.
+	nodeModeOn  widget.Bool
+	nodeModeMsg string
+	// pairEd and pairing are the paired-nodes page (pairing.go), shown only in
+	// node mode. The editor is a top-level field so the typing-gate walk sees
+	// it; everything else the page owns lives in the one struct.
 	pairEd  widget.Editor
 	pairing pairingState
 	// peerEd and its buttons are the underlay peer list (peers.go): the third
@@ -336,6 +340,7 @@ func newApp(win *app.Window, pl *player.Player, be *backend.Backend, store *pref
 	// that is explained — a box that silently unticked itself would look like it
 	// had not been saved.
 	a.meshOn.Value = cfg.Mesh
+	a.nodeModeOn.Value = cfg.NodeMode
 	a.keepTechnical.Value = cfg.KeepTechnicalNames
 	a.keepDirEd.SetText(cfg.KeepDir)
 

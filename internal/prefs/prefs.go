@@ -66,6 +66,19 @@ type Config struct {
 	// full volume. Absent means "never chosen" and takes the default; false is a
 	// decision and is written down.
 	Mesh bool `json:"mesh"`
+	// NodeMode makes this device a REGULAR member node instead of a quiet
+	// listener: it may pair with other nodes by exchanged keys, the way two
+	// madshare servers do, and Settings shows the pages that administrate that
+	// (madshare's docs/plans/full-node-mode.md is the design; the client's own
+	// reading is docs/design.md §"Node mode"). OFF by default — listener is the
+	// baseline and membership is chosen, which is the opposite polarity from
+	// Mesh, so omitempty is safe here: absent and false both mean "listener".
+	//
+	// The switch gates the ADMINISTRATION, not the membership itself: whether
+	// this node is anybody's friend lives in the backend's peer table, so
+	// switching the mode off hides the pages without unfriending anyone. The
+	// way out of the community is removing the paired nodes, on the page.
+	NodeMode bool `json:"node_mode,omitempty"`
 	// MeshPeers are underlay peering URIs typed by hand: the fallback for
 	// somebody whose home server publishes none and whose network has none to
 	// discover. Usually empty, and that is the intended state.

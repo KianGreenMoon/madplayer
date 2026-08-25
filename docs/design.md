@@ -178,7 +178,9 @@ node compiled in as libraries and run **in-process**, with the Go UI on top.
 
 The point of embedding the backend is to make every install a **node**. What
 kind of node is settled: a **listener node**, defined in
-`docs/architecture/federation-access.md` §Principals & access (decided 2026-07-26). The
+`docs/architecture/federation-access.md` §Principals & access (decided 2026-07-26).
+Since 2026-08-26 the listener is the **default** rather than the only shape —
+§"Node mode" below is the opt-in exception, on desktop only. The
 short form, because it shapes nearly every screen in this client:
 
 - **It signs in to a home server with user credentials**, not by friending it.
@@ -219,6 +221,44 @@ here**, not disabled; the one switch that would expose the library is
 `madnetwork.serve_guests`, and a player has no reason to offer it. (The client
 still pins `default_share_depth = Local` — see §"Level 2b, concretely" — two
 independent gates on the rule that must not fail.)
+
+### Node mode: membership is a switch (drafted 2026-08-26)
+
+The design is madshare's **`docs/plans/full-node-mode.md`** (draft 2026-08-22):
+a madplayer as an ordinary community member — paired by exchanged keys the way
+two servers pair, gossiped, on the maps, with holders of its own — for the
+person who will not run a CLI server and otherwise has no way into madnetwork
+at all. That doc owns the decisions (sharing stays per-item opt-in; desktop
+only; tray/autostart; key backup) and the open questions. This section records
+only what the *client's controls* look like, which is the half this repo owns.
+
+- **One switch, `prefs.NodeMode`, on its own Settings page ("Node mode").**
+  Default **off** — the listener is the baseline and membership is chosen, the
+  opposite polarity from the mesh switch. Unlike that switch it needs no
+  restart: what it changes is which pages exist.
+- **The node's administration pages exist exactly while the mode is on** —
+  the same shape as madshare's own UI, where `/admin/network` exists only
+  where federation is configured. Today that is one page, **"Paired nodes"**
+  (own card out, their card or key in, the peer table with accept/remove —
+  the graduated pairing experiment, full-node-mode.md P1); the publish picker
+  (P2), the first-run connect step (P3) and the seeding controls join it
+  behind the same gate as they are built. A remembered page falls back to the
+  settings index the moment the mode is switched off — a page the mode
+  removed must not be reachable by a stale page number.
+- **The switch gates the administration, not the membership.** Whether this
+  node is anybody's friend is a fact of the backend's peer table, and madshare
+  has no "suspend membership" surface — so switching the mode off hides the
+  pages and severs nothing, and the caption under the switch says so while
+  friendships still stand ("N paired nodes remain…") instead of letting the
+  menus vanish over a membership the network can still see. The way out of
+  the community is removing the paired nodes, on the page, before the switch.
+- **Phones do not offer the mode** (owner, full-node-mode.md): a compile-time
+  const (`ui.nodeModeOffered`, build-tagged) removes the section, its page and
+  everything it gates from Android builds — not merely hides it.
+- madshare's `app.Pairing` underneath is still marked EXPERIMENTAL; settling
+  its method set — block, rename — is that repo's W1 and stays a madshare
+  question. The phone-side transfer policy is separate and later:
+  `docs/plans/mobile-seeding-controls.md`.
 
 ### Where the bytes live: three directories, two of them technical
 

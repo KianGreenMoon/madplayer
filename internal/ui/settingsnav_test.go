@@ -38,20 +38,25 @@ func TestEverySettingsPageLaysOut(t *testing.T) {
 // on this host can be pressed (CLAUDE.md §Gotchas).
 func TestEveryIndexRowOpensItsPage(t *testing.T) {
 	a := testApp(t)
-	for i, sec := range settingsSections {
+	// The rows are counted over the SHOWN sections, as the index counts them —
+	// a hidden section (the paired-nodes page outside node mode) has no row, so
+	// the table's own indices do not line up with the buttons'.
+	row := 0
+	for _, sec := range settingsSections {
 		if sec.hidden != nil && sec.hidden(a) {
 			continue
 		}
 		a.openSettingsPage(pageIndex)
 		a.settings(headless()) // grows settingsBtn and lays the rows out
-		if i >= len(a.settingsBtn) {
-			t.Fatalf("the index drew %d rows for %d sections", len(a.settingsBtn), len(settingsSections))
+		if row >= len(a.settingsBtn) {
+			t.Fatalf("the index drew %d rows before %q", len(a.settingsBtn), sec.title)
 		}
-		a.settingsBtn[i].Click()
+		a.settingsBtn[row].Click()
 		a.settings(headless())
 		if a.settingsPage != sec.page {
-			t.Errorf("row %d (%q) opened page %v", i, sec.title, a.settingsPage)
+			t.Errorf("row %d (%q) opened page %v", row, sec.title, a.settingsPage)
 		}
+		row++
 	}
 }
 

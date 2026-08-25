@@ -1,16 +1,16 @@
 package ui
 
-// The pairing test: befriending a server by exchanged public keys, the way two
-// madshare servers do on /admin/network — own card out, their card (or bare
-// key) in, and the peer table with its states.
+// The paired-nodes page: befriending a server (or another device) by exchanged
+// public keys, the way two madshare servers do on /admin/network — own card
+// out, their card (or bare key) in, and the peer table with its states.
 //
-// An EXPERIMENT, switched by pairingEnabled below. A device paired here is a
-// full community member — a gossiped edge, a place on every map, exactly like
-// a server; the quiet listener path stays what an unpaired device gets. The
-// owner is trying membership on a real device (2026-08-17). Flip the const to
-// false to take the section out of Settings; removing the experiment entirely
-// is deleting this file, backend/pairing.go, the pairEd field (app.go,
-// keys.go) and the one row in panels.go.
+// This is node mode's first administration page (nodemode.go; the design is
+// madshare's docs/plans/full-node-mode.md). It began as the 2026-08-17 pairing
+// experiment behind a const; prefs.NodeMode is the switch now, read through
+// settingsSections' hidden rule, so the page exists exactly while the mode is
+// on. A device paired here is a full community member — a gossiped edge, a
+// place on every map, exactly like a server; the quiet listener path stays
+// what an unpaired device gets.
 //
 // Sharing is separate and unchanged: the library stays pinned closed and only
 // the seeded cache is served, paired or not.
@@ -28,10 +28,6 @@ import (
 
 	"daemonlord.ygg/madplayer/internal/backend"
 )
-
-// pairingEnabled is the light switch for the whole experiment. False removes
-// the Settings section; nothing else in the program calls any of this.
-const pairingEnabled = true
 
 // pairingRefresh is how stale the peer table may be while the section is on
 // screen. The interesting moment — "waiting for their accept" flipping to
@@ -58,11 +54,8 @@ type pairingState struct {
 	clearEd   bool
 }
 
-// pairingControls is the Settings section.
+// pairingControls is the page.
 func (a *App) pairingControls(gtx C) D {
-	if !pairingEnabled {
-		return D{}
-	}
 	_, meshUp := a.be.Mesh()
 
 	a.mu.Lock()
@@ -106,14 +99,14 @@ func (a *App) pairingControls(gtx C) D {
 	}
 
 	rows := []layout.Widget{
-		func(gtx C) D { return a.sectionTitle(gtx, "Node pairing (test)") },
+		func(gtx C) D { return a.sectionTitle(gtx, "Paired nodes") },
 		func(gtx C) D {
 			return a.sectionHint(gtx,
 				"Connect this device to a server the way servers connect to each other: by "+
 					"exchanged keys, no account. Copy this node's card into the server's "+
 					"Network page, or paste that server's card (or bare key) here — friendship "+
-					"needs both sides. An experiment: a paired device is a visible member of "+
-					"the madnetwork, not a quiet listener.")
+					"needs both sides. A paired device is a visible member of the madnetwork, "+
+					"on the community's maps, not a quiet listener.")
 		},
 	}
 

@@ -43,6 +43,7 @@ const (
 	pageFolders
 	pageAppearance
 	pageNetwork
+	pageNodeMode
 	pagePairing
 	pageKeep
 	pageKeyboard
@@ -77,8 +78,14 @@ var settingsSections = []settingsSection{
 	{page: pageFolders, title: "Music folders", state: (*App).folderState, rows: (*App).folderRows},
 	{page: pageAppearance, title: "Appearance", state: (*App).themeState, rows: onePage((*App).appearanceControls)},
 	{page: pageNetwork, title: "The madnetwork", state: (*App).networkState, rows: onePage((*App).networkControls)},
-	{page: pagePairing, title: "Node pairing (test)", state: (*App).pairingSummary,
-		rows: onePage((*App).pairingControls), hidden: func(*App) bool { return !pairingEnabled }},
+	{page: pageNodeMode, title: "Node mode", state: (*App).nodeModeState,
+		rows: onePage((*App).nodeModeControls), hidden: func(*App) bool { return !nodeModeOffered }},
+	// The node's administration pages exist only while the mode is on — the
+	// mode is the menu, exactly as madshare's admin pages exist only where
+	// federation is configured. Today that is one page; publishing and seeding
+	// controls join it here as they are built.
+	{page: pagePairing, title: "Paired nodes", state: (*App).pairingSummary,
+		rows: onePage((*App).pairingControls), hidden: func(a *App) bool { return !a.nodeMode() }},
 	{page: pageKeep, title: "Music kept from the network", state: (*App).keepState, rows: onePage((*App).keepControls)},
 	{page: pageKeyboard, title: "Keyboard", state: (*App).keyboardState, rows: onePage((*App).shortcutHelp)},
 	{page: pageDebug, title: "Debugging", state: (*App).debugState, rows: (*App).debugRows},

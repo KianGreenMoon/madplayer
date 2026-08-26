@@ -53,6 +53,11 @@ func (a *App) nodeModeControls(gtx C) D {
 	}
 
 	_, meshUp := a.be.Mesh()
+	// The caption below counts friendships even while the paired-nodes page —
+	// whose layout is what used to populate the table — is hidden by the very
+	// state ("mode off, memberships kept") the caption exists to name. So this
+	// page keeps the table current itself, on the shared cadence.
+	a.wantPeerTable()
 	a.mu.Lock()
 	on := a.cfg.NodeMode
 	msg := a.nodeModeMsg

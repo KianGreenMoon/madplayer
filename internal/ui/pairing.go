@@ -54,15 +54,33 @@ type pairingState struct {
 	clearEd   bool
 }
 
-// pairingControls is the page.
-func (a *App) pairingControls(gtx C) D {
-	_, meshUp := a.be.Mesh()
-
+// wantPeerTable keeps the peer table fresh while some page is reading it: a
+// bounded re-read on the pairing cadence. Shared by the paired-nodes page and
+// the node-mode page — whose caption counts friendships even while the pairing
+// page is hidden (mode off, memberships kept), so the count cannot depend on
+// that page's own layout ever running. A no-op while the mesh is down: there
+// is no node to ask.
+func (a *App) wantPeerTable() {
+	if _, meshUp := a.be.Mesh(); !meshUp {
+		return
+	}
 	a.mu.Lock()
-	stale := meshUp && !a.pairing.loading && time.Since(a.pairing.refreshed) > pairingRefresh
+	stale := !a.pairing.loading && time.Since(a.pairing.refreshed) > pairingRefresh
 	if stale {
 		a.pairing.loading = true
 	}
+	a.mu.Unlock()
+	if stale {
+		go a.refreshPairing()
+	}
+}
+
+// pairingControls is the page.
+func (a *App) pairingControls(gtx C) D {
+	_, meshUp := a.be.Mesh()
+	a.wantPeerTable()
+
+	a.mu.Lock()
 	peers := a.pairing.peers
 	ident, identOK := a.pairing.ident, a.pairing.identOK
 	busy, msg := a.pairing.busy, a.pairing.msg
@@ -71,9 +89,6 @@ func (a *App) pairingControls(gtx C) D {
 		defer a.pairEd.SetText("")
 	}
 	a.mu.Unlock()
-	if stale {
-		go a.refreshPairing()
-	}
 
 	if a.pairing.btnCopy.Clicked(gtx) && identOK {
 		gtx.Execute(clipboard.WriteCmd{

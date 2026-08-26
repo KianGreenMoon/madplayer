@@ -63,9 +63,9 @@ type Vouch interface {
 // Directory answers "who holds this hash" from this device's OWN node — the
 // paired member's twin of a home server's /holders endpoint, backed by the
 // node's cached catalogs with the same stale-holder freshness
-// (backend.CommunityHolders). Used for items whose Base is
-// library.NodeSourceBase; nil means this device is not a paired node right
-// now, which those items report as a plain decline.
+// (backend.CommunityHolders). sourceFor plans items whose Base is
+// library.NodeSourceBase through it; nil means this device is not a paired
+// node right now, which those items refuse with a sentence naming node mode.
 type Directory interface {
 	CommunityHolders(ctx context.Context, hash string) (int64, []string, error)
 }
@@ -196,12 +196,12 @@ func (f *Fetcher) Local(ctx context.Context, item *queue.Item) (string, error) {
 	if item.Path != "" {
 		return item.Path, nil
 	}
-	srv, err := f.sourceFor(item)
+	src, err := f.sourceFor(item)
 	if err != nil {
 		return "", err
 	}
 	key, ext := cacheKey(item)
-	return f.cache.Get(ctx, key, ext, f.fill(srv, item))
+	return f.cache.Get(ctx, key, ext, f.fill(src, item))
 }
 
 // Stream is Local without the wait: a reader over the download as it arrives.
@@ -217,44 +217,109 @@ func (f *Fetcher) Stream(ctx context.Context, item *queue.Item) (io.ReadCloser, 
 		rc, err := os.Open(item.Path)
 		return rc, filepath.Ext(item.Path), err
 	}
-	srv, err := f.sourceFor(item)
+	src, err := f.sourceFor(item)
 	if err != nil {
 		return nil, "", err
 	}
 	key, ext := cacheKey(item)
-	rc, err := f.cache.Stream(ctx, key, ext, f.fill(srv, item))
+	rc, err := f.cache.Stream(ctx, key, ext, f.fill(src, item))
 	return rc, ext, err
 }
 
-// sourceFor is the server that can supply this item's bytes, or say who can.
+// planner answers "who holds this hash" and names the standing a mesh fetch
+// presents first — the one choice that separates a server-backed row from a
+// paired one, made once in sourceFor so the fetch path never re-derives it.
+type planner interface {
+	// name is who is being asked, for messages.
+	name() string
+	// vouchBase is the server whose vouch the fetch presents before bytes
+	// move, or "" when the fetch runs on the node's own standing — a paired
+	// row: friendship, not a token, is what a holder places (docs/design.md
+	// §"Node mode").
+	vouchBase() string
+	// holders is the fetch plan: the blob's advertised size and the node keys
+	// to dial, freshness-windowed by whoever answers.
+	holders(ctx context.Context, hash string) (int64, []string, error)
+}
+
+// serverPlanner asks the home server's /holders endpoint, and presents that
+// server's vouch — which server a track came from is the only thing that
+// decides the token (docs/architecture/federation.md §"The household").
+type serverPlanner struct{ srv library.Server }
+
+func (p serverPlanner) name() string      { return p.srv.Label }
+func (p serverPlanner) vouchBase() string { return p.srv.Base }
+func (p serverPlanner) holders(ctx context.Context, hash string) (int64, []string, error) {
+	plan, err := p.srv.Client.Holders(ctx, hash)
+	if err != nil {
+		return 0, nil, err
+	}
+	return plan.Size, plan.Keys(), nil
+}
+
+// nodePlanner asks this device's own node — its cached catalogs, with the same
+// stale-holder window (backend.CommunityHolders). No vouch: the node's
+// membership is its standing, and the directory kept answering mid-queue even
+// if node mode is switched off is deliberate — the switch gates administration,
+// not membership.
+type nodePlanner struct{ dir Directory }
+
+func (p nodePlanner) name() string      { return "this device's node" }
+func (p nodePlanner) vouchBase() string { return "" }
+func (p nodePlanner) holders(ctx context.Context, hash string) (int64, []string, error) {
+	return p.dir.CommunityHolders(ctx, hash)
+}
+
+// source is everything a fetch needs from sourceFor: the relay half — absent
+// for a paired row, which has no server behind it — and the holder-plan half.
+type source struct {
+	srv  library.Server
+	plan planner
+}
+
+// sourceFor is who can supply this item's bytes, or say who can.
 //
 // The two roles are different and the difference is the whole point of browsing
 // the madnetwork from a player: for a library track the server IS the source and
-// hands over the file; for a madnetwork track it is a directory that names
-// holders, and the bytes come from them over the mesh.
-func (f *Fetcher) sourceFor(item *queue.Item) (library.Server, error) {
+// hands over the file; for a madnetwork track the plan names holders, and the
+// bytes come from them over the mesh.
+func (f *Fetcher) sourceFor(item *queue.Item) (source, error) {
 	if item.Network {
 		if item.Hash == "" || item.Base == "" {
-			return library.Server{}, errors.New("this track has no audio to play")
+			return source{}, errors.New("this track has no audio to play")
 		}
 		// A paired row's directory is this device's own node — no server to
-		// find. fromSwarm reads the Base off the item; the Label is for its
-		// messages.
+		// find, and none pretended: srv stays zero because every relay path is
+		// unreachable for a network item.
 		if item.Base == library.NodeSourceBase {
-			return library.Server{Base: library.NodeSourceBase, Label: "this device's node"}, nil
+			f.mu.RLock()
+			dir := f.dir
+			f.mu.RUnlock()
+			if dir == nil {
+				return source{}, errors.New("node mode is off, and this track was browsed through this device's node")
+			}
+			return source{plan: nodePlanner{dir}}, nil
 		}
-		return f.serverFor(item.Base)
+		srv, err := f.serverFor(item.Base)
+		if err != nil {
+			return source{}, err
+		}
+		return source{srv: srv, plan: serverPlanner{srv}}, nil
 	}
 	if item.URL == "" {
-		return library.Server{}, errors.New("this track has no audio to play")
+		return source{}, errors.New("this track has no audio to play")
 	}
-	return f.serverFor(item.URL)
+	srv, err := f.serverFor(item.URL)
+	if err != nil {
+		return source{}, err
+	}
+	return source{srv: srv, plan: serverPlanner{srv}}, nil
 }
 
 // fill is the one fetch body both Local and Stream run, so the choice between
 // the swarm and the relay is made in one place and cannot drift between "play
 // this" and "keep this".
-func (f *Fetcher) fill(srv library.Server, item *queue.Item) blobcache.Fetch {
+func (f *Fetcher) fill(src source, item *queue.Item) blobcache.Fetch {
 	key, _ := cacheKey(item)
 	return func(ctx context.Context, w io.Writer) error {
 		// A fetch for a DIFFERENT track outranks the speculative one: a guess
@@ -266,7 +331,7 @@ func (f *Fetcher) fill(srv library.Server, item *queue.Item) blobcache.Fetch {
 		// a playback fetch for the very track being prefetched joins that fetch
 		// in the cache and never gets here.
 		f.preemptPrefetch(key)
-		wrote, declined, err := f.fromSwarm(ctx, srv, item, w, 0)
+		wrote, declined, err := f.fromSwarm(ctx, src.plan, item, w, 0)
 
 		// A madnetwork track has no relay behind it, on purpose.
 		//
@@ -308,7 +373,7 @@ func (f *Fetcher) fill(srv library.Server, item *queue.Item) blobcache.Fetch {
 					break
 				}
 				var n int64
-				n, declined, err = f.fromSwarm(ctx, srv, item, w, total)
+				n, declined, err = f.fromSwarm(ctx, src.plan, item, w, total)
 				total += n
 			}
 			switch {
@@ -356,15 +421,15 @@ func (f *Fetcher) fill(srv library.Server, item *queue.Item) blobcache.Fetch {
 			// copy is byte-identical to the one the swarm was delivering. Resuming
 			// splices two halves of the same file.
 			f.log.Printf("madplayer: swarm fetch stopped after %d byte(s), resuming from %s: %v",
-				wrote, srv.Label, err)
-			return f.fromRelayAt(ctx, srv.Client, item, w, wrote)
+				wrote, src.srv.Label, err)
+			return f.fromRelayAt(ctx, src.srv.Client, item, w, wrote)
 		case err != nil:
 			// Worth a line even though the relay below will probably succeed: a
 			// swarm that quietly never works looks exactly like one that is working,
 			// and nothing else in this program would ever say otherwise.
-			f.log.Printf("madplayer: swarm fetch failed, falling back to %s: %v", srv.Label, err)
+			f.log.Printf("madplayer: swarm fetch failed, falling back to %s: %v", src.srv.Label, err)
 		}
-		return f.fromRelay(ctx, srv.Client, item, w)
+		return f.fromRelay(ctx, src.srv.Client, item, w)
 	}
 }
 
@@ -391,19 +456,12 @@ func (f *Fetcher) fill(srv library.Server, item *queue.Item) blobcache.Fetch {
 // The discarded bytes do cross the mesh again — the transfer refetches the
 // whole blob into the node's cache regardless, so the resume adds no wire cost
 // the retry was not already paying. The count returned is what reached w.
-func (f *Fetcher) fromSwarm(ctx context.Context, srv library.Server, item *queue.Item, w io.Writer, resumeAt int64) (int64, string, error) {
+func (f *Fetcher) fromSwarm(ctx context.Context, plan planner, item *queue.Item, w io.Writer, resumeAt int64) (int64, string, error) {
 	f.mu.RLock()
-	swarm, vouch, dir := f.swarm, f.vouch, f.dir
+	swarm, vouch := f.swarm, f.vouch
 	f.mu.RUnlock()
 	if swarm == nil || item.Hash == "" {
 		return 0, "this device is not on the madnetwork", nil
-	}
-	// A paired row is fetched on this node's OWN standing: the holder plan
-	// comes from its cached catalogs, and no vouch is presented — friendship,
-	// not a token, is what a holder places (docs/design.md §"Node mode").
-	paired := item.Base == library.NodeSourceBase
-	if paired && dir == nil {
-		return 0, "node mode is off", nil
 	}
 
 	// ONE deadline covers everything before bytes flow: taking the fetch slot,
@@ -437,8 +495,10 @@ func (f *Fetcher) fromSwarm(ctx context.Context, srv library.Server, item *queue
 	if err := ctx.Err(); err != nil {
 		return 0, "", err
 	}
-	if !paired && vouch != nil && !vouch.Present(srv.Base) {
-		return 0, "this device has no vouch from " + srv.Label + " yet", nil
+	// A paired row's planner names no vouch base: friendship, not a token, is
+	// what a holder places, and nothing is presented.
+	if base := plan.vouchBase(); base != "" && vouch != nil && !vouch.Present(base) {
+		return 0, "this device has no vouch from " + plan.name() + " yet", nil
 	}
 
 	// The budget bounds the FIRST BYTE, not the whole transfer.
@@ -476,20 +536,9 @@ func (f *Fetcher) fromSwarm(ctx context.Context, srv library.Server, item *queue
 	// that never starts.
 	hctx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
-	var size int64
-	var keys []string
-	if paired {
-		var err error
-		size, keys, err = dir.CommunityHolders(hctx, item.Hash)
-		if err != nil {
-			return 0, "", fmt.Errorf("asking this device's node who holds this track: %w", err)
-		}
-	} else {
-		plan, err := srv.Client.Holders(hctx, item.Hash)
-		if err != nil {
-			return 0, "", fmt.Errorf("asking %s who holds this track: %w", srv.Label, err)
-		}
-		size, keys = plan.Size, plan.Keys()
+	size, keys, err := plan.holders(hctx, item.Hash)
+	if err != nil {
+		return 0, "", fmt.Errorf("asking %s who holds this track: %w", plan.name(), err)
 	}
 	if len(keys) == 0 {
 		return 0, "nobody reachable has this track right now", nil

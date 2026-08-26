@@ -219,9 +219,18 @@ func (a *App) cycleAlbumShare(tracks []*library.Track) {
 		scopes, rerr := a.be.ShareScopes(ctx, ids)
 		a.mu.Lock()
 		a.sharing.busy = false
-		if err == nil && rerr == nil {
+		switch {
+		case err == nil && rerr == nil:
 			a.sharing.albumKey, a.sharing.scopes = key, scopes
 			// The published list is stale now; the page re-reads on its next look.
+			a.sharing.refreshed = time.Time{}
+		case err == nil:
+			// The write landed but the re-read did not, so whatever is cached
+			// is pre-change now. Drop it — and the tried stamp — so the control
+			// re-asks instead of labeling (and cycling) from a state the store
+			// has moved past.
+			a.sharing.albumKey, a.sharing.scopes = "", nil
+			a.sharing.albumTriedKey = ""
 			a.sharing.refreshed = time.Time{}
 		}
 		a.mu.Unlock()

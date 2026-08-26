@@ -49,6 +49,12 @@ type sharingState struct {
 	albumKey     string
 	scopes       map[int64]backend.ShareScope
 	albumLoading bool
+	// albumTried stamps the last load attempt at albumTriedKey, successful or
+	// not, so a FAILED read retries on the page's cadence instead of every
+	// frame — loadAlbumScopes ends with an Invalidate, and without the stamp
+	// an error re-armed the stale gate immediately, a ~60 Hz query loop.
+	albumTried    time.Time
+	albumTriedKey string
 }
 
 // applyNodeMode wires (or unwires) node mode's live pieces from the current
@@ -120,9 +126,11 @@ func (a *App) albumShareButton(tracks []*library.Track) layout.Widget {
 
 	key := a.albumShareKey(ids)
 	a.mu.Lock()
-	stale := a.sharing.albumKey != key && !a.sharing.albumLoading
+	stale := a.sharing.albumKey != key && !a.sharing.albumLoading &&
+		(a.sharing.albumTriedKey != key || time.Since(a.sharing.albumTried) > sharingRefresh)
 	if stale {
 		a.sharing.albumLoading = true
+		a.sharing.albumTried, a.sharing.albumTriedKey = time.Now(), key
 	}
 	scopes := a.sharing.scopes
 	loaded := a.sharing.albumKey == key
@@ -167,6 +175,8 @@ func (a *App) loadAlbumScopes(key string, ids []int64) {
 	if err == nil {
 		a.sharing.albumKey, a.sharing.scopes = key, scopes
 	}
+	// On error nothing is cached: the button stays "Sharing…" and the tried
+	// stamp holds the next attempt to the page's cadence.
 	a.mu.Unlock()
 	a.win.Invalidate()
 }
@@ -376,8 +386,10 @@ func (a *App) stopSharing(tagsetID int64) {
 		}
 		// Whatever happened, re-read: the list must show the store, not the hope.
 		a.sharing.refreshed = time.Time{}
-		// The header control may be showing this album; make it re-ask too.
+		// The header control may be showing this album; make it re-ask too —
+		// immediately, so the tried stamp must go with the key.
 		a.sharing.albumKey, a.sharing.scopes = "", nil
+		a.sharing.albumTriedKey = ""
 		a.mu.Unlock()
 		a.win.Invalidate()
 	}()

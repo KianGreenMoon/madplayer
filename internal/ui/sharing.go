@@ -31,7 +31,11 @@ const sharingRefresh = 5 * time.Second
 // sharingState is everything sharing owns beyond the two buttons' clickables.
 // Widget fields belong to the UI goroutine; the rest is guarded by App.mu.
 type sharingState struct {
-	stop []widget.Clickable
+	// stop is keyed by the row's tagset id, not its position: the page's
+	// refresher can replace the row list between the frame a click lands on
+	// and the frame that reads it, and an index into the new list would
+	// withdraw the wrong track.
+	stop map[int64]*widget.Clickable
 
 	// under App.mu
 	rows      []backend.SharedTrack
@@ -288,12 +292,25 @@ func (a *App) sharingControls(gtx C) D {
 		go a.refreshShared()
 	}
 
-	for len(a.sharing.stop) < len(rows) {
-		a.sharing.stop = append(a.sharing.stop, widget.Clickable{})
+	if a.sharing.stop == nil {
+		a.sharing.stop = map[int64]*widget.Clickable{}
 	}
+	live := make(map[int64]bool, len(rows))
 	for i := range rows {
-		if a.sharing.stop[i].Clicked(gtx) && !busy {
-			a.stopSharing(rows[i].TagsetID)
+		id := rows[i].TagsetID
+		live[id] = true
+		if a.sharing.stop[id] == nil {
+			a.sharing.stop[id] = &widget.Clickable{}
+		}
+		if a.sharing.stop[id].Clicked(gtx) && !busy {
+			a.stopSharing(id)
+		}
+	}
+	// A vanished row's button goes with it — a click queued on it is a click
+	// on a track that is no longer listed, dropped rather than re-aimed.
+	for id := range a.sharing.stop {
+		if !live[id] {
+			delete(a.sharing.stop, id)
 		}
 	}
 
@@ -323,13 +340,13 @@ func (a *App) sharingControls(gtx C) D {
 		})
 	}
 	for i := range rows {
-		widgets = append(widgets, a.sharedRow(i, rows[i], busy))
+		widgets = append(widgets, a.sharedRow(rows[i], a.sharing.stop[rows[i].TagsetID], busy))
 	}
 	return pairingList(gtx, widgets)
 }
 
 // sharedRow is one published track: what it is, who can see it, and Stop.
-func (a *App) sharedRow(i int, r backend.SharedTrack, busy bool) layout.Widget {
+func (a *App) sharedRow(r backend.SharedTrack, stop *widget.Clickable, busy bool) layout.Widget {
 	return func(gtx C) D {
 		return layout.Inset{Top: 8}.Layout(gtx, func(gtx C) D {
 			return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
@@ -354,7 +371,7 @@ func (a *App) sharedRow(i int, r backend.SharedTrack, busy bool) layout.Widget {
 					)
 				}),
 				layout.Rigid(func(gtx C) D {
-					return a.smallButton(gtx, &a.sharing.stop[i], "Stop", busy)
+					return a.smallButton(gtx, stop, "Stop", busy)
 				}),
 			)
 		})

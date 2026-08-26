@@ -202,3 +202,15 @@ fields fill in.
 **What was NOT the cause, so it is not re-investigated:** the scan reads TPE2 and
 files a track with an album-artist tag and no artist tag under that artist —
 pinned by `internal/backend/tags_test.go`, which passed the day it was written.
+
+## The lab baseline after madshare's size-check redesign (2026-08-26)
+
+Found while verifying an unrelated fix pass with `go test -race ./internal/...`:
+two labnet failures in the full (non-`-short`) backend suite. Both reproduce
+identically with the working trees of BOTH repos stashed, so neither belongs to
+any change in flight — one is a stale test, the other a harness limit.
+
+| Severity | Issue | Status |
+|---|---|---|
+| **Medium** | **`TestLabATruncatedSeederCopyIsRefusedBeforeItPlays` fails deterministically, and it is the TEST that is stale, not the code.** madshare `624d661` ("a contested size withholds reads instead of refusing the fetch") deliberately retired option A's up-front refusal: review of `9df3cda` found the advertised size can contradict but never convict (it is just the most-recently-seen catalog row, so a stale or hostile row became a standing denial of the blob), and a sole VOICE only means one holder answered the manifest probe wave, not that one holder exists. The redesign withholds READS until the assembled bytes pass the content hash instead — and its commit message names this very case: *"madplayer's lab case is unchanged in what a listener hears — nothing — and now ends in a failure the hash reached rather than a refusal the catalog did."* The lab still observes everything that matters: nothing audible, a ~4 s failure, no cached copy left behind. What changed is the failure's WORDING — a whole-file hash mismatch now, not the two-number size contradiction `labnet_test.go:621` greps for. Fix shape: re-pin the scenario on the new contract (nothing plays, the failure is the hash's, no cached copy) — a madplayer test edit; no code is owed on either side. Until then the full backend suite is red, which is the worst thing about it: a standing red teaches people to ignore the suite. | open |
+| Low | **The lab cannot finish under `-race` on this machine.** `TestLabFreshMadnetworkServesANetworkTrack` exceeds its 3-minute patience (`fetch … never succeeded within 3m0s: context deadline exceeded`), and the truncated scenario's failure mutates from the hash message into a plain deadline. Race instrumentation multiplies the cost of the loopback yggdrasil overlay's per-chunk crypto, which is most of what these tests spend their time in. Consequence: the CLAUDE.md habit `go test -race ./internal/...` is only clean with `-short` (which skips the lab). Fix shape: a `//go:build race` constant that stretches the lab's patience — or skips the lab under race outright, since the extra coverage race buys there is mostly madshare's own code, which has its own suite. | open |

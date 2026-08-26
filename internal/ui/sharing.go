@@ -13,6 +13,7 @@ package ui
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"gioui.org/layout"
@@ -40,8 +41,11 @@ type sharingState struct {
 	msg       string
 
 	// The album whose scopes are loaded for the header's share control, keyed
-	// by artist+title. Reset when the person drills elsewhere; the control
-	// shows "Sharing…" until the read lands.
+	// by artist+title+the device tagset ids — two views of one album can hold
+	// different id sets (ScopeDevice against ScopeAll, a reissue in a second
+	// folder), and scopes loaded for one must not label the other. Reset when
+	// the person drills elsewhere; the control shows "Sharing…" until the
+	// read lands.
 	albumKey     string
 	scopes       map[int64]backend.ShareScope
 	albumLoading bool
@@ -86,7 +90,20 @@ func deviceTagsetIDs(tracks []*library.Track) []int64 {
 	return ids
 }
 
-func (a *App) albumShareKey() string { return a.album.ArtistName + "\x00" + a.album.Title }
+// albumShareKey names one album VIEW: the display identity plus the device
+// tagset ids the control would act on. The ids are part of the key because two
+// views with the same artist and title can hold different sets, and a scope
+// map loaded for one must not be read (or written through) for the other.
+func (a *App) albumShareKey(ids []int64) string {
+	var b strings.Builder
+	b.WriteString(a.album.ArtistName)
+	b.WriteByte(0)
+	b.WriteString(a.album.Title)
+	for _, id := range ids {
+		fmt.Fprintf(&b, "\x00%d", id)
+	}
+	return b.String()
+}
 
 // albumShareButton is the header's share control, nil when it does not apply:
 // node mode off, or an album this device holds nothing of (sharing is a
@@ -101,7 +118,7 @@ func (a *App) albumShareButton(tracks []*library.Track) layout.Widget {
 		return nil
 	}
 
-	key := a.albumShareKey()
+	key := a.albumShareKey(ids)
 	a.mu.Lock()
 	stale := a.sharing.albumKey != key && !a.sharing.albumLoading
 	if stale {
@@ -165,7 +182,7 @@ func (a *App) cycleAlbumShare(tracks []*library.Track) {
 		// a normal state here), and uniformScope indexes into the ids.
 		return
 	}
-	key := a.albumShareKey()
+	key := a.albumShareKey(ids)
 	a.mu.Lock()
 	if a.sharing.busy || a.sharing.albumKey != key {
 		a.mu.Unlock()

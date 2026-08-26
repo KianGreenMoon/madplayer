@@ -159,6 +159,12 @@ func (a *App) loadAlbumScopes(key string, ids []int64) {
 // answer, so a mistaken tap widens nothing.
 func (a *App) cycleAlbumShare(tracks []*library.Track) {
 	ids := deviceTagsetIDs(tracks)
+	if len(ids) == 0 {
+		// The button is only offered while the album has device copies, but a
+		// click can land a frame after a reload dropped them (a drive ejected —
+		// a normal state here), and uniformScope indexes into the ids.
+		return
+	}
 	key := a.albumShareKey()
 	a.mu.Lock()
 	if a.sharing.busy || a.sharing.albumKey != key {

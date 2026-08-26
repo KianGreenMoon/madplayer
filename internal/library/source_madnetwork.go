@@ -288,7 +288,17 @@ func (m madnetworkSource) Search(ctx context.Context, q string) (SearchResults, 
 		if t.Duration != nil {
 			tr.Duration = *t.Duration
 		}
-		c := Copy{Origin: m.origin(t.Artist), Hash: t.Hash, Network: true}
+		// Size and codec travel with the hash (a track hit PLAYS, and a network
+		// copy without a codec caches an extension-less file the decoders cannot
+		// open). A pre-2026-08-26 server sends neither; that hit is no more
+		// playable over the mesh than it ever was, and its URL still works.
+		c := Copy{
+			Origin:  m.origin(t.Artist),
+			Hash:    t.Hash,
+			Size:    t.Size,
+			Codec:   strings.ToLower(t.Codec),
+			Network: true,
+		}
 		if t.URL != "" {
 			c.URL = m.cl.Resolve(t.URL)
 			c.Network = false

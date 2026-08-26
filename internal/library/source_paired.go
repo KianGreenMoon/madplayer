@@ -192,7 +192,16 @@ func (p pairedSource) Search(ctx context.Context, q string) (SearchResults, erro
 		if t.Duration != nil {
 			tr.Duration = *t.Duration
 		}
-		c := Copy{Origin: p.origin(t.Artist), Hash: t.Hash, Network: true}
+		// Size and codec travel with the hash: a track hit PLAYS directly, and
+		// a network copy without a codec caches a file with no extension — audio
+		// the decoders cannot open (remote.cacheKey's trap).
+		c := Copy{
+			Origin:  p.origin(t.Artist),
+			Hash:    t.Hash,
+			Size:    t.Size,
+			Codec:   strings.ToLower(t.Codec),
+			Network: true,
+		}
 		if !c.Playable() {
 			continue
 		}

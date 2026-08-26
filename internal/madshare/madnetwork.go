@@ -128,6 +128,10 @@ func (t MadnetworkTrack) Best() (MadnetworkVersion, MadnetworkRendition, bool) {
 
 // MadnetworkSearchTrack is a track hit. It carries the drill address of the
 // album it is on (Artist + AlbumTitle), because a hit is a row somewhere.
+//
+// Size and Codec are what a mesh fetch of the hit needs beyond the hash — the
+// codec is where the cache file's extension comes from. A server older than
+// 2026-08-26 omits both; such a hit still plays only through its URL.
 type MadnetworkSearchTrack struct {
 	Title      string   `json:"title"`
 	ArtistName string   `json:"artist_name"`
@@ -135,6 +139,8 @@ type MadnetworkSearchTrack struct {
 	AlbumTitle string   `json:"album_title"`
 	Duration   *float64 `json:"duration_seconds"`
 	Hash       string   `json:"hash"`
+	Size       int64    `json:"size"`
+	Codec      string   `json:"codec"`
 	URL        string   `json:"url"`
 }
 

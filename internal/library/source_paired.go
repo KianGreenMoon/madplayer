@@ -6,6 +6,7 @@ import (
 
 	"daemonlord.ygg/madshare/api"
 	"daemonlord.ygg/madshare/app"
+	"daemonlord.ygg/madshare/federation"
 )
 
 // pairedSource is the community's catalogue, browsed through this device's OWN
@@ -116,10 +117,13 @@ func (p pairedSource) AlbumTracks(ctx context.Context, album Origin, albumTitle 
 // own fetch path anyway, when the merge has not already preferred the device
 // row for the same track.
 func (p pairedSource) track(t *api.MadnetworkTrack, albumArtist, albumTitle string) *Track {
-	if t == nil || len(t.Versions) == 0 || len(t.Versions[0].Renditions) == 0 {
+	if t == nil {
 		return nil
 	}
-	rendition := t.Versions[0].Renditions[0]
+	rendition, ok := bestRendition(t.Versions)
+	if !ok {
+		return nil
+	}
 	credit := t.Artist
 	if strings.TrimSpace(credit) == "" {
 		credit = albumArtist
@@ -148,6 +152,20 @@ func (p pairedSource) track(t *api.MadnetworkTrack, albumArtist, albumTitle stri
 		Network: true,
 	}}
 	return tr
+}
+
+// bestRendition is the fetchable pick: the first version carrying a rendition
+// with a hash. It is madshare.MadnetworkTrack.Best's walk over the api types —
+// the server-backed source's rule — so the two views of the same catalog agree
+// on what is playable. Taking Versions[0] blindly dropped rows whose fetchable
+// version came second, and offered empty-hash copies nothing could fetch.
+func bestRendition(versions []api.MadnetworkVersion) (federation.CatalogRendition, bool) {
+	for _, v := range versions {
+		if len(v.Renditions) > 0 && v.Renditions[0].Hash != "" {
+			return v.Renditions[0], true
+		}
+	}
+	return federation.CatalogRendition{}, false
 }
 
 func (p pairedSource) Search(ctx context.Context, q string) (SearchResults, error) {

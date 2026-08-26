@@ -268,8 +268,12 @@ func shortKey(k string) string {
 // goroutine. The identity is re-read with the peers because both come from the
 // node, and the node arrives after the window does.
 func (a *App) refreshPairing() {
+	// Bounded for the same reason as refreshShared: an unanswered read must
+	// not pin loading=true forever and end the refresh cycle with it.
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
 	ident, identOK := a.be.NodeIdentity()
-	peers, err := a.be.Peers(context.Background())
+	peers, err := a.be.Peers(ctx)
 	a.mu.Lock()
 	a.pairing.loading = false
 	a.pairing.refreshed = time.Now()

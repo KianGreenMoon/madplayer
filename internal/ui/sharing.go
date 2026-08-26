@@ -173,7 +173,9 @@ func uniformScope(ids []int64, scopes map[int64]backend.ShareScope) (backend.Sha
 }
 
 func (a *App) loadAlbumScopes(key string, ids []int64) {
-	scopes, err := a.be.ShareScopes(context.Background(), ids)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	scopes, err := a.be.ShareScopes(ctx, ids)
 	a.mu.Lock()
 	a.sharing.albumLoading = false
 	if err == nil {
@@ -379,7 +381,12 @@ func (a *App) sharedRow(r backend.SharedTrack, stop *widget.Clickable, busy bool
 }
 
 func (a *App) refreshShared() {
-	rows, err := a.be.Published(context.Background())
+	// Bounded like every other backend call here: a read that never answers
+	// (a DB lock held by a long scan, a backend mid-close) must not pin
+	// loading=true forever and freeze the page's refresh cycle with it.
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	rows, err := a.be.Published(ctx)
 	a.mu.Lock()
 	a.sharing.loading = false
 	a.sharing.refreshed = time.Now()

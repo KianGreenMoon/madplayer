@@ -265,3 +265,10 @@ func TestANilServiceIsUsable(t *testing.T) {
 		t.Errorf("closing a nil service returned %v", err)
 	}
 }
+
+// A name nobody owns is not running, whether or not there is a bus to ask.
+func TestRunningIsFalseForANameNobodyOwns(t *testing.T) {
+	if Running("madplayer-test-nobody-owns-this") {
+		t.Fatal("a player nobody started is reported running")
+	}
+}

@@ -526,3 +526,28 @@ func (s *Service) seekTo(seconds float64) {
 	elapsed, _ := s.c.Position()
 	_ = s.conn.Emit(objPath, playIface+".Seeked", micros(elapsed))
 }
+
+// Running reports whether a player of this name is already on the session
+// bus — another copy of this program, started earlier.
+func Running(name string) bool {
+	conn, err := dbus.SessionBus()
+	if err != nil {
+		return false
+	}
+	var has bool
+	if err := conn.BusObject().Call("org.freedesktop.DBus.NameHasOwner", 0, busPrefix+name).Store(&has); err != nil {
+		return false
+	}
+	return has
+}
+
+// Raise asks the running player of this name for its window. The way a
+// second launch of the program becomes "bring the first one back" — from a
+// tray it cannot see, or a window it cannot raise itself.
+func Raise(name string) error {
+	conn, err := dbus.SessionBus()
+	if err != nil {
+		return err
+	}
+	return conn.Object(busPrefix+name, objPath).Call(rootIface+".Raise", 0).Err
+}

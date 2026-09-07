@@ -19,6 +19,7 @@ import (
 	"daemonlord.ygg/madplayer/internal/audio"
 	"daemonlord.ygg/madplayer/internal/backend"
 	"daemonlord.ygg/madplayer/internal/logbuf"
+	"daemonlord.ygg/madplayer/internal/mpris"
 	"daemonlord.ygg/madplayer/internal/player"
 	"daemonlord.ygg/madplayer/internal/prefs"
 	"daemonlord.ygg/madplayer/internal/ui"
@@ -45,6 +46,24 @@ func run() error {
 	// once already (2026-08-18), and that question decides what a slow-pull
 	// line even means.
 	log.Printf("madplayer %s", about.Current().BuildLine())
+
+	// One copy at a time. A launch while the program is already running —
+	// from the tray, or behind another window — asks that copy for its
+	// window and ends here; the library and the node are already up in it,
+	// and a second process on the same data directory has nothing to add.
+	// A hidden launch (the autostart entry) asks for nothing: it wanted a
+	// node in the tray, and there is one.
+	hidden := slices.Contains(os.Args[1:], "--hidden")
+	if mpris.Running("madplayer") {
+		if !hidden {
+			if err := mpris.Raise("madplayer"); err != nil {
+				log.Printf("madplayer is already running, and did not answer for its window: %v", err)
+			} else {
+				log.Printf("madplayer is already running — asked it for its window")
+			}
+		}
+		return nil
+	}
 
 	pl, err := player.New(audio.New())
 	if err != nil {
@@ -85,7 +104,7 @@ func run() error {
 	u := ui.New(w, pl, be)
 	// --hidden is what the autostart entry passes: begin in the tray, with no
 	// window, when a tray host shows the icon (internal/autostart).
-	if slices.Contains(os.Args[1:], "--hidden") {
+	if hidden {
 		u.StartHidden()
 	}
 	return u.Run()

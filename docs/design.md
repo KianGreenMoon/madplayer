@@ -352,6 +352,14 @@ Verified live on niri + waybar: close → tray, Activate → window back, close 
 tray, menu Quit → exit; `--hidden` start → no window, MPRIS Raise → window,
 MPRIS Quit → exit.
 
+**One copy at a time.** A launch while the program already runs — from the
+tray, or behind another window — finds it by its media-bus name
+(`mpris.Running`), asks it for its window (`mpris.Raise`, the same Raise a
+media widget uses) and ends; a second process on the same data directory has
+nothing to add. A hidden launch that finds one running asks for nothing: it
+wanted a node in the tray, and there is one. Measured: the second launch
+returns in ~13 ms with the first copy's window back.
+
 ### Where the bytes live: three directories, two of them technical
 
 A server ingests by **upload** into storage it manages, and nobody browses

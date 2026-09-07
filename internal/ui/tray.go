@@ -262,9 +262,11 @@ func (a *App) trayControls(gtx C) D {
 		txt = "On. Closing the window keeps the node and the music; the tray icon brings " +
 			"the window back, and its Quit stops everything."
 	}
-	// The login entry's truth is the file, read once per frame is too often
-	// and once ever is stale — so on the same cadence as the peer table.
-	if time.Since(a.autostartRead) > pairingRefresh {
+	// The login entry's truth is what the desktop reads (a file, a registry
+	// value); once per frame is too often and once ever is stale — so on the
+	// same cadence as the peer table. A platform with no login story offers
+	// no switch at all.
+	if autostart.Offered() && time.Since(a.autostartRead) > pairingRefresh {
 		a.autostartRead = time.Now()
 		a.autostartOn.Value, a.autostartExe = autostart.Enabled()
 	}
@@ -311,6 +313,9 @@ func (a *App) trayControls(gtx C) D {
 				})
 			}),
 			layout.Rigid(func(gtx C) D {
+				if !autostart.Offered() {
+					return D{}
+				}
 				return layout.Inset{Top: 12}.Layout(gtx, func(gtx C) D {
 					cb := material.CheckBox(a.th, &a.autostartOn, "Start at login")
 					cb.Color, cb.IconColor = colFg, colFg
@@ -318,6 +323,9 @@ func (a *App) trayControls(gtx C) D {
 				})
 			}),
 			layout.Rigid(func(gtx C) D {
+				if !autostart.Offered() {
+					return D{}
+				}
 				return layout.Inset{Top: 8}.Layout(gtx, func(gtx C) D {
 					l := material.Caption(a.th, atxt)
 					l.Color = colDim

@@ -12,6 +12,7 @@ require (
 	github.com/mewkiz/flac v1.0.12
 	golang.org/x/exp/shiny v0.0.0-20250408133849-7e4ce0ab07d0
 	golang.org/x/image v0.26.0
+	golang.org/x/sys v0.46.0
 )
 
 // The embedded backend, pinned to a released tag and upgraded on purpose — that
@@ -84,7 +85,6 @@ require (
 	github.com/yggdrasil-network/yggstack v0.0.0-20260619214331-c39db65e5bcc // indirect
 	golang.org/x/crypto v0.53.0 // indirect
 	golang.org/x/net v0.56.0 // indirect
-	golang.org/x/sys v0.46.0 // indirect
 	golang.org/x/text v0.38.0 // indirect
 	golang.org/x/time v0.7.0 // indirect
 	gvisor.dev/gvisor v0.0.0-20250812171554-968e93457fe6 // indirect

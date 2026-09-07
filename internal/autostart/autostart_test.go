@@ -1,3 +1,5 @@
+//go:build linux || freebsd || openbsd || netbsd || dragonfly
+
 package autostart
 
 import (
@@ -21,7 +23,7 @@ func TestEnableWritesTheEntryAndDisableRemovesIt(t *testing.T) {
 		t.Fatalf("Enable: %v", err)
 	}
 	want, _ := Path()
-	if p != want || filepath.Base(p) != Name {
+	if p != want || filepath.Base(p) != Name+".desktop" {
 		t.Fatalf("wrote %s, want %s", p, want)
 	}
 	raw, err := os.ReadFile(p)

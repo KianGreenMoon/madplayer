@@ -348,9 +348,14 @@ default and desktop-only:
   setting alone; a desktop without a tray host quits on close as before, and
   the caption says so. The media bus's Raise is real now (`CanRaise` true):
   a media widget's "open" brings the window back.
-- **"Start at login."** An entry in `$XDG_CONFIG_HOME/autostart`
-  (`internal/autostart`) whose truth is the file, so the switch cannot
-  disagree with what the desktop will do; it starts the program `--hidden`,
+- **"Start at login."** An entry in `$XDG_CONFIG_HOME/autostart` on the
+  freedesktop platforms and, since 2026-09-08, a value under the per-user
+  `Run` key on Windows (`internal/autostart`, one file per platform; the
+  registry over a Startup shortcut because a value is one string read back
+  exactly, with no shell API and no elevation; elsewhere `Offered()` is false
+  and the switch is not shown) — whose truth is what the desktop reads, so
+  the switch cannot disagree with what the desktop will do; it starts the
+  program `--hidden`,
   which begins in the tray with no window when a host shows the icon within
   ten seconds (the bar may start after us) and opens the window otherwise.
   The entry names the running executable, resolved through symlinks, and the

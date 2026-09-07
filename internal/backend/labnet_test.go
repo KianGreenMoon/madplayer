@@ -322,7 +322,8 @@ func (d *labDevice) fetcher(home *labHome) *remote.Fetcher {
 	f := remote.New(cache, labLogger(d.name+"/fetch"))
 	f.SetServers([]library.Server{{Base: home.URL(), Label: "home", Client: madclient.New(home.URL(), "lab-token")}})
 	f.SetSwarm(d.be, d.enrol)
-	f.SetSwarmBudget(8 * time.Second)
+	// The first-byte budget is speed-bound, so it stretches under -race.
+	f.SetSwarmBudget(8 * time.Second * labTimeoutScale)
 	return f
 }
 
@@ -389,7 +390,11 @@ func fetchUntil(t *testing.T, f *remote.Fetcher, item *queue.Item, patience time
 	deadline := time.Now().Add(patience)
 	var last error
 	for time.Now().Before(deadline) {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		// Per attempt, not per scenario: the budget one fetch gets before it
+		// counts as failed. Speed-bound — it is the constant the race
+		// detector actually tips over (labscale_on_test.go), not the
+		// patience, which is a calendar of route convergence and memo TTLs.
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second*labTimeoutScale)
 		path, err := f.Local(ctx, item)
 		cancel()
 		if err == nil {
@@ -403,7 +408,10 @@ func fetchUntil(t *testing.T, f *remote.Fetcher, item *queue.Item, patience time
 }
 
 // fetchNever asserts the fetch keeps failing for the whole window, and returns
-// the last error — what the player would have shown the person.
+// the last error — what the player would have shown the person. Its budgets
+// are deliberately NOT scaled under -race: the window is a clock (how long a
+// refusal must persist), and an attempt that merely times out inside it is
+// still the failure the window asserts.
 func fetchNever(t *testing.T, f *remote.Fetcher, item *queue.Item, window time.Duration) error {
 	t.Helper()
 	deadline := time.Now().Add(window)
@@ -609,7 +617,7 @@ func TestLabATruncatedSeederCopyNeverReachesPlayback(t *testing.T) {
 	// Generous only for the swarm's own budget arithmetic — the copy is under
 	// a megabyte, so the hash's verdict lands in seconds, and the resumes
 	// never fire (a declined resume is for bytes that PLAYED; none did).
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second*labTimeoutScale)
 	defer cancel()
 	var n int64
 	rc, _, err := f.Stream(ctx, item)

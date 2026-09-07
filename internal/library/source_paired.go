@@ -87,9 +87,10 @@ func (p pairedSource) Albums(ctx context.Context, artist Origin) ([]*Album, erro
 		if a.Year != nil {
 			al.Year = int(*a.Year)
 		}
-		// No CoverRef: the facade has no cover relay yet, and a ref nobody can
-		// fetch is worse than the placeholder. The device rows the merge folds
-		// these into usually bring the art anyway.
+		// The elected cover, fetched through the own node's in-process relay
+		// (FetchCover below) — the same election and the same bytes the web
+		// UI's /madnetwork pages show.
+		al.Cover = coverRefFor(p.ID(), a.CoverHash)
 		out = append(out, al)
 	}
 	return out, nil
@@ -133,6 +134,7 @@ func (p pairedSource) track(t *api.MadnetworkTrack, albumArtist, albumTitle stri
 		Artist:   credit,
 		Album:    albumTitle,
 		Duration: t.Duration,
+		Cover:    coverRefFor(p.ID(), t.CoverHash),
 	}
 	if t.Track != nil {
 		tr.TrackNumber = int(*t.Track)
@@ -166,6 +168,23 @@ func bestRendition(versions []api.MadnetworkVersion) (federation.CatalogRenditio
 		}
 	}
 	return federation.CatalogRendition{}, false
+}
+
+// FetchCover satisfies coverFetcher through the own node's in-process cover
+// relay (app.Madnetwork.Cover, the twin of the server's /api/madnetwork/cover):
+// the bytes come cache-through from whoever holds the cover — a cover this
+// device's library already has never touches the network — and the crops
+// land in the same variant tree the web UI serves from. medium (300 px), like
+// the other two sources: artwork keeps nothing larger than 320.
+func (p pairedSource) FetchCover(ctx context.Context, ref CoverRef) ([]byte, error) {
+	return p.mn.Cover(ctx, ref.Hash, "medium")
+}
+
+// FetchCoverOriginal: the ref's hash IS the original's identity, so the
+// no-size answer is exactly the canonical bytes, verified by the fetch
+// against this very hash.
+func (p pairedSource) FetchCoverOriginal(ctx context.Context, ref CoverRef) ([]byte, error) {
+	return p.mn.Cover(ctx, ref.Hash, "")
 }
 
 func (p pairedSource) Search(ctx context.Context, q string) (SearchResults, error) {

@@ -18,7 +18,8 @@ import (
 
 // fakeNode is app.Madnetwork with two artist pages, one album, one track.
 type fakeNode struct {
-	pages int
+	pages     int
+	coverAsks []string
 }
 
 func (f *fakeNode) Artists(_ context.Context, _ string, _ int, cursor string) ([]*database.MadnetworkArtist, string, error) {
@@ -34,7 +35,7 @@ func (f *fakeNode) AlbumsByArtist(_ context.Context, artist string) ([]*database
 		return nil, nil
 	}
 	year := int64(2021)
-	return []*database.MadnetworkAlbum{{Title: "Other", Tracks: 1, Year: &year}}, nil
+	return []*database.MadnetworkAlbum{{Title: "Other", Tracks: 1, Year: &year, CoverHash: "c0ffee"}}, nil
 }
 
 func (f *fakeNode) TracksByAlbum(_ context.Context, artist, album string) ([]*api.MadnetworkTrack, error) {
@@ -44,7 +45,7 @@ func (f *fakeNode) TracksByAlbum(_ context.Context, artist, album string) ([]*ap
 	n := int64(1)
 	return []*api.MadnetworkTrack{
 		{
-			Title: "Endure Emptiness", Track: &n, Duration: 183,
+			Title: "Endure Emptiness", Track: &n, Duration: 183, CoverHash: "c0ffee",
 			Versions: []api.MadnetworkVersion{{
 				Renditions: []federation.CatalogRendition{{Hash: "abc123", Size: 4 << 20, Codec: "MP3"}},
 			}},
@@ -66,6 +67,12 @@ func (f *fakeNode) Search(_ context.Context, q string) (*api.MadnetworkSearchRes
 
 func (f *fakeNode) Holders(context.Context, string) (int64, []string, error) {
 	return 0, nil, nil
+}
+
+// Cover records what was asked and answers with bytes naming the request.
+func (f *fakeNode) Cover(_ context.Context, hash, size string) ([]byte, error) {
+	f.coverAsks = append(f.coverAsks, hash+"@"+size)
+	return []byte("cover:" + hash + ":" + size), nil
 }
 
 func TestPairedSourceBrowsesTheOwnNode(t *testing.T) {
@@ -163,3 +170,62 @@ func (emptyDevice) Renditions(context.Context, int64) ([]database.DuplicateRendi
 	return nil, nil
 }
 func (emptyDevice) BlobPath(string) (string, bool) { return "", false }
+
+// A paired row's cover is fetched through the own node's relay: the album
+// and its tracks carry the elected hash as a ref the library routes back to
+// the node, medium for the screen and the original for a kept album.
+func TestPairedRowsCarryCoversFetchedThroughTheNode(t *testing.T) {
+	node := &fakeNode{}
+	lib := New(emptyDevice{})
+	lib.SetNode(node)
+	ctx := context.Background()
+
+	artists, _, err := lib.Artists(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var kain *Artist
+	for _, a := range artists {
+		if a.Name == "Kain Vinosec" {
+			kain = a
+		}
+	}
+	if kain == nil {
+		t.Fatal("the paired catalogue's artist is missing")
+	}
+	albums, _, err := lib.Albums(ctx, kain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var al *Album
+	for _, a := range albums {
+		if a.Title == "Other" {
+			al = a
+		}
+	}
+	if al == nil {
+		t.Fatalf("no album Other in %d rows", len(albums))
+	}
+	if al.Cover.Zero() || al.Cover.Hash != "c0ffee" || al.Cover.Source != pairedID() {
+		t.Fatalf("album cover ref %+v, want the elected hash on the paired source", al.Cover)
+	}
+	tracks, _, err := lib.AlbumTracks(ctx, al)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tracks) == 0 || tracks[0].Cover.Hash != "c0ffee" {
+		t.Fatalf("track cover ref missing: %+v", tracks)
+	}
+
+	got, err := lib.FetchCover(ctx, al.Cover)
+	if err != nil || string(got) != "cover:c0ffee:medium" {
+		t.Fatalf("FetchCover = %q, %v; want the medium crop through the node", got, err)
+	}
+	got, err = lib.FetchCoverOriginal(ctx, al.Cover)
+	if err != nil || string(got) != "cover:c0ffee:" {
+		t.Fatalf("FetchCoverOriginal = %q, %v; want the original through the node", got, err)
+	}
+	if len(node.coverAsks) != 2 {
+		t.Fatalf("the node was asked %v, want exactly the two fetches", node.coverAsks)
+	}
+}

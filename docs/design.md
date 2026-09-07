@@ -282,9 +282,14 @@ row's queue items carry `Base = library.NodeSourceBase` ("@node"), which is
 how `remote.Fetcher` knows to take the holder plan from the own node
 (`backend.CommunityHolders`, same stale-holder freshness as a server's
 /holders endpoint) and to present **no vouch** — friendship, not a token, is
-what a holder places. No covers yet: the facade has no cover relay, so paired
-rows show the placeholder unless the device rows the merge folds them into
-bring the art.
+what a holder places. Covers followed on 2026-09-07: album and track rows
+carry the elected `cover_hash` as a `CoverRef` on the paired source, and
+`pairedSource.FetchCover` / `FetchCoverOriginal` answer through the own
+node's in-process relay (`app.Madnetwork.Cover`, the server relay's core
+extracted into `api.MadnetworkCovers`) — cache-through from whoever holds the
+cover, into the same variant tree the web UI serves from, medium for the
+screen and the original for a kept album. A cover this device's library
+already has never touches the network.
 
 **And sharing is chosen here, per item (built 2026-08-26 — full-node-mode.md
 P2, the facade half is its W2).** Nothing is shared until chosen: the node

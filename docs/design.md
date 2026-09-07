@@ -319,6 +319,39 @@ node keeps the key it came up with, and the page says "restart to come back
 as …" on every visit until then (`backend.PendingKey`). Restoring on a fresh
 install is the "I already have a key" path; a guided first run is P3's.
 
+**And the node can stay when the window goes (built 2026-09-07 —
+full-node-mode.md P5).** Membership is presence, and a node that dies when
+the player window closes is the churny neighbour the availability machinery
+keeps writing off. Two switches under the node-mode switch, both off by
+default and desktop-only:
+
+- **"Keep running in the tray when the window is closed."** The program puts
+  a StatusNotifierItem on the session bus (`internal/tray`, hand-rolled over
+  godbus like the media bus; Show/Quit menu via dbusmenu) and, with it
+  showing, a closed window leaves the process — mesh, seeding, catalog sync,
+  *and playback*: a player that fell silent because its window closed would
+  be a bug report, and the media keys still reach it. A closed Gio window is
+  destroyed, so "the window" is a value that comes and goes (`ui/tray.go`):
+  hide stores nil and writes the state a quit would have, show opens a fresh
+  window with the same options, `Run` alternates between drawing and waiting.
+  **Nothing hides unless a host shows the icon** — the switch is honoured
+  through `tray.Item.Hosted` at the moment of closing, never through the
+  setting alone; a desktop without a tray host quits on close as before, and
+  the caption says so. The media bus's Raise is real now (`CanRaise` true):
+  a media widget's "open" brings the window back.
+- **"Start at login."** An entry in `$XDG_CONFIG_HOME/autostart`
+  (`internal/autostart`) whose truth is the file, so the switch cannot
+  disagree with what the desktop will do; it starts the program `--hidden`,
+  which begins in the tray with no window when a host shows the icon within
+  ten seconds (the bar may start after us) and opens the window otherwise.
+  The entry names the running executable, resolved through symlinks, and the
+  caption notices when that program is gone. Off removes the one file On
+  wrote — unregistering is as easy as registering (owner's rule).
+
+Verified live on niri + waybar: close → tray, Activate → window back, close →
+tray, menu Quit → exit; `--hidden` start → no window, MPRIS Raise → window,
+MPRIS Quit → exit.
+
 ### Where the bytes live: three directories, two of them technical
 
 A server ingests by **upload** into storage it manages, and nobody browses

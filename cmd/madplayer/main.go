@@ -11,6 +11,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 
 	"gioui.org/app"
 
@@ -81,7 +82,13 @@ func run() error {
 
 	w := new(app.Window)
 	w.Option(ui.WindowOptions()...)
-	return ui.New(w, pl, be).Run()
+	u := ui.New(w, pl, be)
+	// --hidden is what the autostart entry passes: begin in the tray, with no
+	// window, when a tray host shows the icon (internal/autostart).
+	if slices.Contains(os.Args[1:], "--hidden") {
+		u.StartHidden()
+	}
+	return u.Run()
 }
 
 // dataDir is where this install keeps its library: the database, the symlinks

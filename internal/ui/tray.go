@@ -23,6 +23,7 @@ package ui
 import (
 	"image"
 	"log"
+	"os"
 	"time"
 
 	"gioui.org/app"
@@ -30,6 +31,7 @@ import (
 	"gioui.org/unit"
 	"gioui.org/widget/material"
 
+	"daemonlord.ygg/madplayer/internal/autostart"
 	"daemonlord.ygg/madplayer/internal/icon"
 	"daemonlord.ygg/madplayer/internal/tray"
 )
@@ -201,6 +203,25 @@ func (a *App) trayHostedWithin(d time.Duration) bool {
 	}
 }
 
+// saveAutostart is the login switch: the entry written or removed, and the
+// truth re-read from disk either way.
+func (a *App) saveAutostart(on bool) {
+	var err error
+	if on {
+		_, err = autostart.Enable()
+	} else {
+		err = autostart.Disable()
+	}
+	a.mu.Lock()
+	if err != nil {
+		a.autostartMsg = "could not change the login entry: " + err.Error()
+	} else {
+		a.autostartMsg = ""
+	}
+	a.mu.Unlock()
+	a.autostartOn.Value, _ = autostart.Enabled()
+}
+
 // saveTray is the switch: written, then applied.
 func (a *App) saveTray(on bool) {
 	a.mu.Lock()
@@ -242,6 +263,34 @@ func (a *App) trayControls(gtx C) D {
 		txt = "On. Closing the window keeps the node and the music; the tray icon brings " +
 			"the window back, and its Quit stops everything."
 	}
+	// The login entry's truth is the file, read once per frame is too often
+	// and once ever is stale — so on the same cadence as the peer table.
+	if time.Since(a.autostartRead) > pairingRefresh {
+		a.autostartRead = time.Now()
+		a.autostartOn.Value, a.autostartExe = autostart.Enabled()
+	}
+	if a.autostartOn.Update(gtx) {
+		a.saveAutostart(a.autostartOn.Value)
+	}
+	a.mu.Lock()
+	amsg := a.autostartMsg
+	a.mu.Unlock()
+	var atxt string
+	switch {
+	case amsg != "":
+		atxt = amsg
+	case !a.autostartOn.Value:
+		atxt = "Off. The node runs only while you start madplayer."
+	case a.autostartExe != "" && !exists(a.autostartExe):
+		atxt = "On, but the entry starts " + a.autostartExe + ", which is not there any more — " +
+			"switch it off and on again from the program you now use."
+	case !on:
+		atxt = "On: madplayer starts at login. With the tray off it opens its window; " +
+			"switch the tray on to have it start quietly."
+	default:
+		atxt = "On: madplayer starts at login, in the tray."
+	}
+
 	return layout.Inset{Top: 16}.Layout(gtx, func(gtx C) D {
 		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 			layout.Rigid(func(gtx C) D {
@@ -262,6 +311,25 @@ func (a *App) trayControls(gtx C) D {
 					return l.Layout(gtx)
 				})
 			}),
+			layout.Rigid(func(gtx C) D {
+				return layout.Inset{Top: 12}.Layout(gtx, func(gtx C) D {
+					cb := material.CheckBox(a.th, &a.autostartOn, "Start at login")
+					cb.Color, cb.IconColor = colFg, colFg
+					return cb.Layout(gtx)
+				})
+			}),
+			layout.Rigid(func(gtx C) D {
+				return layout.Inset{Top: 8}.Layout(gtx, func(gtx C) D {
+					l := material.Caption(a.th, atxt)
+					l.Color = colDim
+					return l.Layout(gtx)
+				})
+			}),
 		)
 	})
+}
+
+func exists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }

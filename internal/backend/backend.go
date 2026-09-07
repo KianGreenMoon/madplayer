@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"daemonlord.ygg/madshare/app"
@@ -47,6 +48,13 @@ type Backend struct {
 
 	net     app.Network
 	meshWhy string
+
+	// keyFile is the node's identity PEM (identity.go); "" without a mesh.
+	keyFile string
+
+	mu sync.Mutex
+	// pendingKey is a restored identity waiting for the next start, under mu.
+	pendingKey string
 }
 
 // Options are the choices a person made that the backend cannot infer.
@@ -123,6 +131,9 @@ func Open(ctx context.Context, dataDir string, lg *log.Logger, opts Options) (*B
 		return nil, fmt.Errorf("backend: resolve owner: %w", err)
 	}
 	b := &Backend{inst: inst, dir: dataDir, log: lg}
+	if opts.Mesh {
+		b.keyFile = cfg.Yggdrasil.KeyFile
+	}
 	if ok {
 		// Not fatal when absent: an install provisioned under a different name
 		// still browses and plays, it just cannot attribute what it imports.

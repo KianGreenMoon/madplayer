@@ -17,6 +17,7 @@ package ui
 
 import (
 	"context"
+	"errors"
 	"io"
 	"strings"
 	"time"
@@ -40,8 +41,9 @@ const pairingRefresh = 5 * time.Second
 // be a top-level App field so the typing-gate reflection test can see it).
 // The widget fields belong to the UI goroutine; the rest is guarded by App.mu.
 type pairingState struct {
-	btnAdd, btnCopy widget.Clickable
-	accept, remove  []widget.Clickable
+	btnAdd, btnCopy       widget.Clickable
+	btnBackUp, btnRestore widget.Clickable
+	accept, remove        []widget.Clickable
 
 	// under App.mu
 	peers     []backend.Peer
@@ -99,6 +101,12 @@ func (a *App) pairingControls(gtx C) D {
 	}
 	if a.pairing.btnAdd.Clicked(gtx) && !busy {
 		a.pairWith(a.pairEd.Text())
+	}
+	if a.pairing.btnBackUp.Clicked(gtx) && !busy {
+		a.backUpKey(a.keyPathEd.Text())
+	}
+	if a.pairing.btnRestore.Clicked(gtx) && !busy {
+		a.restoreKey(a.keyPathEd.Text())
 	}
 	for len(a.pairing.accept) < len(peers) {
 		a.pairing.accept = append(a.pairing.accept, widget.Clickable{})
@@ -159,6 +167,8 @@ func (a *App) pairingControls(gtx C) D {
 			})
 		})
 	}
+
+	rows = append(rows, a.nodeKeyRows(busy)...)
 
 	rows = append(rows, func(gtx C) D {
 		return layout.Inset{Top: 8}.Layout(gtx, func(gtx C) D {
@@ -358,6 +368,118 @@ func (a *App) removePair(id int64) {
 			return "", err
 		}
 		return "Removed", nil
+	})
+}
+
+// ── The node key ─────────────────────────────────────────────────────────────
+//
+// The key file IS the identity (backend/identity.go), and a person running a
+// player does not know it exists — so the backup is offered here, where the
+// consequence is visible, in the words of full-node-mode.md P6: lose it and
+// every friendship must be re-paired, every published claim is orphaned.
+// One path box serves both acts: a backup writes the key there, a restore
+// reads one from there. A restore takes effect at the next start — the node
+// keeps the key it came up with — and the line under the box says so until
+// the restart happens, on every visit, because a restart is easy to forget.
+
+// nodeKeyRows is the block: the warning, the path box with its two acts, and
+// the standing "restart to apply" line when a restore waits.
+func (a *App) nodeKeyRows(busy bool) []layout.Widget {
+	rows := []layout.Widget{
+		func(gtx C) D {
+			return layout.Inset{Top: 12}.Layout(gtx, func(gtx C) D {
+				l := material.Body2(a.th, "This node's key")
+				l.Color = colFg
+				return l.Layout(gtx)
+			})
+		},
+		func(gtx C) D {
+			return a.sectionHint(gtx,
+				"The key file is this node's identity: lose it and every friendship must be "+
+					"paired again, and everything this node published is orphaned. Back it up "+
+					"to a place you keep. On a fresh install, restoring that file brings the "+
+					"node back as itself.")
+		},
+		func(gtx C) D {
+			return a.clipRow(gtx, &a.clipKeyPath, &a.keyPathEd, "~/madplayer-node.key", true,
+				layout.Rigid(func(gtx C) D {
+					return a.smallButton(gtx, &a.pairing.btnBackUp, "Back up", busy)
+				}),
+				layout.Rigid(func(gtx C) D {
+					return layout.Inset{Left: 6}.Layout(gtx, func(gtx C) D {
+						return a.smallButton(gtx, &a.pairing.btnRestore, "Restore", busy)
+					})
+				}),
+			)
+		},
+	}
+	if pending := a.be.PendingKey(); pending != "" {
+		rows = append(rows, func(gtx C) D {
+			return layout.Inset{Top: 6}.Layout(gtx, func(gtx C) D {
+				l := material.Caption(a.th, "A restored key is waiting — restart madplayer to come back as "+
+					shortKey(pending)+". Until then this node still runs on the key above.")
+				l.Color = colFg
+				return l.Layout(gtx)
+			})
+		})
+	}
+	return rows
+}
+
+// keyAction is pairAction without the editor clear: the path in the box is
+// worth keeping — it is where the backup went, or where the next one goes.
+func (a *App) keyAction(run func() (string, error)) {
+	a.mu.Lock()
+	if a.pairing.busy {
+		a.mu.Unlock()
+		return
+	}
+	a.pairing.busy = true
+	a.mu.Unlock()
+
+	go func() {
+		msg, err := run()
+		a.mu.Lock()
+		a.pairing.busy = false
+		if err != nil {
+			a.pairing.msg = err.Error()
+		} else {
+			a.pairing.msg = msg
+		}
+		a.mu.Unlock()
+		a.win.Invalidate()
+	}()
+}
+
+func (a *App) backUpKey(path string) {
+	if strings.TrimSpace(path) == "" {
+		a.setPairMsg("Type where to keep the backup — a file name, or a folder to put it in")
+		return
+	}
+	a.keyAction(func() (string, error) {
+		dst, err := a.be.BackUpKey(path)
+		if err != nil {
+			return "", err
+		}
+		return "Key backed up to " + dst + " — keep that file somewhere safe", nil
+	})
+}
+
+func (a *App) restoreKey(path string) {
+	if strings.TrimSpace(path) == "" {
+		a.setPairMsg("Type the path of the key file to restore")
+		return
+	}
+	a.keyAction(func() (string, error) {
+		pub, err := a.be.RestoreKey(path)
+		if errors.Is(err, backend.ErrSameKey) {
+			return "That file holds the key this node already runs on — nothing to restore", nil
+		}
+		if err != nil {
+			return "", err
+		}
+		return "Key restored. Restart madplayer to come back as " + shortKey(pub) +
+			"; the key it ran on until now is kept beside it", nil
 	})
 }
 

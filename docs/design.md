@@ -302,6 +302,23 @@ says so. Propagation is honest: a scope change binds bytes and catalog
 immediately, a friend's *listing* follows on its next catalog pull (up to
 madshare's 15-minute sync cadence).
 
+**And the key can be backed up (built 2026-09-07 — full-node-mode.md P6).**
+The PEM at `<data dir>/federation.key` IS the node: the mesh address derives
+from it, every friendship names it, every published claim is signed by it. A
+server's operator knows the file exists; a person running a player does not,
+so the Paired nodes page carries a "This node's key" block under the own card
+— the warning in plain words, one path box, *Back up* and *Restore*. Both are
+file operations in `backend/identity.go` (no facade surface asked for: the
+file is the contract, and its PEM is PKCS#8 ed25519, which the standard
+library reads), so `cp` gives the same result. Rules: a backup is idempotent
+at the same path and refuses to replace a different file; a directory means
+"in there, under the key's own name"; a restore validates the PEM, is a no-op
+for the key already running, keeps the replaced key beside the file as
+`federation.key.replaced-<time>`, and takes effect at the next start — the
+node keeps the key it came up with, and the page says "restart to come back
+as …" on every visit until then (`backend.PendingKey`). Restoring on a fresh
+install is the "I already have a key" path; a guided first run is P3's.
+
 ### Where the bytes live: three directories, two of them technical
 
 A server ingests by **upload** into storage it manages, and nobody browses

@@ -237,6 +237,10 @@ type App struct {
 	// it; everything else the page owns lives in the one struct.
 	pairEd  widget.Editor
 	pairing pairingState
+	// keyPathEd is the path box of the node-key backup and restore on that
+	// same page (pairing.go §"The node key"): a top-level field for the gate
+	// walk, like every editor.
+	keyPathEd widget.Editor
 	// peerEd and its buttons are the underlay peer list (peers.go): the third
 	// way onto the mesh, for a device whose server publishes no peering and
 	// whose network has none to discover.
@@ -249,6 +253,7 @@ type App struct {
 	// fields so a new box cannot quietly arrive without them.
 	clipFolder, clipKeepDir      clipButtons
 	clipCard, clipPeer           clipButtons
+	clipKeyPath                  clipButtons
 	clipAddr, clipUser, clipPass clipButtons
 	// Settings is an index of pages rather than one scroll (settingsnav.go).
 	// settingsPage is which one is open, settingsBtn one clickable per index
@@ -327,6 +332,7 @@ func newApp(win *app.Window, pl *player.Player, be *backend.Backend, store *pref
 	a.cacheEd.SingleLine = true
 	a.keepDirEd.SingleLine = true
 	a.pairEd.SingleLine = true
+	a.keyPathEd.SingleLine = true
 
 	cfg, err := a.store.Load()
 	if err != nil {

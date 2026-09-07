@@ -130,3 +130,35 @@ func (b *Backend) RemovePeer(ctx context.Context, id int64) error {
 	}
 	return p.RemovePeer(ctx, id)
 }
+
+// BlockPeer cuts a node off — no service at all, not even a ping — and
+// publishes the block as a distrust mark carrying reason, since there are no
+// private blocks on the madnetwork: the whole branch that node introduced
+// leaves this device's community with it. The reason is display text the
+// network sees; empty is allowed.
+func (b *Backend) BlockPeer(ctx context.Context, id int64, reason string) error {
+	p, ok := b.inst.Pairing()
+	if !ok {
+		return errors.New("the madnetwork is not running")
+	}
+	return p.BlockPeer(ctx, id, reason)
+}
+
+// UnblockPeer lifts a block; the row returns to the state it had before.
+func (b *Backend) UnblockPeer(ctx context.Context, id int64) error {
+	p, ok := b.inst.Pairing()
+	if !ok {
+		return errors.New("the madnetwork is not running")
+	}
+	return p.UnblockPeer(ctx, id)
+}
+
+// RenamePeer sets what this device calls a node, over what the node calls
+// itself. An empty name clears the label and the heard name shows again.
+func (b *Backend) RenamePeer(ctx context.Context, id int64, name string) error {
+	p, ok := b.inst.Pairing()
+	if !ok {
+		return errors.New("the madnetwork is not running")
+	}
+	return p.RenamePeer(ctx, id, strings.TrimSpace(name))
+}

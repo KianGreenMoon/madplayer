@@ -20,6 +20,15 @@ func TestPairingRefusesWithoutTheMesh(t *testing.T) {
 	if _, err := be.PairWith(context.Background(), "0000"); err == nil {
 		t.Error("PairWith answered with the mesh off; want a refusal")
 	}
+	if err := be.BlockPeer(context.Background(), 1, "x"); err == nil {
+		t.Error("BlockPeer answered with the mesh off; want a refusal")
+	}
+	if err := be.UnblockPeer(context.Background(), 1); err == nil {
+		t.Error("UnblockPeer answered with the mesh off; want a refusal")
+	}
+	if err := be.RenamePeer(context.Background(), 1, "x"); err == nil {
+		t.Error("RenamePeer answered with the mesh off; want a refusal")
+	}
 }
 
 func TestPairingRoundTrip(t *testing.T) {
@@ -58,6 +67,26 @@ func TestPairingRoundTrip(t *testing.T) {
 	}
 	if !peers[0].LastSeen.IsZero() {
 		t.Errorf("LastSeen = %v for a never-contacted peer, want zero", peers[0].LastSeen)
+	}
+
+	// Parity with the server's Network page: rename, block, unblock.
+	peerID := peers[0].ID
+	if err := be.RenamePeer(context.Background(), peerID, "  the laptop  "); err != nil {
+		t.Fatalf("RenamePeer: %v", err)
+	}
+	if err := be.BlockPeer(context.Background(), peerID, "sent junk"); err != nil {
+		t.Fatalf("BlockPeer: %v", err)
+	}
+	peers, _ = be.Peers(context.Background())
+	if len(peers) != 1 || peers[0].State != "blocked" || peers[0].Name != "the laptop" {
+		t.Fatalf("after rename+block: %+v; want blocked, named the laptop", peers)
+	}
+	if err := be.UnblockPeer(context.Background(), peerID); err != nil {
+		t.Fatalf("UnblockPeer: %v", err)
+	}
+	peers, _ = be.Peers(context.Background())
+	if len(peers) != 1 || peers[0].State != "pending_outgoing" {
+		t.Fatalf("after unblock: %+v; want pending_outgoing again", peers)
 	}
 
 	if err := be.RemovePeer(context.Background(), peers[0].ID); err != nil {

@@ -266,6 +266,9 @@ type App struct {
 	// same page (pairing.go §"The node key"): a top-level field for the gate
 	// walk, like every editor.
 	keyPathEd widget.Editor
+	// peerEditEd is the rename/block-reason box under a peer row (pairing.go
+	// §"Rename and block"); typed, short, desktop-only — no clipboard pair.
+	peerEditEd widget.Editor
 	// peerEd and its buttons are the underlay peer list (peers.go): the third
 	// way onto the mesh, for a device whose server publishes no peering and
 	// whose network has none to discover.
@@ -360,6 +363,7 @@ func newApp(win *app.Window, pl *player.Player, be *backend.Backend, store *pref
 	a.keepDirEd.SingleLine = true
 	a.pairEd.SingleLine = true
 	a.keyPathEd.SingleLine = true
+	a.peerEditEd.SingleLine = true
 
 	cfg, err := a.store.Load()
 	if err != nil {

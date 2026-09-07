@@ -109,7 +109,7 @@ func (a *App) editors() []*widget.Editor {
 		&a.search, &a.folderEd,
 		&a.srvAddr, &a.srvUser, &a.srvPass,
 		&a.cacheEd, &a.keepDirEd,
-		&a.pairEd, &a.keyPathEd, &a.peerEd,
+		&a.pairEd, &a.keyPathEd, &a.peerEditEd, &a.peerEd,
 	}
 }
 

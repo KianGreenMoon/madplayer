@@ -256,9 +256,13 @@ only what the *client's controls* look like, which is the half this repo owns.
   const (`ui.nodeModeOffered`, build-tagged) removes the section, its page and
   everything it gates from Android builds — not merely hides it.
 - madshare's `app.Pairing` underneath is **stable since 2026-08-26** (W1,
-  owner's call — the marker came off with node mode's graduation); block and
-  rename parity remain that plan's open question 1 and would arrive
-  additively. The phone-side transfer policy is separate and later:
+  owner's call — the marker came off with node mode's graduation). Block,
+  unblock and rename arrived additively on **2026-09-08** (open question 1,
+  owner's call): every row on the Paired nodes page has *Rename* and *Block*
+  (or *Unblock*), and pressing either opens one editor under that row — the
+  name, or the reason a block carries onto the network, since there are no
+  private blocks — with the act's own button and Cancel. A dialog Gio does
+  not have, and a page does not need. The phone-side transfer policy is separate and later:
   `docs/plans/mobile-seeding-controls.md`.
 - **"Only local" is the `/library` analog and node mode counts for it**
   (2026-08-26, owner's call). The scope button and the per-row origin badges

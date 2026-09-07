@@ -44,6 +44,14 @@ type pairingState struct {
 	btnAdd, btnCopy       widget.Clickable
 	btnBackUp, btnRestore widget.Clickable
 	accept, remove        []widget.Clickable
+	rename, block         []widget.Clickable
+	unblock               []widget.Clickable
+	// The inline editor under one row (peerEdit.go): which peer, for which
+	// act, and its two buttons. UI goroutine only.
+	editing       int64
+	editKind      string // "rename" or "block"
+	btnEditOK     widget.Clickable
+	btnEditCancel widget.Clickable
 
 	// under App.mu
 	peers     []backend.Peer
@@ -111,6 +119,9 @@ func (a *App) pairingControls(gtx C) D {
 	for len(a.pairing.accept) < len(peers) {
 		a.pairing.accept = append(a.pairing.accept, widget.Clickable{})
 		a.pairing.remove = append(a.pairing.remove, widget.Clickable{})
+		a.pairing.rename = append(a.pairing.rename, widget.Clickable{})
+		a.pairing.block = append(a.pairing.block, widget.Clickable{})
+		a.pairing.unblock = append(a.pairing.unblock, widget.Clickable{})
 	}
 	for i := range peers {
 		if a.pairing.accept[i].Clicked(gtx) && !busy {
@@ -119,6 +130,21 @@ func (a *App) pairingControls(gtx C) D {
 		if a.pairing.remove[i].Clicked(gtx) && !busy {
 			a.removePair(peers[i].ID)
 		}
+		if a.pairing.rename[i].Clicked(gtx) && !busy {
+			a.beginPeerEdit(peers[i], "rename")
+		}
+		if a.pairing.block[i].Clicked(gtx) && !busy {
+			a.beginPeerEdit(peers[i], "block")
+		}
+		if a.pairing.unblock[i].Clicked(gtx) && !busy {
+			a.unblockPair(peers[i].ID)
+		}
+	}
+	if a.pairing.btnEditOK.Clicked(gtx) && !busy {
+		a.commitPeerEdit()
+	}
+	if a.pairing.btnEditCancel.Clicked(gtx) {
+		a.cancelPeerEdit()
 	}
 
 	rows := []layout.Widget{
@@ -200,6 +226,9 @@ func (a *App) pairingControls(gtx C) D {
 
 	for i := range peers {
 		rows = append(rows, a.peerRow(i, peers[i], busy))
+		if a.pairing.editing == peers[i].ID && a.pairing.editKind != "" {
+			rows = append(rows, a.peerEditRow(peers[i], busy))
+		}
 	}
 
 	return pairingList(gtx, rows)
@@ -254,11 +283,125 @@ func (a *App) peerRow(i int, p backend.Peer, busy bool) layout.Widget {
 					})
 				}),
 				layout.Rigid(func(gtx C) D {
+					return layout.Inset{Right: 8}.Layout(gtx, func(gtx C) D {
+						return a.smallButton(gtx, &a.pairing.rename[i], "Rename", busy)
+					})
+				}),
+				layout.Rigid(func(gtx C) D {
+					// Block and Unblock are the same slot: a row is one or the
+					// other. Self-defence is not optional for a personal node,
+					// and a block is public — the reason travels with it.
+					return layout.Inset{Right: 8}.Layout(gtx, func(gtx C) D {
+						if p.State == "blocked" {
+							return a.smallButton(gtx, &a.pairing.unblock[i], "Unblock", busy)
+						}
+						return a.smallButton(gtx, &a.pairing.block[i], "Block", busy)
+					})
+				}),
+				layout.Rigid(func(gtx C) D {
 					return a.smallButton(gtx, &a.pairing.remove[i], "Remove", busy)
 				}),
 			)
 		})
 	}
+}
+
+// ── Rename and block: an editor under the row ────────────────────────────────
+//
+// Both acts take a line of text — a name, or the reason a block carries onto
+// the network — so pressing either opens one editor under that row rather
+// than a dialog Gio does not have: the box, the act's own button, Cancel.
+// One editor serves both, hinted for the act; a second press elsewhere moves
+// it.
+
+// beginPeerEdit opens the editor under a row.
+func (a *App) beginPeerEdit(p backend.Peer, kind string) {
+	a.pairing.editing, a.pairing.editKind = p.ID, kind
+	if kind == "rename" {
+		a.peerEditEd.SetText(p.Name)
+	} else {
+		a.peerEditEd.SetText("")
+	}
+}
+
+func (a *App) cancelPeerEdit() {
+	a.pairing.editing, a.pairing.editKind = 0, ""
+	a.peerEditEd.SetText("")
+}
+
+// commitPeerEdit runs the act the open editor is for.
+func (a *App) commitPeerEdit() {
+	id, kind, text := a.pairing.editing, a.pairing.editKind, a.peerEditEd.Text()
+	if id == 0 || kind == "" {
+		return
+	}
+	a.cancelPeerEdit()
+	switch kind {
+	case "rename":
+		a.renamePair(id, text)
+	case "block":
+		a.blockPair(id, text)
+	}
+}
+
+// peerEditRow is the editor: box, act, cancel.
+func (a *App) peerEditRow(p backend.Peer, busy bool) layout.Widget {
+	return func(gtx C) D {
+		hint, label := "What you call this node", "Save"
+		if a.pairing.editKind == "block" {
+			hint, label = "Why — shown to the whole network with the block", "Block"
+		}
+		return layout.Inset{Top: 6, Left: 12}.Layout(gtx, func(gtx C) D {
+			return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+				layout.Flexed(1, func(gtx C) D {
+					e := material.Editor(a.th, &a.peerEditEd, hint)
+					e.Color, e.HintColor = colFg, colDim
+					return e.Layout(gtx)
+				}),
+				layout.Rigid(func(gtx C) D {
+					return layout.Inset{Left: 8}.Layout(gtx, func(gtx C) D {
+						return a.smallButton(gtx, &a.pairing.btnEditOK, label, busy)
+					})
+				}),
+				layout.Rigid(func(gtx C) D {
+					return layout.Inset{Left: 8}.Layout(gtx, func(gtx C) D {
+						return a.smallButton(gtx, &a.pairing.btnEditCancel, "Cancel", false)
+					})
+				}),
+			)
+		})
+	}
+}
+
+func (a *App) renamePair(id int64, name string) {
+	a.pairAction(func(ctx context.Context) (string, error) {
+		if err := a.be.RenamePeer(ctx, id, name); err != nil {
+			return "", err
+		}
+		if strings.TrimSpace(name) == "" {
+			return "Name cleared — the node's own name shows again", nil
+		}
+		return "Renamed", nil
+	})
+}
+
+func (a *App) blockPair(id int64, reason string) {
+	a.pairAction(func(ctx context.Context) (string, error) {
+		if err := a.be.BlockPeer(ctx, id, reason); err != nil {
+			return "", err
+		}
+		return "Blocked — the network sees the block and its reason; the nodes it introduced " +
+			"are out of your community with it", nil
+	})
+}
+
+func (a *App) unblockPair(id int64) {
+	a.pairAction(func(ctx context.Context) (string, error) {
+		if err := a.be.UnblockPeer(ctx, id); err != nil {
+			return "", err
+		}
+		return "Unblocked — the row is back where it was", nil
+	})
 }
 
 // peerStateText is a trust state in the words of the person waiting on it.

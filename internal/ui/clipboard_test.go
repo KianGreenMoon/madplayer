@@ -134,8 +134,9 @@ func TestCopyingAnEmptyBoxDoesNotWipeTheClipboard(t *testing.T) {
 // out is a decision somebody has to write down (see clipboard.go).
 func TestEverySettingsBoxHasClipboardButtons(t *testing.T) {
 	noClipboard := map[string]string{
-		"search":  "typed, and not a setting",
-		"cacheEd": "four digits on a row that is already full",
+		"search":     "typed, and not a setting",
+		"cacheEd":    "four digits on a row that is already full",
+		"peerEditEd": "a name or a reason, typed, on a desktop-only page",
 	}
 
 	v := reflect.ValueOf(testApp(t)).Elem()

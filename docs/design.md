@@ -285,8 +285,10 @@ community's rows enter and leave the merged list with the switch. A paired
 row's queue items carry `Base = library.NodeSourceBase` ("@node"), which is
 how `remote.Fetcher` knows to take the holder plan from the own node
 (`backend.CommunityHolders`, same stale-holder freshness as a server's
-/holders endpoint) and to present **no vouch** — friendship, not a token, is
-what a holder places. Covers followed on 2026-09-07: album and track rows
+/holders endpoint — and, since 2026-09-08, madshare's one-hop holder query
+across the friend ring when the own tables name nobody, growth-limit.md G2,
+so a paired player fetches beyond what it caches) and to present **no
+vouch** — friendship, not a token, is what a holder places. Covers followed on 2026-09-07: album and track rows
 carry the elected `cover_hash` as a `CoverRef` on the paired source, and
 `pairedSource.FetchCover` / `FetchCoverOriginal` answer through the own
 node's in-process relay (`app.Madnetwork.Cover`, the server relay's core

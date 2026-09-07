@@ -71,7 +71,7 @@ func (a *App) reconcileKept() {
 	a.mu.Lock()
 	a.keepStrays = survey.Strays
 	a.mu.Unlock()
-	a.win.Invalidate()
+	a.invalidate()
 }
 
 // keepable reports whether a track is worth offering to keep: it plays from
@@ -152,7 +152,7 @@ func (a *App) keep(tracks []*library.Track, albumArtist string) {
 			a.mu.Lock()
 			a.keeping = false
 			a.mu.Unlock()
-			a.win.Invalidate()
+			a.invalidate()
 		}()
 
 		ctx := context.Background()

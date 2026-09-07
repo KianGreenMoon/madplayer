@@ -294,7 +294,7 @@ func (a *App) withClearing(run func() string) {
 		// page, 2026-08-16.)
 		a.refreshCacheSize()
 		a.refreshSeedUsage()
-		a.win.Invalidate()
+		a.invalidate()
 	}()
 }
 

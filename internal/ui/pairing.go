@@ -309,7 +309,7 @@ func (a *App) refreshPairing() {
 		a.pairing.msg = err.Error()
 	}
 	a.mu.Unlock()
-	a.win.Invalidate()
+	a.invalidate()
 }
 
 // pairAction runs one pairing act at a time, reports on the section's own
@@ -447,7 +447,7 @@ func (a *App) keyAction(run func() (string, error)) {
 			a.pairing.msg = msg
 		}
 		a.mu.Unlock()
-		a.win.Invalidate()
+		a.invalidate()
 	}()
 }
 

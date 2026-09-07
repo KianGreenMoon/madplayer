@@ -184,7 +184,7 @@ func (a *App) loadAlbumScopes(key string, ids []int64) {
 	// On error nothing is cached: the button stays "Sharing…" and the tried
 	// stamp holds the next attempt to the page's cadence.
 	a.mu.Unlock()
-	a.win.Invalidate()
+	a.invalidate()
 }
 
 // cycleAlbumShare moves the album to the next scope: off → friends →
@@ -245,7 +245,7 @@ func (a *App) cycleAlbumShare(tracks []*library.Track) {
 		} else {
 			a.setNotice(shareNotice(next, len(ids)))
 		}
-		a.win.Invalidate()
+		a.invalidate()
 	}()
 }
 
@@ -397,7 +397,7 @@ func (a *App) refreshShared() {
 		a.sharing.msg = ""
 	}
 	a.mu.Unlock()
-	a.win.Invalidate()
+	a.invalidate()
 }
 
 func (a *App) stopSharing(tagsetID int64) {
@@ -424,6 +424,6 @@ func (a *App) stopSharing(tagsetID int64) {
 		a.sharing.albumKey, a.sharing.scopes = "", nil
 		a.sharing.albumTriedKey = ""
 		a.mu.Unlock()
-		a.win.Invalidate()
+		a.invalidate()
 	}()
 }

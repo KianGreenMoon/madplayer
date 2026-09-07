@@ -127,7 +127,7 @@ func (a *App) applyTheme(name string) {
 	colAccent, colAccentDim = p.accent, p.accentDim
 	colLine, colWarn = p.border, p.warning
 	a.th.Palette = material.Palette{Bg: colBg, Fg: colFg, ContrastBg: colAccent, ContrastFg: colOnAccent}
-	a.win.Option(app.StatusColor(colBar), app.NavigationColor(colBar))
+	a.window().Option(app.StatusColor(colBar), app.NavigationColor(colBar))
 }
 
 // setTheme is a click on an Appearance chip: the look changes this frame, and
@@ -143,5 +143,5 @@ func (a *App) setTheme(name string) {
 			a.setNoticeAsync("could not save the theme: " + err.Error())
 		}
 	}()
-	a.win.Invalidate()
+	a.invalidate()
 }

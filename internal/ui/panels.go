@@ -591,6 +591,6 @@ func (a *App) saveKeepTechnical(on bool) {
 			return
 		}
 		a.startKeeper()
-		a.win.Invalidate()
+		a.invalidate()
 	}()
 }

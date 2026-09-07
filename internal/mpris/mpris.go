@@ -97,6 +97,7 @@ type Service struct {
 	lastKey  string
 	quitOnce sync.Once
 	onQuit   func()
+	onRaise  func()
 }
 
 // New announces the player and starts answering for it.
@@ -104,13 +105,16 @@ type Service struct {
 // name becomes org.mpris.MediaPlayer2.<name>. onQuit is called when the desktop
 // asks the player to quit — it is a real request from a real user gesture, so
 // refusing it would be rude, but only the program itself knows how to shut down.
-func New(name string, c Controls, onQuit func()) (*Service, error) {
+// onRaise is the desktop asking for the window (a media widget's "open", a
+// second launch of the program); nil means the player cannot, and says so
+// through CanRaise.
+func New(name string, c Controls, onRaise, onQuit func()) (*Service, error) {
 	conn, err := dbus.SessionBus()
 	if err != nil {
 		return nil, fmt.Errorf("no session bus: %w", err)
 	}
 
-	s := &Service{conn: conn, c: c, onQuit: onQuit}
+	s := &Service{conn: conn, c: c, onRaise: onRaise, onQuit: onQuit}
 	if err := s.export(); err != nil {
 		return nil, err
 	}
@@ -192,7 +196,7 @@ func (s *Service) propMap() prop.Map {
 	return prop.Map{
 		rootIface: {
 			"CanQuit":             ro(true),
-			"CanRaise":            ro(false), // Gio cannot raise its own window
+			"CanRaise":            ro(s.onRaise != nil),
 			"HasTrackList":        ro(false), // the queue is not published as a TrackList
 			"Identity":            ro("madplayer"),
 			"DesktopEntry":        ro("madplayer"),
@@ -426,9 +430,12 @@ func micros(seconds float64) int64 {
 type rootHandler struct{ s *Service }
 
 func (h rootHandler) Raise() *dbus.Error {
-	// CanRaise is false and this is exported anyway: the spec says the method
-	// exists either way, and a client that calls it regardless gets a polite
-	// no-op rather than an unknown-method error.
+	// Exported even when CanRaise is false: the spec says the method exists
+	// either way, and a client that calls it regardless gets a polite no-op
+	// rather than an unknown-method error.
+	if h.s.onRaise != nil {
+		go h.s.onRaise()
+	}
 	return nil
 }
 

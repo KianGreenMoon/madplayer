@@ -47,7 +47,7 @@ func (a *App) restoreQueue() {
 	}
 	a.pl.Restore(saved.Items, saved.Original, saved.Index, saved.Shuffled, queue.RepeatFrom(saved.Repeat))
 	a.pl.ResumeAt(saved.Position)
-	a.win.Invalidate()
+	a.invalidate()
 }
 
 // markQueueDirty asks for a save without doing one.

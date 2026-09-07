@@ -292,7 +292,7 @@ func (a *App) signIn(addr, user, pass string) {
 	a.srvBusy = true
 	a.srvMsg = "Signing in to " + base + "…"
 	a.mu.Unlock()
-	a.win.Invalidate()
+	a.invalidate()
 
 	go func() {
 		token, id, err := madshare.New(base, "").SignIn(context.Background(), user, pass)
@@ -302,7 +302,7 @@ func (a *App) signIn(addr, user, pass string) {
 		if err != nil {
 			a.srvMsg = signInMessage(base, err)
 			a.mu.Unlock()
-			a.win.Invalidate()
+			a.invalidate()
 			return
 		}
 		a.cfg.SetServer(prefs.Server{Base: base, Username: id.Username, Token: token})
@@ -460,14 +460,14 @@ func (a *App) refreshCacheSize() {
 	a.mu.Lock()
 	a.cacheUsed = n
 	a.mu.Unlock()
-	a.win.Invalidate()
+	a.invalidate()
 }
 
 func (a *App) setServerMsg(msg string) {
 	a.mu.Lock()
 	a.srvMsg = msg
 	a.mu.Unlock()
-	a.win.Invalidate()
+	a.invalidate()
 }
 
 // ceilingText names the limit, or says there is none — "of 0" would read as a

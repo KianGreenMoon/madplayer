@@ -134,7 +134,7 @@ func (a *App) refreshUnderlay() {
 	a.mu.Lock()
 	a.underlay, a.underlayAt, a.underlayLoading = live, time.Now(), false
 	a.mu.Unlock()
-	a.win.Invalidate()
+	a.invalidate()
 }
 
 // underlayFor is the live state of a typed address, or nil when the core knows
@@ -426,5 +426,5 @@ func (a *App) setPeerMsg(msg string) {
 	a.mu.Lock()
 	a.peerMsg = msg
 	a.mu.Unlock()
-	a.win.Invalidate()
+	a.invalidate()
 }

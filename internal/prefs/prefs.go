@@ -79,6 +79,13 @@ type Config struct {
 	// switching the mode off hides the pages without unfriending anyone. The
 	// way out of the community is removing the paired nodes, on the page.
 	NodeMode bool `json:"node_mode,omitempty"`
+	// Tray keeps the program running in the desktop's tray when its window is
+	// closed — node mode's background presence (madshare's full-node-mode.md
+	// P5): the mesh, seeding and catalog sync survive, and so does playback.
+	// OFF by default (a music player that will not quit is a surprise), so
+	// omitempty is safe: absent and false both mean "closing quits". Honoured
+	// only while a tray host actually shows the icon (ui/tray.go).
+	Tray bool `json:"tray,omitempty"`
 	// MeshPeers are underlay peering URIs typed by hand: the fallback for
 	// somebody whose home server publishes none and whose network has none to
 	// discover. Usually empty, and that is the intended state.

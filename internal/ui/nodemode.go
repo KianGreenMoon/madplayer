@@ -51,6 +51,9 @@ func (a *App) nodeModeControls(gtx C) D {
 	if a.nodeModeOn.Update(gtx) {
 		a.saveNodeMode(a.nodeModeOn.Value)
 	}
+	if a.trayOn.Update(gtx) {
+		a.saveTray(a.trayOn.Value)
+	}
 
 	_, meshUp := a.be.Mesh()
 	// The caption below counts friendships even while the paired-nodes page —
@@ -115,6 +118,7 @@ func (a *App) nodeModeControls(gtx C) D {
 					return l.Layout(gtx)
 				})
 			}),
+			layout.Rigid(func(gtx C) D { return a.trayControls(gtx) }),
 		)
 	})
 }

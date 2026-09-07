@@ -13,7 +13,6 @@ import (
 	"path/filepath"
 
 	"gioui.org/app"
-	"gioui.org/unit"
 
 	"daemonlord.ygg/madplayer/internal/about"
 	"daemonlord.ygg/madplayer/internal/audio"
@@ -81,10 +80,7 @@ func run() error {
 	defer be.Close()
 
 	w := new(app.Window)
-	w.Option(
-		app.Title("madplayer"),
-		app.Size(unit.Dp(1000), unit.Dp(720)),
-	)
+	w.Option(ui.WindowOptions()...)
 	return ui.New(w, pl, be).Run()
 }
 

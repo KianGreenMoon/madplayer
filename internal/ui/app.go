@@ -36,6 +36,7 @@ import (
 	"daemonlord.ygg/madplayer/internal/prefs"
 	"daemonlord.ygg/madplayer/internal/queue"
 	"daemonlord.ygg/madplayer/internal/remote"
+	"daemonlord.ygg/madplayer/internal/tray"
 )
 
 type (
@@ -71,7 +72,11 @@ const (
 // list here is a database call into the embedded backend, and a layout function
 // runs sixty times a second.
 type App struct {
-	win   *app.Window
+	// win is the window, or nil while the program lives in the tray with none
+	// (tray.go). Swappable, because a closed Gio window is destroyed and the
+	// way back is a new one; read it through window() and repaint through
+	// invalidate(), which is nil-safe for the goroutines that ask for frames.
+	win   atomic.Pointer[app.Window]
 	th    *material.Theme
 	store *prefs.Store
 	pl    *player.Player
@@ -228,6 +233,18 @@ type App struct {
 	// App.mu, is its save-error line.
 	nodeModeOn  widget.Bool
 	nodeModeMsg string
+	// The tray (tray.go): the switch, its line, the item, and the lifecycle
+	// of a window that comes and goes — hidden while the program lives in the
+	// tray, showCh/quitCh what wakes it, quitting what a closing window reads,
+	// startHidden the --hidden launch.
+	trayOn      widget.Bool
+	trayMsg     string
+	trayItem    atomic.Pointer[tray.Item]
+	hidden      atomic.Bool
+	quitting    atomic.Bool
+	startHidden bool
+	showCh      chan struct{}
+	quitCh      chan struct{}
 	// btnAlbumShare and sharing are node mode's publish picker (sharing.go):
 	// the album header's share control and the Settings Sharing page.
 	btnAlbumShare widget.Clickable
@@ -311,9 +328,11 @@ func New(win *app.Window, pl *player.Player, be *backend.Backend) *App {
 // running against the real one — which is how a test run comes to overwrite the
 // queue of whoever was listening to music at the time.
 func newApp(win *app.Window, pl *player.Player, be *backend.Backend, store *prefs.Store) *App {
-	a := &App{win: win, th: newTheme(), store: store, pl: pl, be: be, lib: library.New(be.Library())}
+	a := &App{th: newTheme(), store: store, pl: pl, be: be, lib: library.New(be.Library())}
+	a.win.Store(win)
+	a.showCh, a.quitCh = make(chan struct{}, 1), make(chan struct{}, 1)
 	a.build = about.Current()
-	a.art = newCovers(win.Invalidate)
+	a.art = newCovers(a.invalidate)
 	a.art.fetchNet = a.fetchNetCover
 	// Embedded covers are written out here when the media bus asks for one: it
 	// wants a URL, and art that lives inside an audio file has no path of its own.
@@ -351,6 +370,7 @@ func newApp(win *app.Window, pl *player.Player, be *backend.Backend, store *pref
 	// had not been saved.
 	a.meshOn.Value = cfg.Mesh
 	a.nodeModeOn.Value = cfg.NodeMode
+	a.trayOn.Value = cfg.Tray
 	a.keepTechnical.Value = cfg.KeepTechnicalNames
 	a.keepDirEd.SetText(cfg.KeepDir)
 
@@ -420,7 +440,7 @@ func newApp(win *app.Window, pl *player.Player, be *backend.Backend, store *pref
 		a.mediaBus.Load().Update()
 		a.mediaSession.Load().Update()
 		a.markQueueDirty()
-		win.Invalidate()
+		a.invalidate()
 	}
 
 	// The queue as it was left. Restored BEFORE the library loads, because it is
@@ -568,7 +588,7 @@ func (a *App) start(adopt []string) {
 		a.wantSettings = true
 		a.status = "Add a music folder to get started, or sign in to a server."
 		a.mu.Unlock()
-		a.win.Invalidate()
+		a.invalidate()
 	}
 }
 
@@ -618,7 +638,7 @@ func (a *App) finishLoad(apply func(), probs []library.Problem, err error) {
 		a.status = ""
 	}
 	a.mu.Unlock()
-	a.win.Invalidate()
+	a.invalidate()
 }
 
 // problemLine is the one-line summary of libraries that did not answer.
@@ -685,7 +705,7 @@ func (a *App) loadFolders() {
 		}
 	}
 	a.mu.Unlock()
-	a.win.Invalidate()
+	a.invalidate()
 }
 
 // watchScan follows a running scan to its end, refreshing the folder list as it
@@ -721,7 +741,7 @@ func (a *App) Rescan() {
 	a.status = "Scanning…"
 	folders := append([]backend.Folder(nil), a.folders...)
 	a.mu.Unlock()
-	a.win.Invalidate()
+	a.invalidate()
 
 	go func() {
 		ctx := context.Background()
@@ -810,11 +830,11 @@ func (a *App) loadAlbumArt(albums []*library.Album) {
 			a.mu.Unlock()
 			found++
 			if found%8 == 0 {
-				a.win.Invalidate()
+				a.invalidate()
 			}
 		}
 		if found > 0 {
-			a.win.Invalidate()
+			a.invalidate()
 		}
 	}()
 }
@@ -848,11 +868,11 @@ func (a *App) probeDurations() {
 			t.Duration = d
 			a.mu.Unlock()
 			if i%25 == 0 {
-				a.win.Invalidate()
+				a.invalidate()
 			}
 		}
 		if len(todo) > 0 {
-			a.win.Invalidate()
+			a.invalidate()
 		}
 	}()
 }
@@ -869,7 +889,7 @@ func (a *App) Run() error {
 	// construction — a machine with no session bus is a normal machine, and a
 	// music player that refused to start over one would be absurd — so a failure
 	// is logged once and the program carries on with its own window.
-	if svc, err := mpris.New("madplayer", controls{a.pl, a.art, a.nowPlayingCoverKey}, a.closeWindow); err != nil {
+	if svc, err := mpris.New("madplayer", controls{a.pl, a.art, a.nowPlayingCoverKey}, a.show, a.quit); err != nil {
 		log.Printf("madplayer: media keys and the desktop's media widget are unavailable: %v", err)
 	} else {
 		a.mediaBus.Store(svc)
@@ -883,11 +903,8 @@ func (a *App) Run() error {
 	a.mediaSession.Load().Update()
 	go a.queueSaver()
 
-	// Android paints the system bars itself, and its default is white — a
-	// glaring strip over a dark player. Both bars take the bar color: the
-	// status bar sits on the header, the navigation bar under the player bar,
-	// and those two are the same color already. A no-op on the desktop.
-	a.win.Option(app.StatusColor(colBar), app.NavigationColor(colBar))
+	a.applyTray()
+	windowOptions(a.window())
 
 	var ops op.Ops
 	tick := time.NewTicker(a.pl.Tick())
@@ -899,28 +916,61 @@ func (a *App) Run() error {
 			a.mediaBus.Load().Tick()
 			a.mediaSession.Load().Tick()
 			if a.pl.Playing() {
-				a.win.Invalidate()
+				a.invalidate()
 			}
 		}
 	}()
 
+	// Started for the tray (the autostart entry says --hidden): no window
+	// until somebody asks for one — but only when a tray host actually shows
+	// the icon, or the program would be running with no way to reach it.
+	if a.startHidden {
+		if a.trayHostedWithin(trayStartPatience) {
+			a.win.Store(nil)
+			a.hidden.Store(true)
+			log.Printf("madplayer: started in the tray")
+			if !a.waitInTray() {
+				return a.shutdown(nil)
+			}
+			a.openWindow()
+		} else {
+			log.Printf("madplayer: asked to start hidden, but no tray host shows the icon — opening the window")
+		}
+	}
+
 	for {
-		switch e := a.win.Event().(type) {
+		switch e := a.window().Event().(type) {
 		case app.DestroyEvent:
-			// The writer is stopped BEFORE the last save, so the final state on
-			// disk is this one and not whatever the heartbeat had in flight.
-			close(a.done)
-			a.save()
-			a.writeQueue()
-			_ = a.mediaBus.Load().Close()
-			a.mediaSession.Load().Close()
-			return e.Err
+			if e.Err == nil && a.shouldHide() {
+				a.hide()
+				if !a.waitInTray() {
+					return a.shutdown(nil)
+				}
+				a.openWindow()
+				continue
+			}
+			return a.shutdown(e.Err)
 		case app.FrameEvent:
 			gtx := app.NewContext(&ops, e)
 			a.layout(gtx)
 			e.Frame(gtx.Ops)
 		}
 	}
+}
+
+// shutdown is the end of the program, tray or window.
+func (a *App) shutdown(err error) error {
+	// The writer is stopped BEFORE the last save, so the final state on disk
+	// is this one and not whatever the heartbeat had in flight.
+	close(a.done)
+	a.save()
+	a.writeQueue()
+	_ = a.mediaBus.Load().Close()
+	a.mediaSession.Load().Close()
+	if it := a.trayItem.Swap(nil); it != nil {
+		it.Close()
+	}
+	return err
 }
 
 func (a *App) save() {
@@ -961,8 +1011,12 @@ func (a *App) windowTitle() string {
 // did not later: the difference was whether something happened to be playing.
 // Asking for a frame is what posts the message.
 func (a *App) closeWindow() {
-	a.win.Perform(system.ActionClose)
-	a.win.Invalidate()
+	w := a.window()
+	if w == nil {
+		return
+	}
+	w.Perform(system.ActionClose)
+	w.Invalidate()
 }
 
 // retitle pushes the title only when it CHANGED. Setting it every frame is sixty
@@ -970,7 +1024,12 @@ func (a *App) closeWindow() {
 func (a *App) retitle() {
 	if t := a.windowTitle(); t != a.title {
 		a.title = t
-		a.win.Option(app.Title(t))
+		if w := a.window(); w != nil {
+			w.Option(app.Title(t))
+		}
+		if it := a.trayItem.Load(); it != nil {
+			it.SetToolTip("madplayer", t)
+		}
 	}
 }
 
@@ -1045,7 +1104,7 @@ func (a *App) update(gtx C) {
 				a.refreshCacheSize()
 				a.refreshSeedUsage()
 				a.reloadCeiling()
-				a.win.Invalidate()
+				a.invalidate()
 			}()
 		}
 	}
@@ -1153,7 +1212,7 @@ func (a *App) doSearch(q string) {
 		a.status = ""
 	}
 	a.mu.Unlock()
-	a.win.Invalidate()
+	a.invalidate()
 }
 
 // serversLabel is the header button: how many libraries are being browsed at
@@ -1436,12 +1495,12 @@ func (a *App) setNoticeAsync(msg string) {
 	a.mu.Lock()
 	a.setNotice(msg)
 	a.mu.Unlock()
-	a.win.Invalidate()
+	a.invalidate()
 }
 
 func (a *App) setStatus(msg string) {
 	a.mu.Lock()
 	a.status = msg
 	a.mu.Unlock()
-	a.win.Invalidate()
+	a.invalidate()
 }

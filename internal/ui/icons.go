@@ -32,6 +32,8 @@ var (
 	iconKeep = mustIcon(icons.FileFileDownload)
 	// iconKept is the same row once the file is here.
 	iconKept = mustIcon(icons.ActionDone)
+	// iconTodo is a checklist step not yet done (connect.go).
+	iconTodo = mustIcon(icons.ToggleRadioButtonUnchecked)
 	// iconNoCover is the record drawn on a tile whose music has no art.
 	iconNoCover = mustIcon(icons.AVAlbum)
 

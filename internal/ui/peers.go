@@ -63,20 +63,13 @@ func (a *App) peerControls(gtx C) D {
 	// A device with no node has no peerings, so nothing is polled for them —
 	// the same gate the pairing section uses, and for the same reason: work
 	// whose answer is known is work not worth a goroutine.
-	_, meshUp := a.be.Mesh()
+	a.wantUnderlay()
 
 	a.mu.Lock()
 	peers := append([]string(nil), a.cfg.MeshPeers...)
 	msg := a.peerMsg
 	live := a.underlay
-	stale := meshUp && !a.underlayLoading && time.Since(a.underlayAt) > peerRefresh
-	if stale {
-		a.underlayLoading = true
-	}
 	a.mu.Unlock()
-	if stale {
-		go a.refreshUnderlay()
-	}
 
 	if a.btnAddPeer.Clicked(gtx) {
 		a.addPeer(a.peerEd.Text())

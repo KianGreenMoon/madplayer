@@ -461,6 +461,14 @@ func (a *App) backUpKey(path string) {
 		if err != nil {
 			return "", err
 		}
+		// Remembered, so the node-mode checklist can say a copy exists.
+		a.mu.Lock()
+		a.cfg.KeyBackup = dst
+		cfg := a.cfg
+		a.mu.Unlock()
+		if err := a.store.Save(cfg); err != nil {
+			return "Key backed up to " + dst + " — but the setting did not save: " + err.Error(), nil
+		}
 		return "Key backed up to " + dst + " — keep that file somewhere safe", nil
 	})
 }

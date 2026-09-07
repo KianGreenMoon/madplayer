@@ -237,6 +237,8 @@ type App struct {
 	// of a window that comes and goes — hidden while the program lives in the
 	// tray, showCh/quitCh what wakes it, quitting what a closing window reads,
 	// startHidden the --hidden launch.
+	// connect is the node-mode checklist's clickables (connect.go).
+	connect connectWidgets
 	trayOn  widget.Bool
 	trayMsg string
 	// The login entry (internal/autostart): its truth is a file, re-read on

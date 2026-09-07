@@ -360,6 +360,25 @@ nothing to add. A hidden launch that finds one running asks for nothing: it
 wanted a node in the tray, and there is one. Measured: the second launch
 returns in ~13 ms with the first copy's window back.
 
+**And the way in is a checklist (built 2026-09-07 — full-node-mode.md P3,
+the first-run connect step).** The three ways onto the underlay existed — a
+server's peering dialled by the enrolment loop, multicast, a typed peer — and
+so did pairing, the key backup and the tray; what a person switching node
+mode on did not have was the order, or any way to see which had happened. So
+the Node mode page shows, exactly while the mode is on, "Becoming a reachable
+member": five steps in dependency order (`ui/connect.go`), each with what is
+true right now and the act that completes it — *The madnetwork is on* (a
+button to its page; "after a restart" while it waits), *Reaching the mesh*
+(connections up, or the peer box in place with the plan's open question 6
+answered in its words: a friend's server address first, a public peer works
+but routes the community through strangers), *Paired with a node* (friends
+and waiting, a button to the Paired nodes page), *Key backed up* (the last
+backup's path, `prefs.KeyBackup`, noticing a copy that is gone), and *Staying
+reachable* (both switches below). Not a wizard: a Gio program has no modal
+to put one in and no reason to want one — the page is the first run, and
+afterwards it is the place that says which link is down. The settings index
+line names the first step still to do ("On · next: reaching the mesh").
+
 ### Where the bytes live: three directories, two of them technical
 
 A server ingests by **upload** into storage it manages, and nobody browses

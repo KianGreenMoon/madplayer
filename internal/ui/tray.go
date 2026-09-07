@@ -23,7 +23,6 @@ package ui
 import (
 	"image"
 	"log"
-	"os"
 	"time"
 
 	"gioui.org/app"
@@ -327,9 +326,4 @@ func (a *App) trayControls(gtx C) D {
 			}),
 		)
 	})
-}
-
-func exists(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil
 }

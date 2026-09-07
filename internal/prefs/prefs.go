@@ -91,6 +91,11 @@ type Config struct {
 	// discover. Usually empty, and that is the intended state.
 	MeshPeers []string `json:"mesh_peers,omitempty"`
 
+	// KeyBackup is where the node key was last backed up to (the Paired nodes
+	// page's Back up), so the node-mode checklist can say whether a copy
+	// exists and where. Empty until a backup was made.
+	KeyBackup string `json:"key_backup,omitempty"`
+
 	// KeepDir is where network music is kept when it is saved to this device,
 	// overriding the default `<music dir>/madplayer`. Empty is the normal state
 	// and means the default (materialize.Resolve).

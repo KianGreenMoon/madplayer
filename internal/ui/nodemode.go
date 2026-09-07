@@ -39,10 +39,7 @@ func (a *App) nodeModeState() string {
 	if !a.nodeMode() {
 		return "Off — this device is a quiet listener"
 	}
-	if s := a.pairingSummary(); s != "" {
-		return "On · " + s
-	}
-	return "On"
+	return "On · " + a.connectState()
 }
 
 // nodeModeControls is the page: what the mode is, the switch, and one line of
@@ -117,6 +114,14 @@ func (a *App) nodeModeControls(gtx C) D {
 					l.Color = colDim
 					return l.Layout(gtx)
 				})
+			}),
+			layout.Rigid(func(gtx C) D {
+				// The way from "on" to "a reachable member", exactly while the
+				// mode is on (connect.go).
+				if !on {
+					return D{}
+				}
+				return a.connectControls(gtx)
 			}),
 			layout.Rigid(func(gtx C) D { return a.trayControls(gtx) }),
 		)
